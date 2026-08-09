@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+.env
+tenants.json
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+gateway/.owner-password.txt
+gateway/gateway.log
+gateway/tenants.json

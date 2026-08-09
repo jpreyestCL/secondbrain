@@ -1,0 +1,42 @@
+# Infraestructura local del "second brain" — servicios BASE (multi-tenant)
+# - FalkorDB (grafo, protocolo Redis) en 127.0.0.1:6379, compartido por todos
+#   los tenants (cada tenant escribe en su PROPIO grafo dentro de la instancia).
+# - Los MCP servers por tenant viven en docker-compose.tenants.yml, generado
+#   por infra/scripts/gen-tenants-compose.sh a partir de infra/tenants/*.env.
+#
+# Imagenes verificadas en Docker Hub el 2026-08-09:
+#   falkordb/falkordb:v4.20.2
+#   zepai/knowledge-graph-mcp:1.0.2-graphiti-0.28.2-standalone
+#
+# Levantar con:  make up   (regenera el compose de tenants y usa ambos -f)
+
+name: secondbrain
+
+services:
+  falkordb:
+    image: falkordb/falkordb:v4.20.2
+    container_name: brain-falkordb
+    restart: unless-stopped
+    ports:
+      # Solo loopback: nunca exponer a la red local
+      - "127.0.0.1:6379:6379"
+    environment:
+      # Persistencia AOF ademas del RDB por defecto + ACL por tenant
+      # (users.acl lo genera infra/scripts/gen-falkordb-acl.sh; run.sh pasa
+      # REDIS_ARGS tal cual a redis-server, asi que --aclfile aplica directo)
+      - REDIS_ARGS=--appendonly yes --appendfsync everysec --save 900 1 --save 300 100 --aclfile /var/lib/falkordb/acl/users.acl
+      - FALKORDB_PASSWORD=${FALKORDB_PASSWORD:-}
+      # Desactiva la UI web del contenedor (no la necesitamos)
+      - BROWSER=0
+    volumes:
+      - ./data/falkordb:/var/lib/falkordb/data
+      # ACL por tenant: tenant_<nombre> solo puede tocar el grafo <nombre>.
+      # Se monta el DIRECTORIO (no el archivo) para que las regeneraciones de
+      # users.acl (inode nuevo) se vean dentro del contenedor sin recrearlo.
+      - ./falkordb:/var/lib/falkordb/acl:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

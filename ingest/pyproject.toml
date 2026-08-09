@@ -1,0 +1,32 @@
+[project]
+name = "brain-ingest"
+version = "0.1.0"
+description = "Ingestion pipeline for a personal second brain backed by Graphiti + FalkorDB"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "graphiti-core[falkordb]==0.29.3",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "rich>=13.7",
+    "typer>=0.12",
+    "redis>=6.0,<8.1",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "ocrmac>=1.0 ; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+brain = "brain_ingest.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"

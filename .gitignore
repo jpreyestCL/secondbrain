@@ -1,0 +1,15 @@
+archive/
+backups/
+inbox/
+.env
+
+# Secretos / archivos generados de infra (contienen passwords por tenant)
+infra/tenants/*.env
+!infra/tenants/tenant.env.example
+infra/falkordb/users.acl
+infra/docker-compose.tenants.yml
+infra/data/
+*.sqlite
+node_modules/
+__pycache__/
+.venv/
