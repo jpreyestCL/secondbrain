@@ -26,9 +26,11 @@ shopt -s nullglob
 declare -a SEEN_PORTS=() SEEN_NAMES=()
 COUNT=0
 
+# El glob *.env NO matchea la plantilla tenant.env.example (termina en
+# .example), asi que todo <nombre>.env es un tenant real — incluso uno
+# literalmente llamado "tenant".
 for envfile in "${TENANTS_DIR}"/*.env; do
   base="$(basename "${envfile}" .env)"
-  [[ "${base}" == "tenant.env" || "${base}" == "tenant" ]] && continue
 
   # Leer solo las claves que necesita el generador
   TENANT_NAME="$(sed -n 's/^TENANT_NAME=//p' "${envfile}" | tail -1)"
@@ -42,15 +44,28 @@ for envfile in "${TENANTS_DIR}"/*.env; do
     echo "ERROR: ${envfile} debe definir FALKORDB_TENANT_PASSWORD (generar: openssl rand -hex 24)" >&2
     exit 1
   fi
+  # El password va embebido en la URI redis:// del compose: restringir el
+  # charset evita romper el parseo de la URI o inyectar YAML.
+  if [[ ! "${FALKORDB_TENANT_PASSWORD}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "ERROR: FALKORDB_TENANT_PASSWORD en ${envfile} solo admite [A-Za-z0-9_-] (va embebido en la URI redis://; generar: openssl rand -hex 24)" >&2
+    exit 1
+  fi
   if [[ ! "${TENANT_NAME}" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "ERROR: TENANT_NAME invalido '${TENANT_NAME}' en ${envfile} (usar [a-z0-9_-])" >&2; exit 1
   fi
   if [[ "${TENANT_NAME}" != "${base}" ]]; then
     echo "ERROR: TENANT_NAME=${TENANT_NAME} no coincide con el archivo ${base}.env" >&2; exit 1
   fi
-  if [[ ! "${MCP_PORT}" =~ ^[0-9]{4,5}$ ]]; then
-    echo "ERROR: MCP_PORT invalido '${MCP_PORT}' en ${envfile}" >&2; exit 1
+  # Rango valido 1024-65535, excluyendo puertos reservados del stack:
+  # 6379 (FalkorDB), 8787 (gateway), 11434 (Ollama). Mismo criterio que
+  # add-tenant.sh.
+  if [[ ! "${MCP_PORT}" =~ ^[0-9]+$ ]] || (( MCP_PORT < 1024 || MCP_PORT > 65535 )); then
+    echo "ERROR: MCP_PORT invalido '${MCP_PORT}' en ${envfile} (rango 1024-65535)" >&2; exit 1
   fi
+  case "${MCP_PORT}" in
+    6379|8787|11434)
+      echo "ERROR: MCP_PORT ${MCP_PORT} reservado (falkordb/gateway/ollama) en ${envfile}" >&2; exit 1;;
+  esac
   for p in "${SEEN_PORTS[@]:-}"; do
     [[ "${p}" == "${MCP_PORT}" ]] && { echo "ERROR: puerto ${MCP_PORT} duplicado (${envfile})" >&2; exit 1; }
   done
@@ -68,6 +83,9 @@ for envfile in "${TENANTS_DIR}"/*.env; do
     ports:
       # Solo loopback: el gateway OAuth es el unico punto de entrada externo
       - "127.0.0.1:${MCP_PORT}:8000"
+    extra_hosts:
+      # host.docker.internal en Linux (en macOS/colima ya existe; esto es no-op)
+      - "host.docker.internal:host-gateway"
     env_file:
       # 1) claves/ajustes globales (.env raiz), 2) overrides del tenant
       - path: ../.env
@@ -79,6 +97,9 @@ for envfile in "${TENANTS_DIR}"/*.env; do
       # tenant_<nombre> solo puede tocar el grafo <nombre> en FalkorDB.
       - FALKORDB_URI=redis://tenant_${TENANT_NAME}:${FALKORDB_TENANT_PASSWORD}@falkordb:6379
       - FALKORDB_DATABASE=${TENANT_NAME}
+      # El password admin de FalkorDB vive en el .env raiz (env_file de arriba);
+      # se anula aqui para que NO llegue a los contenedores de tenants.
+      - FALKORDB_PASSWORD=
       - GRAPHITI_TELEMETRY_ENABLED=false
       - CONFIG_PATH=/app/mcp/config/config.yaml
     volumes:

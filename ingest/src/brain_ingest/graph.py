@@ -34,6 +34,7 @@ Connection environment / credentials:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -108,33 +109,52 @@ def build_graphiti(tenant: str):
     embedder = None
     cross_encoder = None
 
+    # Config espejo del MCP server (infra/graphiti/config.yaml): el LLM y el
+    # embedder se configuran POR SEPARADO, para permitir LLM=DeepSeek (que no
+    # ofrece embeddings) + embeddings=Ollama. Variables (mismas del .env raiz):
+    #   LLM       -> OPENAI_API_KEY, OPENAI_API_URL, MODEL_NAME
+    #   Embedder  -> EMBEDDER_API_URL (o OPENAI_API_URL), EMBEDDER_MODEL,
+    #                EMBEDDER_DIMENSIONS
+    # Compat: si solo hay OLLAMA_BASE_URL, se usa para ambos.
     ollama_url = os.environ.get("OLLAMA_BASE_URL")
-    if not ollama_url and not os.environ.get("OPENAI_API_KEY"):
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    llm_url = os.environ.get("OPENAI_API_URL") or ollama_url
+    embed_url = os.environ.get("EMBEDDER_API_URL") or llm_url
+
+    if not openai_key and not ollama_url:
         raise GraphConfigError(
-            "No embedder/LLM configured: set OPENAI_API_KEY or OLLAMA_BASE_URL."
+            "No embedder/LLM configured: set OPENAI_API_KEY (+ OPENAI_API_URL) "
+            "or OLLAMA_BASE_URL."
         )
 
-    if ollama_url:
-        from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
-        from graphiti_core.llm_client.config import LLMConfig
-        from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+    from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+    from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
+    # LLM: OpenAIGenericClient cuando el endpoint NO es api.openai.com (DeepSeek,
+    # Ollama, vLLM); el cliente OpenAI estándar solo para la API oficial.
+    if llm_url and "api.openai.com" not in llm_url:
         llm_client = OpenAIGenericClient(
             config=LLMConfig(
-                api_key="ollama",
-                model=os.environ.get("OLLAMA_LLM_MODEL", "llama3.1:8b"),
-                base_url=ollama_url,
+                api_key=openai_key or "ollama",
+                model=os.environ.get("MODEL_NAME")
+                or os.environ.get("OLLAMA_LLM_MODEL", "gpt-4o-mini"),
+                base_url=llm_url,
             )
         )
-        embedder = OpenAIEmbedder(
-            config=OpenAIEmbedderConfig(
-                api_key="ollama",
-                embedding_model=os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
-                base_url=ollama_url,
-            )
-        )
-    # else: OPENAI_API_KEY is set — leaving clients as None lets graphiti
-    # construct its OpenAI defaults.
+
+    # Embedder: endpoint propio (mxbai-embed-large en Ollama = 1024 dims). Debe
+    # coincidir con el del server o la búsqueda semántica se corrompe.
+    _embed_kwargs = dict(
+        api_key=(openai_key if embed_url and "api.openai.com" in embed_url else "ollama"),
+        embedding_model=os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small"),
+        base_url=embed_url,
+    )
+    _dims = os.environ.get("EMBEDDER_DIMENSIONS")
+    if _dims:
+        # embedding_dim es frozen: debe ir en el constructor.
+        _embed_kwargs["embedding_dim"] = int(_dims)
+    embedder = OpenAIEmbedder(config=OpenAIEmbedderConfig(**_embed_kwargs))
 
     username, password = tenant_credentials(tenant)
     driver = FalkorDriver(
@@ -168,35 +188,109 @@ def _reference_time(row) -> datetime:
     return datetime.fromtimestamp(row.mtime, tz=timezone.utc)
 
 
-async def ingest_chunks(cfg: Config, ledger: Ledger, doc_ids: list[str] | None = None) -> dict[str, int]:
-    """Push chunk files of classified docs to Graphiti as episodes."""
+# Transient-failure retry policy for add_episode.
+RETRY_ATTEMPTS = 3
+RETRY_BASE_DELAY = 1.0  # seconds; doubles per attempt (tests patch this to 0)
+TRANSIENT_EXCS: tuple[type[BaseException], ...] = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    asyncio.TimeoutError,
+)
+
+
+async def _add_episode_with_retry(graphiti, **kwargs):
+    """add_episode with exponential backoff on connection/timeout errors."""
+    delay = RETRY_BASE_DELAY
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return await graphiti.add_episode(**kwargs)
+        except TRANSIENT_EXCS as exc:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            log.warning(
+                "add_episode transient failure (attempt %d/%d): %s — retrying in %.1fs",
+                attempt,
+                RETRY_ATTEMPTS,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+
+
+async def ingest_chunks(
+    cfg: Config,
+    ledger: Ledger,
+    doc_ids: list[str] | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    """Push chunk files of classified docs to Graphiti as episodes.
+
+    Resumable: chunk indices already recorded in the ledger for a doc are
+    skipped, so retrying a doc that failed mid-way resumes instead of
+    duplicating episodes. Explicit ``doc_ids`` that are superseded or already
+    ingested are rejected unless ``force`` is set.
+    """
     from graphiti_core.nodes import EpisodeType
 
     graphiti = build_graphiti(cfg.tenant)
-    counts = {"docs": 0, "episodes": 0, "errors": 0}
+    counts = {"docs": 0, "episodes": 0, "errors": 0, "skipped": 0}
     try:
         await graphiti.build_indices_and_constraints()
 
-        rows = (
-            [r for r in (ledger.get(d) for d in doc_ids) if r]
-            if doc_ids
-            else list(ledger.by_status("classified"))
-        )
+        if doc_ids:
+            rows = []
+            for d in doc_ids:
+                r = ledger.get(d)
+                if r is None:
+                    log.error("unknown doc_id %s", d)
+                    counts["errors"] += 1
+                    continue
+                if (r.superseded or r.status == "ingested") and not force:
+                    log.warning(
+                        "doc %s is %s — skipping (use --force to re-ingest)",
+                        d,
+                        "superseded" if r.superseded else "already ingested",
+                    )
+                    counts["skipped"] += 1
+                    continue
+                rows.append(r)
+        else:
+            rows = list(ledger.by_status("classified"))
         for row in rows:
             chunks_path = cfg.chunks_dir / f"{row.doc_id}.json"
             if not chunks_path.exists():
                 log.warning("doc %s has no chunks file — run `brain chunk` first", row.doc_id)
                 continue
             chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+            if not chunks:
+                ledger.set_status(row.doc_id, "skipped", error="sin contenido")
+                counts["skipped"] += 1
+                continue
             is_json = (cfg.extracted_dir / f"{row.doc_id}.json").exists()
             name_stem = Path(row.path).name
             domain = row.domain or "personal"
+            # Resume support: skip chunks whose episode is already recorded
+            # (a previous run may have failed mid-document).
+            done = {
+                e["chunk_idx"]
+                for e in ledger.episodes_for_doc(row.doc_id, only_active=True)
+            }
             try:
                 for chunk in chunks:
+                    if chunk["chunk_idx"] in done:
+                        log.debug(
+                            "doc %s chunk %d already ingested — skipping",
+                            row.doc_id,
+                            chunk["chunk_idx"],
+                        )
+                        continue
                     result = redact(chunk["text"])
                     if result.flags:
                         ledger.add_sensitivity_flags(row.doc_id, result.flags)
-                    episode = await graphiti.add_episode(
+                    episode = await _add_episode_with_retry(
+                        graphiti,
                         name=(
                             f"[{domain}] {name_stem} "
                             f"[{chunk['chunk_idx'] + 1}/{chunk['total_chunks']}]"
@@ -210,16 +304,23 @@ async def ingest_chunks(cfg: Config, ledger: Ledger, doc_ids: list[str] | None =
                         source=EpisodeType.json if is_json else EpisodeType.text,
                         # group_id is ALWAYS the tenant: the FalkorDB driver
                         # uses it as the graph name. The domain is metadata
-                        # (name prefix + source_description), never a group_id.
+                        # (name prefix + source_description + episodes.domain),
+                        # never a group_id.
                         group_id=cfg.tenant,
                     )
                     ledger.record_episode(
-                        episode.episode.uuid, row.doc_id, chunk["chunk_idx"], row.domain
+                        episode.episode.uuid,
+                        row.doc_id,
+                        chunk["chunk_idx"],
+                        cfg.tenant,
+                        domain=row.domain,
                     )
                     counts["episodes"] += 1
                 ledger.set_status(row.doc_id, "ingested")
                 counts["docs"] += 1
             except Exception as exc:  # noqa: BLE001 — record per-doc failures
+                # Partial episodes stay recorded in the ledger so a retry
+                # resumes at the failed chunk instead of duplicating.
                 log.exception("ingest failed for %s", row.path)
                 ledger.set_status(row.doc_id, "error", error=str(exc)[:500])
                 counts["errors"] += 1

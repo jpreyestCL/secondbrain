@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     doc_id         TEXT NOT NULL,
     chunk_idx      INTEGER NOT NULL,
     group_id       TEXT,
+    domain         TEXT,
     created_at     TEXT NOT NULL,
     pending_expiry INTEGER NOT NULL DEFAULT 0,
     expired        INTEGER NOT NULL DEFAULT 0
@@ -101,11 +102,19 @@ class FileRow:
 class Ledger:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        # Autocommit mode: transactions are managed explicitly (upsert_file
+        # uses BEGIN IMMEDIATE to serialize concurrent scans).
+        self.conn = sqlite3.connect(db_path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(_SCHEMA)
+        # Migration: older databases lack episodes.domain (group_id used to
+        # store the domain). Tolerate both layouts.
+        try:
+            self.conn.execute("ALTER TABLE episodes ADD COLUMN domain TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self.conn.commit()
 
     def close(self) -> None:
@@ -130,38 +139,85 @@ class Ledger:
         * ``"new"``       — first time this path is seen.
         * ``"changed"``   — path known with a different hash: old version row
           is marked superseded, its episodes flagged ``pending_expiry``, and
-          a new version row (new doc_id, status=pending) is created.
-        """
-        cur = self.conn.execute(
-            "SELECT * FROM files WHERE path = ? AND superseded = 0 "
-            "ORDER BY id DESC LIMIT 1",
-            (path,),
-        )
-        current = cur.fetchone()
-        if current is not None and current["sha256"] == sha256:
-            return "unchanged", current["doc_id"]
+          a new version row (new doc_id, status=pending) is created. If the
+          "new" hash matches a previously superseded row (a revert), that row
+          is reactivated instead of inserting a duplicate.
 
-        now = _now()
-        doc_id = str(uuid.uuid4())
-        outcome = "new"
-        if current is not None:
-            outcome = "changed"
-            self.conn.execute(
-                "UPDATE files SET superseded = 1, updated_at = ? WHERE id = ?",
-                (now, current["id"]),
-            )
-            self.conn.execute(
-                "UPDATE episodes SET pending_expiry = 1 "
-                "WHERE doc_id = ? AND expired = 0",
-                (current["doc_id"],),
-            )
-        self.conn.execute(
-            "INSERT INTO files (path, sha256, doc_id, size, mtime, status,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (path, sha256, doc_id, size, mtime, now, now),
-        )
-        self.conn.commit()
-        return outcome, doc_id
+        The whole SELECT+writes sequence runs inside BEGIN IMMEDIATE so
+        concurrent scans serialize instead of racing.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.conn.execute(
+                "SELECT * FROM files WHERE path = ? AND superseded = 0 "
+                "ORDER BY id DESC LIMIT 1",
+                (path,),
+            ).fetchone()
+            now = _now()
+            if current is not None and current["sha256"] == sha256:
+                if current["status"] == "error":
+                    # File reappeared unchanged after an error: retry it.
+                    self.conn.execute(
+                        "UPDATE files SET status = 'pending', error = NULL,"
+                        " updated_at = ? WHERE id = ?",
+                        (now, current["id"]),
+                    )
+                self.conn.execute("COMMIT")
+                return "unchanged", current["doc_id"]
+
+            outcome = "new"
+            if current is not None:
+                outcome = "changed"
+                self.conn.execute(
+                    "UPDATE files SET superseded = 1, updated_at = ? WHERE id = ?",
+                    (now, current["id"]),
+                )
+                self.conn.execute(
+                    "UPDATE episodes SET pending_expiry = 1 "
+                    "WHERE doc_id = ? AND expired = 0",
+                    (current["doc_id"],),
+                )
+
+            old = self.conn.execute(
+                "SELECT * FROM files WHERE path = ? AND sha256 = ?",
+                (path, sha256),
+            ).fetchone()
+            if old is not None:
+                # Revert to a previous version: reactivate the superseded row
+                # (INSERT would violate UNIQUE(path, sha256)).
+                doc_id = old["doc_id"]
+                active = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM episodes"
+                    " WHERE doc_id = ? AND expired = 0",
+                    (doc_id,),
+                ).fetchone()["n"]
+                status = (
+                    "ingested"
+                    if old["status"] == "ingested" and active
+                    else "pending"
+                )
+                self.conn.execute(
+                    "UPDATE files SET superseded = 0, status = ?, error = NULL,"
+                    " size = ?, mtime = ?, updated_at = ? WHERE id = ?",
+                    (status, size, mtime, now, old["id"]),
+                )
+                self.conn.execute(
+                    "UPDATE episodes SET pending_expiry = 0"
+                    " WHERE doc_id = ? AND expired = 0",
+                    (doc_id,),
+                )
+            else:
+                doc_id = str(uuid.uuid4())
+                self.conn.execute(
+                    "INSERT INTO files (path, sha256, doc_id, size, mtime, status,"
+                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (path, sha256, doc_id, size, mtime, now, now),
+                )
+            self.conn.execute("COMMIT")
+            return outcome, doc_id
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
 
     # -- queries -----------------------------------------------------------
 
@@ -236,13 +292,18 @@ class Ledger:
     # -- episodes ----------------------------------------------------------
 
     def record_episode(
-        self, episode_uuid: str, doc_id: str, chunk_idx: int, group_id: str | None
+        self,
+        episode_uuid: str,
+        doc_id: str,
+        chunk_idx: int,
+        group_id: str | None,
+        domain: str | None = None,
     ) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO episodes"
-            " (episode_uuid, doc_id, chunk_idx, group_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (episode_uuid, doc_id, chunk_idx, group_id, _now()),
+            " (episode_uuid, doc_id, chunk_idx, group_id, domain, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (episode_uuid, doc_id, chunk_idx, group_id, domain, _now()),
         )
         self.conn.commit()
 
@@ -256,6 +317,16 @@ class Ledger:
         return self.conn.execute(
             "SELECT * FROM episodes WHERE pending_expiry = 1 AND expired = 0"
         ).fetchall()
+
+    def docs_pending_expiry(self) -> list[str]:
+        """doc_ids that still have active episodes flagged pending_expiry."""
+        return [
+            r["doc_id"]
+            for r in self.conn.execute(
+                "SELECT DISTINCT doc_id FROM episodes"
+                " WHERE pending_expiry = 1 AND expired = 0 ORDER BY doc_id"
+            )
+        ]
 
     def mark_episode_expired(self, episode_uuid: str) -> None:
         self.conn.execute(

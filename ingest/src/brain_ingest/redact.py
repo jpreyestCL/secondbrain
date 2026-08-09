@@ -13,9 +13,19 @@ from dataclasses import dataclass, field
 
 REDACTED = "[CREDENCIAL-REDACTADA ver archivo original]"
 
-# password: hunter2 / password=..., also contraseña/clave (Spanish)
+# password: hunter2 / password=..., also contraseña/clave (Spanish) and
+# env-style variables (POSTGRES_PASSWORD=x, DB_PWD=y, MY_SECRET=..., *_TOKEN=...).
+# No leading \b: an optional identifier prefix may be glued to the keyword.
 _PASSWORD_RE = re.compile(
-    r"(?i)\b(password|passwd|pwd|contrase[nñ]a|clave)\s*[:=]\s*(\S+)"
+    r"(?i)([A-Za-z0-9_.-]*(?:password|passwd|pwd|contrase[nñ]a|clave|secret|token))"
+    r"\s*[:=]\s*(\S+)"
+)
+
+# Connection strings with inline credentials: scheme://user:pass@host,
+# redis://:pass@host, mongodb+srv://user:pass@cluster... Only the password
+# portion is redacted (user and host stay legible).
+_URL_CREDS_RE = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]*:)([^@\s]+)@"
 )
 
 # Well-known API key/token shapes.
@@ -69,8 +79,18 @@ def redact(text: str) -> RedactionResult:
     """
     flags: set[str] = set()
 
-    def _password_sub(m: re.Match[str]) -> str:
+    def _url_creds_sub(m: re.Match[str]) -> str:
         flags.add("password")
+        return f"{m.group(1)}{REDACTED}@"
+
+    text = _URL_CREDS_RE.sub(_url_creds_sub, text)
+
+    def _password_sub(m: re.Match[str]) -> str:
+        keyword = m.group(1).lower()
+        if keyword.endswith(("secret", "token")):
+            flags.add("api_key")
+        else:
+            flags.add("password")
         return f"{m.group(1)}: {REDACTED}"
 
     text = _PASSWORD_RE.sub(_password_sub, text)

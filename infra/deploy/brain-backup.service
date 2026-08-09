@@ -1,0 +1,14 @@
+# Respaldo de FalkorDB (todos los tenants). Lo dispara brain-backup.timer.
+# Instalado por infra/deploy/deploy.sh en /etc/systemd/system/.
+[Unit]
+Description=second brain - respaldo FalkorDB (infra/scripts/backup.sh)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/secondbrain
+ExecStart=/usr/bin/bash /opt/secondbrain/infra/scripts/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -50,6 +50,7 @@ from pathlib import Path
 
 from .config import Config
 from .ledger import Ledger
+from .redact import redact
 
 log = logging.getLogger("brain")
 
@@ -81,11 +82,15 @@ def emit_manifest(cfg: Config, ledger: Ledger) -> Path | None:
         if not ext_path.exists():
             log.warning("no extracted file for %s (%s)", row.doc_id, row.path)
             continue
+        # Secrets must never reach the manifest: redact before excerpting.
+        result = redact(ext_path.read_text(encoding="utf-8", errors="replace"))
+        if result.flags:
+            ledger.add_sensitivity_flags(row.doc_id, result.flags)
         docs.append(
             {
                 "doc_id": row.doc_id,
                 "path": row.path,
-                "excerpt": _excerpt(ext_path.read_text(encoding="utf-8", errors="replace")),
+                "excerpt": _excerpt(result.text),
                 "domain": None,
                 "doc_type": None,
                 "doc_date": None,
@@ -124,6 +129,15 @@ def apply_manifest(cfg: Config, ledger: Ledger, manifest_path: Path) -> dict[str
         if row is None:
             log.error("unknown doc_id %r — skipping", doc_id)
             counts["errors"] += 1
+            continue
+        if row.status != "extracted":
+            log.warning(
+                "doc %s has status %r (expected 'extracted') — skipping to avoid"
+                " re-opening an already processed document",
+                doc_id,
+                row.status,
+            )
+            counts["skipped"] += 1
             continue
         domain = doc.get("domain")
         if domain is None:

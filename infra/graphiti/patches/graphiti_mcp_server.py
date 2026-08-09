@@ -420,6 +420,7 @@ async def add_memory(
         parsed_reference_time = None
         if reference_time:
             from datetime import datetime as _dt
+            from datetime import timezone as _tz
 
             try:
                 parsed_reference_time = _dt.fromisoformat(reference_time.replace('Z', '+00:00'))
@@ -427,6 +428,11 @@ async def add_memory(
                 return ErrorResponse(
                     error=f"Invalid reference_time '{reference_time}': must be ISO-8601"
                 )
+            # Un datetime naive (sin tzinfo) revienta despues en la cola al
+            # compararse con datetimes aware (TypeError -> episodio perdido en
+            # silencio). Asumir UTC si no viene offset.
+            if parsed_reference_time.tzinfo is None:
+                parsed_reference_time = parsed_reference_time.replace(tzinfo=_tz.utc)
 
         # Submit to queue service for async processing
         await queue_service.add_episode(

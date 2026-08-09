@@ -34,7 +34,9 @@ embedder:
   providers:
     openai:
       api_key: ${OPENAI_API_KEY}
-      api_url: ${OPENAI_API_URL:https://api.openai.com/v1}
+      # URL propia del embedder: permite LLM=DeepSeek (sin embeddings) +
+      # embeddings en Ollama u OpenAI. Si no se define, api.openai.com.
+      api_url: ${EMBEDDER_API_URL:https://api.openai.com/v1}
       organization_id: ${OPENAI_ORGANIZATION_ID:}
 
     voyage:

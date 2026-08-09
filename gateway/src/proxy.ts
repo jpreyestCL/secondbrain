@@ -6,10 +6,12 @@
  * relaying Mcp-Session-Id in both directions.
  */
 
+// NOTA: accept-encoding NO se reenvía. fetch() (undici) negocia y descomprime
+// su propia codificación; reenviar la del cliente puede producir cuerpos
+// comprimidos que el gateway retransmite corruptos o sin descomprimir.
 const REQUEST_HEADERS = [
   "content-type",
   "accept",
-  "accept-encoding",
   "mcp-session-id",
   "mcp-protocol-version",
   "last-event-id",

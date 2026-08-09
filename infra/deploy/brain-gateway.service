@@ -1,0 +1,17 @@
+# systemd unit del gateway OAuth (instalado por deploy.sh en /etc/systemd/system/)
+[Unit]
+Description=Second Brain OAuth gateway (mybrain.rlz.cl)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/secondbrain/gateway
+ExecStart=/usr/bin/env node dist/index.js
+Restart=always
+RestartSec=3
+# El gateway ejecuta provision-tenant.sh (docker compose) al registrar usuarios
+Environment=BRAIN_REPO_ROOT=/opt/secondbrain
+
+[Install]
+WantedBy=multi-user.target

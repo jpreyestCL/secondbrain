@@ -57,3 +57,36 @@ def test_apply_skips_unfilled_and_bad_dates(cfg, ledger):
 
 def test_emit_none_when_nothing_extracted(cfg, ledger):
     assert emit_manifest(cfg, ledger) is None
+
+
+def test_manifest_excerpt_is_redacted(cfg, ledger):
+    """Fix 5: secrets never reach the manifest excerpt."""
+    from brain_ingest.redact import REDACTED
+
+    doc_id = _prep_doc(
+        cfg, ledger, "/a/notas.md",
+        "credenciales del servidor\npassword: hunter2\nresto del texto",
+    )
+    out = emit_manifest(cfg, ledger)
+    [doc] = json.loads(out.read_text(encoding="utf-8"))["documents"]
+    assert "hunter2" not in doc["excerpt"]
+    assert REDACTED in doc["excerpt"]
+    # The detection is also persisted as a sensitivity flag.
+    assert "password" in ledger.get(doc_id).sensitivity
+
+
+def test_apply_skips_docs_not_in_extracted_status(cfg, ledger):
+    """Fix 6: applying a stale manifest must not re-open processed docs."""
+    doc_id = _prep_doc(cfg, ledger)
+    out = emit_manifest(cfg, ledger)
+    data = json.loads(out.read_text(encoding="utf-8"))
+    data["documents"][0]["domain"] = "finanzas"
+    out.write_text(json.dumps(data), encoding="utf-8")
+
+    # Doc moved on (already ingested) before the manifest was applied.
+    ledger.set_classification(doc_id, "finanzas", "factura", None, [])
+    ledger.set_status(doc_id, "ingested")
+
+    counts = apply_manifest(cfg, ledger, out)
+    assert counts == {"applied": 0, "skipped": 1, "errors": 0}
+    assert ledger.get(doc_id).status == "ingested"  # untouched

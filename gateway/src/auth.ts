@@ -9,18 +9,22 @@ import type { GatewayConfig } from "./env.js";
 export type Auth = ReturnType<typeof createAuth>["auth"];
 
 export interface CreateAuthOptions {
-  /** Force-allow sign up regardless of config (used by the create-owner CLI). */
+  /**
+   * Kept for backwards compatibility (CLI scripts). Sign-up is now always
+   * enabled at the Better Auth level; the PUBLIC endpoint
+   * /api/auth/sign-up/* is gated in the HTTP layer (server.ts) according to
+   * ALLOW_SIGNUP. This lets the code-gated /registro flow and the CLIs call
+   * auth.api.signUpEmail() server-side even with ALLOW_SIGNUP=false.
+   */
   forceAllowSignup?: boolean;
 }
 
-export function createAuth(config: GatewayConfig, opts: CreateAuthOptions = {}) {
+export function createAuth(config: GatewayConfig, _opts: CreateAuthOptions = {}) {
   if (config.dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
   }
   const db = new Database(config.dbPath);
   db.pragma("journal_mode = WAL");
-
-  const allowSignup = opts.forceAllowSignup ?? config.allowSignup;
 
   const auth = betterAuth({
     baseURL: config.baseUrl,
@@ -30,7 +34,8 @@ export function createAuth(config: GatewayConfig, opts: CreateAuthOptions = {}) 
     trustedOrigins: [config.baseUrl],
     emailAndPassword: {
       enabled: true,
-      disableSignUp: !allowSignup,
+      // El gate del endpoint público vive en server.ts (ver CreateAuthOptions).
+      disableSignUp: false,
       requireEmailVerification: false,
       minPasswordLength: 10,
     },

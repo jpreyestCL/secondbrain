@@ -14,9 +14,16 @@ fi
 if [[ ! "${NAME}" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
   echo "ERROR: nombre invalido '${NAME}' (usar [a-z0-9_-], minusculas)" >&2; exit 1
 fi
-if [[ ! "${PORT}" =~ ^[0-9]{4,5}$ ]]; then
-  echo "ERROR: puerto invalido '${PORT}'" >&2; exit 1
+# Rango valido 1024-65535, excluyendo puertos reservados del stack:
+# 6379 (FalkorDB), 8787 (gateway), 11434 (Ollama). Mismo criterio que
+# gen-tenants-compose.sh.
+if [[ ! "${PORT}" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
+  echo "ERROR: puerto invalido '${PORT}' (rango 1024-65535)" >&2; exit 1
 fi
+case "${PORT}" in
+  6379|8787|11434)
+    echo "ERROR: puerto ${PORT} reservado (falkordb/gateway/ollama)" >&2; exit 1;;
+esac
 
 ENVFILE="${TENANTS_DIR}/${NAME}.env"
 if [[ -e "${ENVFILE}" ]]; then

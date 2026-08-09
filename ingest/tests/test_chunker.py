@@ -63,3 +63,82 @@ def test_oversized_single_paragraph_is_own_chunk():
     chunks = chunk_text(huge, doc_id="d", source_path="p", sha256="s",
                         target_tokens=400)
     assert len(chunks) == 1  # never split mid-paragraph
+
+
+# -- chunk_json (fix 4) ------------------------------------------------------
+
+import json
+
+from brain_ingest.chunker import chunk_json
+
+
+def _sheet_doc(n_rows, sheet="Hoja1", source="ventas.xlsx"):
+    return {
+        "source": source,
+        "sheets": [
+            {
+                "sheet": sheet,
+                "headers": ["fecha", "cliente", "monto"],
+                "rows": [
+                    [f"2024-01-{i % 28 + 1:02d}", f"cliente-{i}", str(1000 + i)]
+                    for i in range(n_rows)
+                ],
+            }
+        ],
+    }
+
+
+def test_chunk_json_splits_rows_into_valid_standalone_json():
+    text = json.dumps(_sheet_doc(400), ensure_ascii=False)
+    chunks = chunk_json(text, doc_id="d", source_path="p", sha256="s",
+                        target_tokens=300)
+    assert len(chunks) > 1
+    all_rows = []
+    for c in chunks:
+        data = json.loads(c.text)  # every chunk is valid standalone JSON
+        # Sheet name + headers repeated per chunk for context.
+        assert data["source"] == "ventas.xlsx"
+        assert data["sheet"] == "Hoja1"
+        assert data["headers"] == ["fecha", "cliente", "monto"]
+        assert data["rows"]
+        all_rows.extend(data["rows"])
+        # Roughly the target size (tolerance: one row + JSON separators).
+        assert estimate_tokens(c.text) <= 300 * 1.3
+    # No row lost, none duplicated, order preserved.
+    assert all_rows == _sheet_doc(400)["sheets"][0]["rows"]
+    assert [c.chunk_idx for c in chunks] == list(range(len(chunks)))
+    assert all(c.total_chunks == len(chunks) for c in chunks)
+
+
+def test_chunk_json_never_mixes_sheets():
+    doc = {
+        "source": "libro.xlsx",
+        "sheets": [
+            {"sheet": "A", "headers": ["x"], "rows": [[f"a{i}"] for i in range(5)]},
+            {"sheet": "B", "headers": ["y"], "rows": [[f"b{i}"] for i in range(5)]},
+        ],
+    }
+    chunks = chunk_json(json.dumps(doc), doc_id="d", source_path="p", sha256="s")
+    sheets_seen = [json.loads(c.text)["sheet"] for c in chunks]
+    assert set(sheets_seen) == {"A", "B"}
+    for c in chunks:
+        data = json.loads(c.text)
+        prefix = "a" if data["sheet"] == "A" else "b"
+        assert all(cell.startswith(prefix) for row in data["rows"] for cell in row)
+
+
+def test_chunk_json_small_doc_single_chunk():
+    text = json.dumps(_sheet_doc(3), ensure_ascii=False)
+    chunks = chunk_json(text, doc_id="d", source_path="p", sha256="s")
+    assert len(chunks) == 1
+    assert json.loads(chunks[0].text)["rows"] == _sheet_doc(3)["sheets"][0]["rows"]
+
+
+def test_chunk_json_empty_sheets_yield_no_chunks():
+    text = json.dumps({"source": "vacio.csv", "sheets": []})
+    assert chunk_json(text, doc_id="d", source_path="p", sha256="s") == []
+
+
+def test_chunk_json_invalid_json_falls_back_to_text():
+    chunks = chunk_json("no es json {", doc_id="d", source_path="p", sha256="s")
+    assert len(chunks) == 1 and "no es json" in chunks[0].text

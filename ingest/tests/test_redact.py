@@ -56,6 +56,52 @@ def test_clean_text_untouched():
     assert r.flags == []
 
 
+def test_env_style_password_vars_redacted():
+    """Fix 2: prefixed keywords (POSTGRES_PASSWORD=, DB_PWD=) are redacted."""
+    r = redact("POSTGRES_PASSWORD=s3cr3t\nDB_PWD=hunter2\nMY_CLAVE=abc")
+    assert "s3cr3t" not in r.text
+    assert "hunter2" not in r.text
+    assert "abc" not in r.text.replace("[CREDENCIAL", "")
+    assert "password" in r.flags
+    assert r.is_sensitive
+
+
+def test_env_style_secret_and_token_redacted():
+    r = redact("SESSION_SECRET=deadbeef y GITLAB_TOKEN: tok123")
+    assert "deadbeef" not in r.text
+    assert "tok123" not in r.text
+    assert "api_key" in r.flags
+
+
+def test_connection_string_password_redacted():
+    """Fix 2: URL credentials — only the password portion is redacted."""
+    r = redact("db en postgres://admin:SuperPass1@db.example.com:5432/app")
+    assert "SuperPass1" not in r.text
+    assert REDACTED in r.text
+    assert "postgres://admin:" in r.text  # user and scheme survive
+    assert "@db.example.com" in r.text
+    assert "password" in r.flags
+
+
+def test_redis_and_mongodb_srv_credentials_redacted():
+    r = redact(
+        "cache redis://:c4ch3pw@redis.local:6379/0 y "
+        "mongodb+srv://user1:m0ng0pw@cluster0.mongodb.net/db"
+    )
+    assert "c4ch3pw" not in r.text
+    assert "m0ng0pw" not in r.text
+    assert "redis://:" in r.text
+    assert "mongodb+srv://user1:" in r.text
+    assert "password" in r.flags
+
+
+def test_plain_url_without_credentials_untouched():
+    text = "ver https://example.com/path y http://localhost:8080/salud"
+    r = redact(text)
+    assert r.text == text
+    assert r.flags == []
+
+
 def test_luhn():
     assert luhn_valid("4111111111111111")
     assert not luhn_valid("4111111111111112")

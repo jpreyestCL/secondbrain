@@ -24,6 +24,26 @@ export interface GatewayConfig {
   allowSignup: boolean;
   /** Absolute path to the SQLite database file, or ":memory:". */
   dbPath: string;
+  /**
+   * Invite code for self-service registration at /registro. Empty/unset means
+   * registration is CLOSED (the page shows "registro deshabilitado").
+   * Independent of ALLOW_SIGNUP, which governs OPEN signup without a code.
+   */
+  registrationCode: string;
+  /** Root of the second-brain repo (contains infra/). Default: gateway/.. */
+  brainRepoRoot: string;
+  /**
+   * Command template used to provision a tenant. {slug} and {port} are
+   * replaced; if the template has no placeholders the two values are appended
+   * as arguments. Executed with cwd = brainRepoRoot.
+   */
+  provisionCmd: string;
+  /** First MCP port considered when allocating a port for a new tenant. */
+  tenantPortBase: number;
+  /** Max POST /registro requests per IP per minute (in-memory). */
+  registroRateLimit: number;
+  /** Max Dynamic Client Registration (/api/auth/mcp/register) requests per IP per minute. */
+  dcrRateLimit: number;
 }
 
 export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -39,6 +59,13 @@ export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
     host: process.env.HOST ?? "127.0.0.1",
     allowSignup: (process.env.ALLOW_SIGNUP ?? "false").toLowerCase() === "true",
     dbPath: process.env.DB_PATH ?? path.join(gatewayRoot, "data", "auth.sqlite"),
+    registrationCode: (process.env.REGISTRATION_CODE ?? "").trim(),
+    brainRepoRoot: path.resolve(gatewayRoot, process.env.BRAIN_REPO_ROOT ?? ".."),
+    provisionCmd:
+      process.env.PROVISION_CMD ?? "bash infra/scripts/provision-tenant.sh {slug} {port}",
+    tenantPortBase: Number(process.env.TENANT_PORT_BASE ?? 9021),
+    registroRateLimit: Number(process.env.REGISTRO_RATE_LIMIT ?? 5),
+    dcrRateLimit: Number(process.env.DCR_RATE_LIMIT ?? 20),
     ...overrides,
   };
 }

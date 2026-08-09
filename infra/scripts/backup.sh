@@ -37,8 +37,19 @@ container_running() {
     && [[ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null || echo false)" == "true" ]]
 }
 
+# Password del usuario 'default' (FALKORDB_PASSWORD del .env raiz). Se pasa
+# via REDISCLI_AUTH (no argv) para no exponerla en `ps`.
+FALKORDB_PASSWORD=""
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  FALKORDB_PASSWORD="$(sed -n 's/^FALKORDB_PASSWORD=//p' "${REPO_ROOT}/.env" | tail -1)"
+fi
+
 redis_cli() {
-  docker exec "${CONTAINER}" redis-cli -p 6379 "$@"
+  if [[ -n "${FALKORDB_PASSWORD}" ]]; then
+    docker exec -e REDISCLI_AUTH="${FALKORDB_PASSWORD}" "${CONTAINER}" redis-cli -p 6379 "$@"
+  else
+    docker exec "${CONTAINER}" redis-cli -p 6379 "$@"
+  fi
 }
 
 if container_running; then
@@ -55,15 +66,22 @@ if container_running; then
     sleep 1
   done
   if [[ "$(redis_cli LASTSAVE | tr -dc '0-9')" -le "${LAST_SAVE}" ]]; then
-    log "ADVERTENCIA: BGSAVE no confirmo termino en 120 s; se respalda igual (AOF cubre lo reciente)"
+    log "ADVERTENCIA: BGSAVE no confirmo termino en 120 s (¿AOF rewrite en curso?); se respalda el ultimo dump.rdb existente — puede faltar lo mas reciente"
   fi
 else
   log "ADVERTENCIA: docker/${CONTAINER} no disponible; se respaldan los archivos en frio"
 fi
 
-log "Empaquetando ${DATA_DIR} -> ${ARCHIVE}"
+log "Empaquetando ${DATA_DIR} -> ${ARCHIVE} (sin appendonlydir)"
 TMP_ARCHIVE="${ARCHIVE}.partial"
-tar -czf "${TMP_ARCHIVE}" -C "$(dirname "${DATA_DIR}")" "$(basename "${DATA_DIR}")"
+# Se EXCLUYE appendonlydir/: un tar en caliente puede capturar el AOF a mitad
+# de un rewrite (manifest + segmentos inconsistentes -> restore corrupto).
+# El snapshot consistente es el dump.rdb que acaba de producir el BGSAVE.
+# Redis 7 arranca bien sin appendonlydir: si el AOF no existe, carga el RDB y
+# crea un AOF nuevo a partir de el (ver seccion "Restaurar" de infra/README.md).
+tar -czf "${TMP_ARCHIVE}" -C "$(dirname "${DATA_DIR}")" \
+  --exclude='*/appendonlydir' --exclude='*/appendonlydir/*' \
+  "$(basename "${DATA_DIR}")"
 mv "${TMP_ARCHIVE}" "${ARCHIVE}"
 log "Respaldo creado: ${ARCHIVE} ($(du -h "${ARCHIVE}" | cut -f1 | tr -d ' '))"
 

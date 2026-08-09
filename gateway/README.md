@@ -54,6 +54,7 @@ Claude (claude.ai / Desktop / móvil)
 | `/api/auth/mcp/authorize` · `token` · `register` | Autorización, tokens y registro dinámico |
 | `/api/auth/*` | Resto de Better Auth (sign-in, sesión, jwks…) |
 | `/login` | Página de inicio de sesión (español) |
+| `/registro` | Registro self-service con código de invitación (español) |
 | `/mcp` | Endpoint MCP protegido (proxy por tenant) |
 | `/health` | Chequeo simple |
 
@@ -68,8 +69,14 @@ Copia `.env.example` a `.env`:
 | `GRAPHITI_MCP_URL` | `http://127.0.0.1:8020/mcp` | Solo semilla del mapeo del **primer** dueño en `create-owner`. `/mcp` jamás lo usa como fallback. |
 | `TENANTS_FILE` | `gateway/tenants.json` | Registro usuario → upstream. |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | Listener local. |
-| `ALLOW_SIGNUP` | `false` | Mantener en `false`: los usuarios se crean por CLI. |
+| `ALLOW_SIGNUP` | `false` | Registro **abierto** (sin código) vía `/api/auth/sign-up/*`. Mantener en `false`. No afecta a `/registro`. |
 | `DB_PATH` | `gateway/data/auth.sqlite` | Base SQLite de Better Auth. |
+| `REGISTRATION_CODE` | — (vacío) | Código de invitación para `/registro`. **Vacío ⇒ registro deshabilitado.** |
+| `BRAIN_REPO_ROOT` | `..` (relativo a `gateway/`) | Raíz del repo (contiene `infra/`). Ahí se escanean `infra/tenants/*.env` y se ejecuta `PROVISION_CMD`. |
+| `PROVISION_CMD` | `bash infra/scripts/provision-tenant.sh {slug} {port}` | Comando de aprovisionamiento (`{slug}`/`{port}` se sustituyen; sin placeholders se agregan como args). |
+| `TENANT_PORT_BASE` | `9021` | Primer puerto MCP considerado al asignar puerto a un tenant nuevo. |
+| `REGISTRO_RATE_LIMIT` | `5` | Máximo de `POST /registro` por IP por minuto. |
+| `DCR_RATE_LIMIT` | `20` | Máximo de registros de cliente OAuth (`/api/auth/mcp/register`, DCR) por IP por minuto. |
 
 ## Puesta en marcha
 
@@ -107,7 +114,8 @@ aislamiento:
   pueden volver al upstream de A, porque el destino se resuelve por token en
   cada petición.
 
-Para invitar a alguien:
+Para invitar a alguien hay dos caminos: el **registro self-service** (abajo) o
+el alta manual por CLI:
 
 ```bash
 # 1. Levanta SU instancia de Graphiti (p. ej. en el puerto 8022, grafo propio)
@@ -117,6 +125,56 @@ npm run add-user -- otra@persona.cl "su-contraseña-larga"
 #    "otra@persona.cl": "http://127.0.0.1:8022/mcp"
 # 4. La persona agrega el conector en su claude.ai con la misma URL /mcp
 ```
+
+## Registro self-service (`/registro`)
+
+Con `REGISTRATION_CODE` definido en `.env`, cualquier persona con el código
+puede crear su cuenta en `https://<túnel>/registro` (correo, contraseña,
+confirmación y código de invitación; validación en el servidor). La página de
+login muestra el enlace «¿No tienes cuenta? Regístrate» solo cuando el código
+está definido. Si `REGISTRATION_CODE` está vacío, `/registro` muestra
+«Registro deshabilitado».
+
+**Interacción con `ALLOW_SIGNUP`**: son independientes.
+
+- `ALLOW_SIGNUP` gobierna el registro **abierto** (sin código) por el endpoint
+  público `/api/auth/sign-up/*`. Déjalo en `false`.
+- `REGISTRATION_CODE` gobierna el registro **con código** en `/registro`, que
+  funciona aunque `ALLOW_SIGNUP=false`: el gateway crea el usuario del lado
+  del servidor tras validar el código. (Internamente Better Auth tiene el
+  sign-up habilitado y el endpoint público se bloquea en la capa HTTP según
+  `ALLOW_SIGNUP`.)
+
+Tras un registro exitoso el gateway **aprovisiona el tenant automáticamente**:
+
+1. Deriva el **slug** de la parte local del correo (minúsculas, `[a-z0-9_-]`;
+   colisiones se resuelven con sufijo numérico: `ana`, `ana-2`, …).
+2. Asigna el **siguiente puerto MCP libre** desde `TENANT_PORT_BASE` (9021)
+   escaneando `infra/tenants/*.env` bajo `BRAIN_REPO_ROOT`.
+3. Ejecuta `PROVISION_CMD` (default
+   `bash infra/scripts/provision-tenant.sh <slug> <puerto>` con
+   `cwd=BRAIN_REPO_ROOT`), que crea `infra/tenants/<slug>.env`, regenera el
+   compose de tenants y las ACL de FalkorDB (recarga en caliente) y levanta
+   **solo** el contenedor `mcp-<slug>` con docker compose (mismo proyecto que
+   el Makefile). El script es idempotente para el mismo slug+puerto.
+4. Escribe el mapeo en `tenants.json`:
+   `correo → http://127.0.0.1:<puerto>/mcp` (escritura atómica).
+
+Los aprovisionamientos concurrentes se **serializan** en proceso (cola +
+reserva de slug/puerto), así dos registros simultáneos nunca comparten puerto.
+
+Si el aprovisionamiento falla, la cuenta queda creada pero **sin tenant**: la
+página pide contactar al administrador, el error completo queda en el log del
+gateway y `/mcp` responde `403` (nunca datos de otra persona). El
+administrador puede terminar a mano: `bash infra/scripts/provision-tenant.sh
+<slug> <puerto>` + mapeo en `tenants.json`.
+
+Al terminar, la página de éxito guía a la persona: agregar el conector
+`https://<BASE_URL>/mcp` en claude.ai (Ajustes → Conectores → Agregar conector
+personalizado) e iniciar sesión la primera vez con el mismo correo y
+contraseña del registro.
+
+Los CLIs `create-owner` y `add-user` siguen funcionando igual.
 
 ## Exponer públicamente
 
@@ -161,8 +219,17 @@ tailscale funnel 8787
 
 - OAuth 2.1: PKCE **obligatorio** (solo S256), tokens de acceso de 1 h,
   refresh tokens de 30 días, registro dinámico de clientes.
-- Registro de usuarios **deshabilitado** (`ALLOW_SIGNUP=false`); altas solo por
-  CLI en la máquina host.
+- Registro abierto **deshabilitado** (`ALLOW_SIGNUP=false`); altas por CLI o
+  por `/registro` con código de invitación.
+- `/registro`: el código se compara en **tiempo constante** y hay **rate limit
+  en memoria** (`REGISTRO_RATE_LIMIT`, 5/min/IP por defecto; usa
+  `X-Forwarded-For`, así que el túnel debe ponerla, como hace cloudflared).
+  Es un límite básico en proceso: se reinicia con el gateway y no sustituye a
+  un rate limit real en el borde si esperas abuso.
+- **Rota `REGISTRATION_CODE`** periódicamente y cuando termines una tanda de
+  invitaciones; déjalo vacío para cerrar el registro (basta reiniciar el
+  gateway con el `.env` actualizado). Trátalo como una contraseña: quien lo
+  tenga puede crear cuentas y contenedores en tu máquina.
 - El gateway escucha solo en `127.0.0.1`; la única puerta es el túnel HTTPS.
 - Los upstreams de Graphiti deben escuchar **solo en localhost** (o red
   interna de Docker): nadie debe poder saltarse el gateway.
@@ -181,4 +248,8 @@ npm test
 Cubren: metadatos OAuth, `401 + WWW-Authenticate` sin token, página de login,
 flujo OAuth completo (registro dinámico → login → authorize PKCE → token),
 enrutamiento multi-tenant a upstreams distintos, `403` para usuario sin
-tenant y rechazo de authorize sin PKCE.
+tenant, rechazo de authorize sin PKCE, y el registro self-service: código
+ausente/incorrecto, registro deshabilitado sin `REGISTRATION_CODE`, registro
+exitoso con aprovisionamiento (stub de `PROVISION_CMD`) + mapeo + flujo OAuth
+completo hasta `/mcp`, colisión de slugs, correo duplicado, bloqueo del
+sign-up público y rate limit.

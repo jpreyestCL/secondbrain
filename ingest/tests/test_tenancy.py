@@ -38,6 +38,31 @@ def test_default_tenant_from_config(brain_home):
     assert load_config(tenant="dora").tenant == "dora"
 
 
+def test_invalid_tenant_names_rejected(brain_home):
+    """Fix 10: tenant names are sanitized (no traversal, no empty/uppercase)."""
+    import pytest
+
+    for bad in ("../x", "a/b", "", "UPPER", "-lead", "_lead", "con espacio", "ñandu"):
+        with pytest.raises(ValueError, match="invalid tenant name"):
+            load_config(tenant=bad) if bad else _load_empty(brain_home)
+
+    # Valid names still work.
+    assert load_config(tenant="tenant-1_ok").tenant == "tenant-1_ok"
+
+
+def _load_empty(brain_home):
+    """Empty tenant set via config.toml (CLI empty string falls back to it)."""
+    cfg_path = brain_home / "config.toml"
+    load_config()  # ensure config exists
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            'tenant = "jpreyest"', 'tenant = ""'
+        ),
+        encoding="utf-8",
+    )
+    return load_config()
+
+
 def test_tenant_credentials_precedence(brain_home, monkeypatch):
     load_config()  # creates config.toml
     for var in (

@@ -71,7 +71,10 @@ export function createTenantRegistry(filePath: string): TenantRegistry {
     },
     setMapping(key, upstreamUrl) {
       const mapping = { ...load(), [key.trim().toLowerCase()]: upstreamUrl };
-      fs.writeFileSync(filePath, JSON.stringify(mapping, null, 2) + "\n");
+      // Escritura atómica: tmp en el mismo directorio + rename.
+      const tmp = `${filePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(mapping, null, 2) + "\n");
+      fs.renameSync(tmp, filePath);
       cachedMtimeMs = -1; // force reload on next resolve
     },
   };

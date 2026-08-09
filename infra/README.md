@@ -72,12 +72,17 @@ a partir de `infra/tenants/*.env`:
 
 - Por cada tenant se crea el usuario `tenant_<nombre>` con password
   `FALKORDB_TENANT_PASSWORD` (del `.env` del tenant) y regla
-  `~<nombre> +@all -@admin -@dangerous +info +client|setinfo`: solo puede
-  tocar la clave/grafo `<nombre>`; nada de FLUSHALL, KEYS, CONFIG, etc.
-  (`+info` y `+client|setinfo` se re-permiten porque el cliente falkordb-py
-  los usa en el handshake y son inofensivos).
-- El usuario `default` queda `on nopass ~* &* +@all` para administracion y
-  backups; es aceptable porque el 6379 solo se publica en loopback.
+  `~<nombre> +@all -@admin -@dangerous +info +client|setinfo -scan -graph.list`:
+  solo puede tocar la clave/grafo `<nombre>`; nada de FLUSHALL, KEYS, CONFIG,
+  etc. (`+info` y `+client|setinfo` se re-permiten porque el cliente
+  falkordb-py los usa en el handshake y son inofensivos; `-scan -graph.list`
+  impide ademas enumerar los NOMBRES de los grafos de otros tenants).
+- El usuario `default` requiere la password `FALKORDB_PASSWORD` del `.env`
+  raiz (obligatoria, generar con `openssl rand -hex 24`). Se usa para
+  administracion, healthcheck y backups; los contenedores de tenants NO la
+  reciben (el generador de compose la anula en su environment), asi que un
+  contenedor comprometido no puede conectarse como `default` por la red
+  compose y leer otros grafos.
 - El compose monta el directorio `infra/falkordb/` en el contenedor y arranca
   redis con `--aclfile`; el generador hace `ACL LOAD` en caliente si el
   contenedor ya corre. `make up` regenera compose de tenants + ACL siempre.
@@ -131,17 +136,19 @@ make up                             # regenera el compose sin ese tenant
 
 Los datos del tenant quedan en el grafo `maria` dentro de FalkorDB; para
 borrarlos definitivamente:
-`docker exec brain-falkordb redis-cli GRAPH.DELETE maria`.
+`docker exec -e REDISCLI_AUTH="$FALKORDB_PASSWORD" brain-falkordb redis-cli GRAPH.DELETE maria`
+(la password `default` sale del `.env` raiz).
 
 ## Respaldos
 
 `infra/scripts/backup.sh` (tambien `make backup`):
 
 1. Ejecuta `BGSAVE` en FalkorDB y espera a que el snapshot termine.
-2. Empaqueta `infra/data/falkordb` (RDB + AOF) en
-   `backups/falkor-YYYYMMDD-HHMMSS.tar.gz`. Los archivos RDB/AOF contienen la
-   instancia completa, es decir **los grafos de todos los tenants** en un solo
-   respaldo.
+2. Empaqueta `infra/data/falkordb` en `backups/falkor-YYYYMMDD-HHMMSS.tar.gz`,
+   **excluyendo `appendonlydir/`**: un tar en caliente puede capturar el AOF a
+   mitad de un rewrite (inconsistente); el snapshot consistente es el
+   `dump.rdb` recien generado por el BGSAVE. El RDB contiene la instancia
+   completa, es decir **los grafos de todos los tenants** en un solo respaldo.
 3. Borra respaldos con mas de 30 dias.
 
 Ademas del RDB, el contenedor corre con **AOF activado**
@@ -171,7 +178,9 @@ make restore BACKUP=backups/falkor-20260809-033000.tar.gz
 
 Detiene el stack, mueve los datos actuales a
 `infra/data/falkordb.pre-restore` (por si acaso), extrae el respaldo y vuelve
-a levantar. **Importante**: como FalkorDB es compartido, el restore repone los
+a levantar. El respaldo trae solo el `dump.rdb` (sin `appendonlydir/`): al
+arrancar, Redis 7 detecta que no hay AOF, carga el RDB y crea un
+`appendonlydir/` nuevo a partir de el. **Importante**: como FalkorDB es compartido, el restore repone los
 grafos de TODOS los tenants al momento del respaldo (no hay restore por
 tenant con este mecanismo).
 
@@ -207,6 +216,11 @@ curl -s http://127.0.0.1:8021/health       # tenant jpreyest
 - Los MCP servers corren **sin autenticacion**: nunca abrir sus puertos hacia
   afuera; la autenticacion y el enrutamiento por tenant los aporta el gateway
   OAuth.
-- `FALKORDB_PASSWORD` es opcional (loopback), pero si se define aplica a
-  FalkorDB y a todos los MCP servers.
+- `FALKORDB_PASSWORD` (del `.env` raiz) es **obligatoria**: es la password del
+  usuario `default` de FalkorDB (admin/healthcheck/backups). Los MCP servers
+  de tenants no la reciben; usan su usuario ACL `tenant_<nombre>`.
+- En el servidor (deploy.sh), Ollama se configura con `OLLAMA_HOST=0.0.0.0`
+  (drop-in systemd) para ser alcanzable desde los contenedores via
+  host-gateway; si ufw esta activo, el puerto 11434 se permite SOLO desde las
+  subredes docker (`172.16.0.0/12`).
 - Telemetria de Graphiti desactivada (`GRAPHITI_TELEMETRY_ENABLED=false`).

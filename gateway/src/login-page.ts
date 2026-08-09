@@ -3,7 +3,15 @@
  * gateway. Tras autenticarse, vuelve a lanzar la petición de autorización
  * OAuth original (los parámetros llegan en la query string).
  */
-export function loginPageHtml(): string {
+export interface LoginPageOptions {
+  /** Muestra el enlace a /registro (solo cuando hay REGISTRATION_CODE). */
+  showRegisterLink?: boolean;
+}
+
+export function loginPageHtml(opts: LoginPageOptions = {}): string {
+  const registerLink = opts.showRegisterLink
+    ? `\n  <p class="alt"><a href="/registro">¿No tienes cuenta? Regístrate</a></p>`
+    : "";
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -23,6 +31,7 @@ export function loginPageHtml(): string {
   button { font: inherit; font-weight: 600; padding: .6rem; border: 0; border-radius: 8px; background: #4f46e5; color: white; cursor: pointer; }
   button:disabled { opacity: .6; cursor: wait; }
   #error { color: #dc2626; font-size: .85rem; min-height: 1.2em; margin: 0; }
+  p.alt { margin: 0; font-size: .85rem; } p.alt a { color: #4f46e5; }
 </style>
 </head>
 <body>
@@ -34,7 +43,7 @@ export function loginPageHtml(): string {
   <label for="password">Contraseña</label>
   <input id="password" name="password" type="password" autocomplete="current-password" required>
   <p id="error"></p>
-  <button type="submit">Entrar</button>
+  <button type="submit">Entrar</button>${registerLink}
 </form>
 <script>
   const form = document.getElementById('f');

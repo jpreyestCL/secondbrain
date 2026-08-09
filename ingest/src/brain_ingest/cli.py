@@ -15,7 +15,7 @@ from rich.logging import RichHandler
 from rich.table import Table
 
 from . import __version__
-from .chunker import chunk_text
+from .chunker import chunk_json, chunk_text
 from .classify import apply_manifest, emit_manifest
 from .config import Config, load_config
 from .extract import ExtractError, SkipFile, extract_file
@@ -88,9 +88,14 @@ def scan(folder: Path = typer.Argument(..., exists=True, file_okay=False, resolv
                 continue
             if any(part in SKIP_DIRS or part.startswith(".") for part in path.parts[:-1]):
                 continue
-            stat = path.stat()
+            try:
+                stat = path.stat()
+                digest = sha256_file(path)
+            except OSError as exc:
+                log.warning("skipping %s (vanished or unreadable): %s", path, exc)
+                continue
             outcome, doc_id = ledger.upsert_file(
-                str(path), sha256_file(path), stat.st_size, stat.st_mtime
+                str(path), digest, stat.st_size, stat.st_mtime
             )
             counts[outcome] += 1
             if outcome != "unchanged":
@@ -189,7 +194,8 @@ def chunk() -> None:
             if not src.exists():
                 log.warning("no extracted content for %s", row.doc_id)
                 continue
-            chunks = chunk_text(
+            chunker = chunk_json if src.suffix == ".json" else chunk_text
+            chunks = chunker(
                 src.read_text(encoding="utf-8", errors="replace"),
                 doc_id=row.doc_id,
                 source_path=row.path,
@@ -211,6 +217,9 @@ def chunk() -> None:
 @app.command("ingest-graph")
 def ingest_graph(
     doc_id: Optional[list[str]] = typer.Option(None, "--doc-id", help="Limit to specific doc_ids"),
+    force: bool = typer.Option(
+        False, "--force", help="Also process superseded/already-ingested doc_ids"
+    ),
 ) -> None:
     """Push chunks of classified docs to Graphiti (FalkorDB) as episodes."""
     from .graph import GraphConfigError, ingest_chunks
@@ -218,13 +227,13 @@ def ingest_graph(
     cfg, ledger = _open()
     try:
         with ledger:
-            counts = asyncio.run(ingest_chunks(cfg, ledger, doc_id or None))
+            counts = asyncio.run(ingest_chunks(cfg, ledger, doc_id or None, force=force))
     except GraphConfigError as exc:
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(2)
     console.print(
         f"ingest-graph done: {counts['docs']} docs, {counts['episodes']} episodes, "
-        f"{counts['errors']} errors"
+        f"{counts['errors']} errors, {counts['skipped']} skipped"
     )
 
 
@@ -238,6 +247,7 @@ def status() -> None:
     with ledger:
         rows = ledger.status_summary()
         pending_exp = len(ledger.pending_expiry_episodes())
+        pending_docs = ledger.docs_pending_expiry()
     table = Table(title=f"brain ledger — {cfg.ledger_path}")
     table.add_column("status")
     table.add_column("superseded")
@@ -250,32 +260,57 @@ def status() -> None:
     console.print(table)
     if pending_exp:
         console.print(
-            f"[yellow]{pending_exp} episodes pending expiry[/yellow] — run "
-            "`brain expire <doc_id>` for superseded docs"
+            f"[yellow]{pending_exp} episodes pending expiry[/yellow] across "
+            f"{len(pending_docs)} docs — run `brain expire --all` (or "
+            "`brain expire <doc_id>`):"
         )
+        for d in pending_docs:
+            console.print(f"  {d}")
 
 
 # -- expire ------------------------------------------------------------------
 
 
 @app.command()
-def expire(doc_id: str = typer.Argument(..., help="doc_id whose episodes to expire")) -> None:
+def expire(
+    doc_id: Optional[str] = typer.Argument(None, help="doc_id whose episodes to expire"),
+    expire_all: bool = typer.Option(
+        False, "--all", help="Expire every doc with pending_expiry episodes"
+    ),
+) -> None:
     """Remove a doc's episodes from Graphiti and mark them expired in the ledger.
 
     graphiti-core supports hard removal (Graphiti.remove_episode); there is no
     soft-invalidate API, so supersession is implemented as removal + ledger
-    audit trail.
+    audit trail. With --all, every doc that has pending_expiry episodes is
+    expired in one batch.
     """
     from .graph import GraphConfigError, expire_doc
+
+    if expire_all == (doc_id is not None):
+        console.print("[red]error:[/red] provide exactly one of DOC_ID or --all")
+        raise typer.Exit(2)
 
     cfg, ledger = _open()
     try:
         with ledger:
-            removed = asyncio.run(expire_doc(cfg, ledger, doc_id))
+            if expire_all:
+                targets = ledger.docs_pending_expiry()
+                if not targets:
+                    console.print("nothing to expire (no pending_expiry episodes)")
+                    return
+                total = 0
+                for d in targets:
+                    removed = asyncio.run(expire_doc(cfg, ledger, d))
+                    console.print(f"expired {removed} episodes for doc {d}")
+                    total += removed
+                console.print(f"expire --all done: {total} episodes across {len(targets)} docs")
+            else:
+                removed = asyncio.run(expire_doc(cfg, ledger, doc_id))
+                console.print(f"expired {removed} episodes for doc {doc_id}")
     except GraphConfigError as exc:
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(2)
-    console.print(f"expired {removed} episodes for doc {doc_id}")
 
 
 @app.command()

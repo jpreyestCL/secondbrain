@@ -1,0 +1,12 @@
+# Dispara brain-backup.service todos los dias a las 03:30 (hora del server).
+# Instalado y habilitado por infra/deploy/deploy.sh.
+[Unit]
+Description=second brain - respaldo diario 03:30
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

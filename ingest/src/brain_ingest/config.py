@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,21 @@ log = logging.getLogger("brain")
 
 DEFAULT_DOMAINS = ["personal", "salud", "finanzas", "trabajo", "proyectos"]
 DEFAULT_TENANT = "jpreyest"
+
+# Tenant names become directory names under BRAIN_HOME and FalkorDB graph
+# names — they must be non-empty and free of path separators / traversal.
+TENANT_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def validate_tenant(tenant: str) -> str:
+    if not TENANT_RE.fullmatch(tenant):
+        raise ValueError(
+            f"invalid tenant name {tenant!r}: must be non-empty, start with a "
+            "lowercase letter or digit, and contain only lowercase letters, "
+            "digits, '-' or '_' (no spaces, uppercase, '/', '..' or other "
+            "path characters)"
+        )
+    return tenant
 
 DEFAULT_CONFIG_TOML = """\
 # brain_ingest configuration
@@ -121,7 +137,7 @@ def load_config(tenant: str | None = None) -> Config:
     cfg = Config(
         home=home,
         archive_dir=Path(data.get("archive_dir", str(home / "archive"))).expanduser(),
-        tenant=tenant or str(data.get("tenant", DEFAULT_TENANT)),
+        tenant=validate_tenant(tenant or str(data.get("tenant", DEFAULT_TENANT))),
         domains=list(data.get("domains", DEFAULT_DOMAINS)),
     )
     for d in (cfg.extracted_dir, cfg.chunks_dir, cfg.work_dir):
