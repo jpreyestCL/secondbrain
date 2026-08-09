@@ -1,0 +1,8 @@
+
+> secondbrain-gateway@1.0.0 start
+> node dist/index.js
+
+[gateway] escuchando en http://127.0.0.1:8787
+[gateway] BASE_URL publica: http://127.0.0.1:8787
+[gateway] registro de tenants: /Users/jpreyest/work/secondbrain/gateway/tenants.json
+[gateway] registro abierto (ALLOW_SIGNUP): false

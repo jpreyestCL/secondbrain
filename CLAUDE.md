@@ -26,6 +26,16 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 6. **`group_id` es SIEMPRE el tenant, jamás el dominio.** El driver de FalkorDB usa el `group_id` como nombre del grafo (un grafo por tenant); el servidor MCP lo fuerza. El dominio (según SCHEMA.md) viaja como metadata: en el `source_description` estructurado (`dominio: <dominio> | tipo: <doc_type> | origen: <descripcion>`) y como prefijo `[<dominio>]` en el nombre del episodio. Los hechos que cambian se invalidan (`invalid_at`), jamás se borran.
 7. Datos médicos y financieros sí se ingestan, pero con flag de sensibilidad (`sensitivity=medical|financial`).
 
+## Advertencias operacionales
+
+- La cola de episodios del MCP server es **en memoria**: no ejecutar `make up`/`make down`
+  ni reiniciar contenedores con episodios en vuelo (se pierden silenciosamente). Verificar
+  antes con `docker logs brain-mcp-<tenant>` que no haya "Processing episode" sin su
+  "Successfully processed". La vía durable para lotes es la CLI `brain` (ledger reanudable).
+- La extracción con qwen3:8b local tarda 1,5–6 min por episodio (es un modelo razonador).
+  Para acelerar: `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` en `.env`, o un modelo
+  no-razonador en `MODEL_NAME`.
+
 ## Flujos habituales
 
 - Guardar un hecho suelto: skill `/guardar`.
