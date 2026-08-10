@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import {
   withMcpAuth,
   oAuthDiscoveryMetadata,
@@ -18,8 +20,15 @@ import {
   registroPageHtml,
   registroExitoHtml,
   registroErrorProvisionHtml,
+  googleSinInvitacionHtml,
 } from "./registro-page.js";
 import { createRateLimiter, clientIpFrom } from "./rate-limit.js";
+import {
+  REGISTRO_COOKIE_NAME,
+  REGISTRO_COOKIE_MAX_AGE,
+  registroOkValue,
+  verifyRegistroOk,
+} from "./registro-token.js";
 
 function safeEquals(a: string, b: string): boolean {
   const ba = Buffer.from(a);
@@ -109,19 +118,93 @@ export function buildApp(
     return next();
   });
 
+  // --- SEGURIDAD: allowlist de redirect_uri (OAuth) ---------------------------
+  // El plugin MCP de Better Auth deja que el CLIENTE decida si hay pantalla de
+  // consentimiento (`requireConsent: query.prompt === "consent"`), así que un
+  // atacante podía: registrar por DCR un cliente con redirect_uri hacia su
+  // dominio, mandarle al dueño un enlace a /authorize y —con la cookie de sesión
+  // viajando por SameSite=Lax— recibir el `code` en su servidor y canjear un
+  // token con acceso total al grafo. Verificado explotable de extremo a extremo.
+  // Defensa: solo se admiten redirect_uri de orígenes conocidos (clientes MCP
+  // legítimos + loopback para desarrollo). PKCE no protege: el atacante ES el
+  // cliente y genera su propio verifier.
+  const isAllowedRedirect = (raw: string | null): boolean => {
+    if (!raw) return true; // el propio Better Auth valida su ausencia
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      return false;
+    }
+    if (u.protocol === "http:" && (u.hostname === "127.0.0.1" || u.hostname === "localhost")) {
+      return true; // MCP Inspector / desarrollo local
+    }
+    if (u.protocol !== "https:") return false;
+    const host = u.hostname.toLowerCase();
+    return config.allowedRedirectHosts.some(
+      (allowed) => host === allowed || host.endsWith("." + allowed),
+    );
+  };
+
+  const rejectRedirect = (c: Context) =>
+    c.json(
+      {
+        error: "invalid_request",
+        error_description:
+          "redirect_uri no permitido. Solo se aceptan clientes MCP autorizados.",
+      },
+      400,
+    );
+
+  app.use("/api/auth/mcp/register", async (c, next) => {
+    if (c.req.method === "POST") {
+      let body: unknown;
+      try {
+        body = await c.req.raw.clone().json();
+      } catch {
+        body = null;
+      }
+      const uris = (body as { redirect_uris?: unknown })?.redirect_uris;
+      if (Array.isArray(uris) && !uris.every((u) => isAllowedRedirect(String(u)))) {
+        console.warn(
+          `[seguridad] DCR rechazado por redirect_uri no permitido: ${JSON.stringify(uris)}`,
+        );
+        return rejectRedirect(c);
+      }
+    }
+    return next();
+  });
+
+  app.use("/api/auth/mcp/authorize", async (c, next) => {
+    const uri = new URL(c.req.url).searchParams.get("redirect_uri");
+    if (!isAllowedRedirect(uri)) {
+      console.warn(`[seguridad] authorize rechazado por redirect_uri no permitido: ${uri}`);
+      return rejectRedirect(c);
+    }
+    return next();
+  });
+
   // --- Better Auth: login, OAuth authorize/token/register (DCR), sessions ---
   app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
   // --- Login page (single owner, Spanish) ---
   const registrationEnabled = () => config.registrationCode.length > 0;
-  app.get("/login", (c) => c.html(loginPageHtml({ showRegisterLink: registrationEnabled() })));
+  // Google es opcional: sin AMBAS credenciales, no hay botón ni proveedor.
+  const googleEnabled = Boolean(config.googleClientId && config.googleClientSecret);
+  const secureCookies = config.baseUrl.startsWith("https://");
+  app.get("/login", (c) =>
+    c.html(loginPageHtml({ showRegisterLink: registrationEnabled(), showGoogle: googleEnabled })),
+  );
   app.get("/", (c) => c.html(landingPageHtml(config.baseUrl)));
   app.get("/health", (c) => c.json({ ok: true }));
 
   // --- Registro self-service con código de invitación (/registro) ---
   app.get("/registro", (c) => {
     const enabled = registrationEnabled();
-    return c.html(registroPageHtml({ enabled }), enabled ? 200 : 403);
+    return c.html(
+      registroPageHtml({ enabled, showGoogle: googleEnabled }),
+      enabled ? 200 : 403,
+    );
   });
 
   // Rate limit en memoria para POST /registro: registroRateLimit req/min/IP.
@@ -178,6 +261,95 @@ export function buildApp(
       console.error(`[registro] fallo aprovisionando tenant para ${email}:`, err);
       return c.html(registroErrorProvisionHtml(email), 500);
     }
+  });
+
+  // --- Validación del código de invitación para el registro vía Google ---
+  // Emite la cookie httpOnly `registro_ok` (HMAC del código) SOLO si el código
+  // es correcto. /post-google exige esta cookie para aprovisionar a un usuario
+  // nuevo autenticado con Google. Reutiliza el mismo rate limit que /registro.
+  app.post("/registro/validar-codigo", async (c) => {
+    const ip = clientIpFrom(c.req.raw.headers);
+    if (!registroLimiter.ok(ip)) {
+      return c.json({ error: "too_many_requests" }, 429);
+    }
+    if (!registrationEnabled()) {
+      return c.json({ error: "registro_deshabilitado" }, 403);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { code?: unknown };
+    const code = String(body.code ?? "");
+    if (!safeEquals(code, config.registrationCode)) {
+      return c.json({ ok: false }, 403);
+    }
+    setCookie(c, REGISTRO_COOKIE_NAME, registroOkValue(config.registrationCode, config.authSecret), {
+      httpOnly: true,
+      sameSite: "Lax",
+      secure: secureCookies,
+      path: "/",
+      maxAge: REGISTRO_COOKIE_MAX_AGE,
+    });
+    return c.json({ ok: true });
+  });
+
+  // --- Post-callback de Google: HACE CUMPLIR el gate de invitación ---
+  // El callback de Better Auth (/api/auth/callback/google) redirige aquí. En
+  // este punto el usuario YA está autenticado (sesión creada). Reglas:
+  //   - Usuario con tenant mapeado  -> login normal (reanuda OAuth si aplica).
+  //   - Usuario sin tenant + cookie `registro_ok` válida -> aprovisiona y mapea
+  //     (mismo flujo serializado que /registro).
+  //   - Usuario sin tenant sin cookie válida -> NO aprovisiona, cierra sesión y
+  //     muestra la página que pide un código de invitación.
+  // Invariante: jamás se crea un mapeo de tenant sin un código de invitación
+  // válido; un usuario sin mapeo sigue recibiendo 403 en /mcp.
+  app.get("/post-google", async (c) => {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (!session?.user) return c.redirect("/login");
+
+    const email = session.user.email;
+    const userId = session.user.id;
+    const resume = c.req.query("resume");
+    // Reanuda el flujo OAuth original (si lo hubo) o muestra "sesión iniciada".
+    const done = () => {
+      if (resume && resume.length > 1) {
+        const qs = resume.startsWith("?") ? resume : `?${resume}`;
+        return c.redirect(`/api/auth/mcp/authorize${qs}`);
+      }
+      return c.html(
+        '<!doctype html><meta charset="utf-8"><p style="font-family:system-ui">' +
+          "Sesión iniciada. Ya puedes cerrar esta pestaña.</p>",
+      );
+    };
+
+    const upstream = tenants.resolveUpstream(userId, email);
+    if (upstream) return done(); // usuario existente: login normal
+
+    // Usuario sin tenant: solo se aprovisiona con cookie de invitación válida.
+    const cookie = getCookie(c, REGISTRO_COOKIE_NAME);
+    if (verifyRegistroOk(cookie, config.registrationCode, config.authSecret)) {
+      try {
+        const result = await provisioner.provision(email);
+        tenants.setMapping(email, result.upstreamUrl);
+        deleteCookie(c, REGISTRO_COOKIE_NAME, { path: "/" });
+        console.log(
+          `[google] tenant listo: ${email} -> ${result.upstreamUrl} (slug=${result.slug})`,
+        );
+        return done();
+      } catch (err) {
+        console.error(`[google] fallo aprovisionando tenant para ${email}:`, err);
+        return c.html(registroErrorProvisionHtml(email), 500);
+      }
+    }
+
+    // Sin cookie válida: NO aprovisionar. Cierra la sesión y explica.
+    console.warn(`[google] sesión sin tenant ni invitación válida: ${email} — cerrando sesión`);
+    const signOut = await auth.api.signOut({ headers: c.req.raw.headers, asResponse: true });
+    const response = new Response(googleSinInvitacionHtml(), {
+      status: 403,
+      headers: { "content-type": "text/html; charset=UTF-8" },
+    });
+    for (const setCookieHeader of signOut.headers.getSetCookie()) {
+      response.headers.append("set-cookie", setCookieHeader);
+    }
+    return response;
   });
 
   // --- Protected MCP endpoint ---

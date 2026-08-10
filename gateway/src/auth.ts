@@ -26,12 +26,28 @@ export function createAuth(config: GatewayConfig, _opts: CreateAuthOptions = {})
   const db = new Database(config.dbPath);
   db.pragma("journal_mode = WAL");
 
+  // Google es OPCIONAL: solo se registra el proveedor social cuando AMBAS
+  // credenciales están presentes. Si falta cualquiera, Google queda deshabilitado
+  // por completo (sin crash, sin proveedor). El callback de Google
+  // (/api/auth/callback/google) redirige a /post-google, la ruta que hace cumplir
+  // el gate de invitación (ver server.ts) — Google NUNCA aprovisiona por su cuenta.
+  const googleEnabled = Boolean(config.googleClientId && config.googleClientSecret);
+  const socialProviders = googleEnabled
+    ? {
+        google: {
+          clientId: config.googleClientId,
+          clientSecret: config.googleClientSecret,
+        },
+      }
+    : undefined;
+
   const auth = betterAuth({
     baseURL: config.baseUrl,
     basePath: "/api/auth",
     secret: config.authSecret,
     database: db,
     trustedOrigins: [config.baseUrl],
+    ...(socialProviders ? { socialProviders } : {}),
     emailAndPassword: {
       enabled: true,
       // El gate del endpoint público vive en server.ts (ver CreateAuthOptions).

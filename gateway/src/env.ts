@@ -44,6 +44,16 @@ export interface GatewayConfig {
   registroRateLimit: number;
   /** Max Dynamic Client Registration (/api/auth/mcp/register) requests per IP per minute. */
   dcrRateLimit: number;
+  /** Hosts cuyos redirect_uri se aceptan en el flujo OAuth (allowlist). */
+  allowedRedirectHosts: string[];
+  /**
+   * Google OAuth client id. Vacío => "Continuar con Google" queda deshabilitado
+   * en todas partes (sin botón, sin proveedor social). Requiere también
+   * googleClientSecret; si falta cualquiera de los dos, Google se desactiva.
+   */
+  googleClientId: string;
+  /** Google OAuth client secret. Ver googleClientId. */
+  googleClientSecret: string;
 }
 
 export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -66,6 +76,17 @@ export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
     tenantPortBase: Number(process.env.TENANT_PORT_BASE ?? 9021),
     registroRateLimit: Number(process.env.REGISTRO_RATE_LIMIT ?? 5),
     dcrRateLimit: Number(process.env.DCR_RATE_LIMIT ?? 20),
+    // Allowlist de destinos OAuth. Por defecto solo los clientes MCP oficiales;
+    // ampliable con ALLOWED_REDIRECT_HOSTS (separados por coma). Sin esto,
+    // cualquiera registra un cliente que apunte a su dominio y roba el token.
+    allowedRedirectHosts: (
+      process.env.ALLOWED_REDIRECT_HOSTS ?? "claude.ai,claude.com,anthropic.com"
+    )
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
+    googleClientId: (process.env.GOOGLE_CLIENT_ID ?? "").trim(),
+    googleClientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
     ...overrides,
   };
 }

@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+UMask=0077
 User=secondbrain
 Group=secondbrain
 Type=simple

@@ -26,6 +26,11 @@ const STYLE = `
   label { font-size: .85rem; font-weight: 600; }
   input { font: inherit; padding: .55rem .7rem; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; }
   button { font: inherit; font-weight: 600; padding: .6rem; border: 0; border-radius: 8px; background: #4f46e5; color: white; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.google { background: transparent; color: inherit; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); }
+  .divider { display: flex; align-items: center; gap: .6rem; color: color-mix(in srgb, CanvasText 45%, transparent); font-size: .8rem; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, CanvasText 15%, transparent); }
+  .hint { font-size: .78rem; opacity: .65; margin: 0; }
   .error { color: #dc2626; font-size: .85rem; min-height: 1.2em; margin: 0; }
   ol { margin: 0; padding-left: 1.2rem; display: grid; gap: .5rem; font-size: .9rem; }
   code { background: color-mix(in srgb, CanvasText 8%, transparent); padding: .1rem .35rem; border-radius: 6px; font-size: .85em; word-break: break-all; }
@@ -56,6 +61,8 @@ export interface RegistroPageOptions {
   error?: string;
   /** Valor de email para repoblar el formulario. */
   email?: string;
+  /** Muestra "Continuar con Google" (solo cuando Google está configurado). */
+  showGoogle?: boolean;
 }
 
 export function registroPageHtml(opts: RegistroPageOptions): string {
@@ -72,6 +79,43 @@ export function registroPageHtml(opts: RegistroPageOptions): string {
   }
   const error = opts.error ? escapeHtml(opts.error) : "";
   const email = opts.email ? escapeHtml(opts.email) : "";
+  const googleBlock = opts.showGoogle
+    ? `
+  <div class="divider"><span>o</span></div>
+  <button type="button" id="google" class="google" disabled>Continuar con Google</button>
+  <p class="hint" id="ghint">Primero ingresa un código de invitación válido para habilitar Google.</p>
+  <p class="error" id="gerror"></p>`
+    : "";
+  const googleScript = opts.showGoogle
+    ? `
+<script>
+(function(){
+  var code = document.getElementById('code');
+  var gbtn = document.getElementById('google');
+  var gerr = document.getElementById('gerror');
+  function sync(){ gbtn.disabled = code.value.trim().length === 0; }
+  code.addEventListener('input', sync); sync();
+  gbtn.addEventListener('click', async function(){
+    gerr.textContent = '';
+    gbtn.disabled = true;
+    try {
+      var r = await fetch('/registro/validar-codigo', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+        body: JSON.stringify({ code: code.value.trim() }),
+      });
+      if (!r.ok) { gerr.textContent = 'Código de invitación incorrecto.'; sync(); return; }
+      var res = await fetch('/api/auth/sign-in/social', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+        body: JSON.stringify({ provider: 'google', callbackURL: '/post-google', errorCallbackURL: '/login' }),
+      });
+      var data = await res.json().catch(function(){ return {}; });
+      if (data && data.url) { window.location.href = data.url; return; }
+      gerr.textContent = 'No se pudo iniciar sesión con Google.'; sync();
+    } catch (e) { gerr.textContent = 'Error de red. Inténtalo de nuevo.'; sync(); }
+  });
+})();
+</script>`
+    : "";
   return page(
     "Second Brain — Crear cuenta",
     `<form method="post" action="/registro">
@@ -86,9 +130,30 @@ export function registroPageHtml(opts: RegistroPageOptions): string {
   <label for="code">Código de invitación</label>
   <input id="code" name="code" type="text" autocomplete="one-time-code" required>
   <p class="error">${error}</p>
-  <button type="submit">Registrarme</button>
+  <button type="submit">Registrarme</button>${googleBlock}
   <p><a href="/login">¿Ya tienes cuenta? Inicia sesión</a></p>
-</form>`,
+  <p><a href="/">← Volver al inicio</a></p>
+</form>${googleScript}`,
+  );
+}
+
+/**
+ * Página mostrada cuando alguien inicia sesión con Google pero su correo no
+ * tiene tenant asignado y no presentó un código de invitación válido. La sesión
+ * ya fue cerrada por el servidor; aquí solo se explica y se enlaza a /registro.
+ */
+export function googleSinInvitacionHtml(): string {
+  return page(
+    "Second Brain — Necesitas una invitación",
+    `<main>
+  <h1>Necesitas un código de invitación</h1>
+  <p>Iniciaste sesión con Google, pero tu cuenta todavía no tiene un espacio de
+  memoria asignado y el acceso a Second Brain es <strong>solo por invitación</strong>.</p>
+  <p>Por seguridad cerramos la sesión. Para entrar con Google, primero valida tu
+  código de invitación en la página de registro y vuelve a intentarlo.</p>
+  <p><a href="/registro">Ir a registro con código de invitación</a></p>
+  <p><a href="/">← Volver al inicio</a></p>
+</main>`,
   );
 }
 

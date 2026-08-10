@@ -356,7 +356,8 @@ export function landingPageHtml(baseUrl: string): string {
     <div class="card">
       <h3>¿Todavía no tienes cuenta?</h3>
       <p>El acceso es por invitación: necesitas un código para crear tu espacio. Si ya lo
-        tienes, regístrate y en el mismo momento se crea tu grafo privado.</p>
+        tienes, regístrate y en el mismo momento se crea tu grafo privado. Si ya tienes
+        cuenta, puedes entrar con Google.</p>
       <div class="cta-row" style="margin-top:.4rem">
         <a class="btn" href="/registro">Crear cuenta</a>
         <a class="btn ghost" href="/login">Ya tengo cuenta</a>

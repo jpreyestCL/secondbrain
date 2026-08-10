@@ -55,6 +55,9 @@ Claude (claude.ai / Desktop / móvil)
 | `/api/auth/*` | Resto de Better Auth (sign-in, sesión, jwks…) |
 | `/login` | Página de inicio de sesión (español) |
 | `/registro` | Registro self-service con código de invitación (español) |
+| `/registro/validar-codigo` | Valida el código y emite la cookie `registro_ok` (registro vía Google) |
+| `/post-google` | Post-callback de Google: hace cumplir el gate de invitación (ver «Habilitar Google») |
+| `/api/auth/callback/google` | Callback OAuth de Google (Better Auth); redirige a `/post-google` |
 | `/mcp` | Endpoint MCP protegido (proxy por tenant) |
 | `/health` | Chequeo simple |
 
@@ -77,6 +80,8 @@ Copia `.env.example` a `.env`:
 | `TENANT_PORT_BASE` | `9021` | Primer puerto MCP considerado al asignar puerto a un tenant nuevo. |
 | `REGISTRO_RATE_LIMIT` | `5` | Máximo de `POST /registro` por IP por minuto. |
 | `DCR_RATE_LIMIT` | `20` | Máximo de registros de cliente OAuth (`/api/auth/mcp/register`, DCR) por IP por minuto. |
+| `GOOGLE_CLIENT_ID` | — (vacío) | Client ID de Google OAuth. **Vacío ⇒ Google deshabilitado.** Ver «Habilitar Google». |
+| `GOOGLE_CLIENT_SECRET` | — (vacío) | Client secret de Google OAuth. Requiere también `GOOGLE_CLIENT_ID`. |
 
 ## Puesta en marcha
 
@@ -176,6 +181,67 @@ contraseña del registro.
 
 Los CLIs `create-owner` y `add-user` siguen funcionando igual.
 
+## Habilitar Google ("Continuar con Google")
+
+Google es **opcional** y respeta el gate de invitación: **nunca** crea un tenant
+sin un código válido. Si `GOOGLE_CLIENT_ID` o `GOOGLE_CLIENT_SECRET` faltan, el
+proveedor social no se registra y el botón no se muestra en ninguna página (sin
+crash).
+
+### 1. Crear el OAuth 2.0 Client ID en Google Cloud Console
+
+1. Entra a <https://console.cloud.google.com/> y selecciona (o crea) un proyecto.
+2. **APIs & Services → OAuth consent screen**: configúralo (tipo *External*),
+   agrega tu correo de soporte y publica/añade usuarios de prueba según necesites.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+4. **Application type: `Web application`**.
+5. En **Authorized redirect URIs** agrega **exactamente** la URL de callback del
+   gateway (esquema + host + `/api/auth/callback/google`), que se deriva de
+   `BASE_URL`. Para producción en `https://mybrain.rlz.cl`:
+
+   ```
+   https://mybrain.rlz.cl/api/auth/callback/google
+   ```
+
+   Si usas un túnel de prueba con URL aleatoria, registra la URL de ese túnel con
+   el mismo sufijo `/api/auth/callback/google` (y reajústala si cambia). Para
+   desarrollo local también puedes añadir
+   `http://127.0.0.1:8787/api/auth/callback/google`.
+6. Crea el cliente y copia el **Client ID** y el **Client secret**.
+
+### 2. Configurar el gateway
+
+En `gateway/.env`:
+
+```bash
+GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=yyyyyyyy
+```
+
+Reinicia el gateway (`npm run dev` o `npm run build && npm start`). El botón
+«Continuar con Google» aparecerá en `/login` y `/registro`.
+
+### 3. Cómo se preserva el gate de invitación con Google
+
+- **Usuario existente** (ya en `tenants.json`) que entra con Google → inicia
+  sesión normal.
+- **Usuario nuevo con Google**: el flujo obliga a validar primero el código de
+  invitación. En `/registro` el botón de Google está deshabilitado hasta que se
+  ingresa un código; al validarlo (`POST /registro/validar-codigo`, comparación
+  en tiempo constante) se emite una cookie httpOnly de vida corta
+  (`registro_ok`, 10 min, valor = HMAC del código con `AUTH_SECRET`).
+- Tras el callback de Google, el gateway redirige a `/post-google`, que:
+  - si el usuario ya tiene tenant → login normal;
+  - si no tiene tenant **y** la cookie `registro_ok` es válida → aprovisiona el
+    tenant (mismo flujo serializado que `/registro`) y lo mapea;
+  - si no tiene tenant **y no** hay cookie válida → **no aprovisiona**, cierra la
+    sesión y muestra una página en español pidiendo un código de invitación.
+- **Invariante**: jamás se crea un mapeo de tenant sin un código válido; un
+  usuario sin mapeo sigue recibiendo `403` en `/mcp`.
+
+Si rotas `REGISTRATION_CODE`, las cookies `registro_ok` emitidas con el código
+anterior dejan de validar automáticamente (el HMAC deja de coincidir).
+
 ## Exponer públicamente
 
 claude.ai necesita alcanzar el gateway por HTTPS. Recomendado: **cloudflared**.
@@ -252,4 +318,9 @@ tenant, rechazo de authorize sin PKCE, y el registro self-service: código
 ausente/incorrecto, registro deshabilitado sin `REGISTRATION_CODE`, registro
 exitoso con aprovisionamiento (stub de `PROVISION_CMD`) + mapeo + flujo OAuth
 completo hasta `/mcp`, colisión de slugs, correo duplicado, bloqueo del
-sign-up público y rate limit.
+sign-up público y rate limit. Además, «Continuar con Google»: botón ausente y
+proveedor no cableado cuando faltan las credenciales (callback seguro), botón
+presente y proveedor cableado con credenciales, y el invariante del gate de
+invitación (usuario de Google sin cookie `registro_ok` válida ⇒ no se aprovisiona
+y se cierra la sesión; con cookie válida ⇒ se aprovisiona y mapea), sin llamadas
+de red reales a Google.

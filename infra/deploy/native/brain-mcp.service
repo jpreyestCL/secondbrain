@@ -5,6 +5,7 @@ Wants=network-online.target
 Requires=brain-falkordb.service
 
 [Service]
+UMask=0077
 User=secondbrain
 Group=secondbrain
 Type=simple

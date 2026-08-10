@@ -32,10 +32,10 @@ Hay una instancia corriendo en **`https://mybrain.rlz.cl`**. Para usarla:
 3. Se abre el login por OAuth; inicias sesión con tu cuenta y ya tienes tu second brain
    disponible en cualquier conversación.
 
-> **Cuentas:** el registro es por invitación (`https://mybrain.rlz.cl/registro` con
-> código). Si quieres una cuenta en la instancia pública, pídesela al administrador.
-> ¿Prefieres control total? **Auto-hospeda** el proyecto (ver abajo) — está pensado para
-> eso.
+> **Cuentas:** el auto-registro está **cerrado** por ahora en la instancia pública
+> (el aprovisionamiento automático de tenants todavía no está habilitado en ese
+> despliegue). Si quieres una cuenta, pídesela al administrador. ¿Prefieres control
+> total? **Auto-hospeda** el proyecto (ver abajo) — está pensado para eso.
 
 ### Cómo se usa (una vez conectado)
 
@@ -114,9 +114,21 @@ gpt-4o-mini/nano**, o **Ollama** local con un modelo no-razonador como `qwen2.5:
 
 ```bash
 git clone https://github.com/jpreyestCL/secondbrain && cd secondbrain
-cp .env.example .env            # define tu proveedor LLM + embeddings
-make up                          # FalkorDB + MCP del primer tenant
-cd gateway && npm ci && npm run build
+
+# 1) Config raíz: proveedor LLM + embeddings y password admin de FalkorDB
+cp .env.example .env
+sed -i '' "s/^FALKORDB_PASSWORD=.*/FALKORDB_PASSWORD=$(openssl rand -hex 24)/" .env
+#   edita MODEL_NAME / OPENAI_API_KEY / OPENAI_API_URL / EMBEDDER_* según tu proveedor
+
+# 2) Crea tu tenant y levanta FalkorDB + su MCP
+make add-tenant NAME=tunombre PORT=9021
+make up
+
+# 3) Gateway OAuth
+cd gateway && cp .env.example .env
+#   define AUTH_SECRET (openssl rand -hex 32) y
+#   GRAPHITI_MCP_URL=http://127.0.0.1:9021/mcp
+npm ci && npm run build
 npm run create-owner -- tu@email.com 'tu-password'
 npm start                        # gateway OAuth en :8787
 ```
@@ -151,8 +163,15 @@ Todo por variables de entorno (`.env.example` documentado):
 
 - OAuth 2.1 con PKCE + registro dinámico de clientes; rate-limiting; headers de seguridad.
 - Secretos nunca en el repo (`.env`, claves, ACLs y credenciales están en `.gitignore`).
-- Redacción automática de contraseñas/tokens/tarjetas antes de escribir al grafo.
-- Datos médicos/financieros se guardan con flag de sensibilidad.
+- **Redacción de credenciales server-side**: contraseñas, tokens y claves de API se
+  detectan y reemplazan por `[CREDENCIAL-REDACTADA]` en el servidor MCP antes de
+  escribir al grafo (no depende de que el modelo obedezca la instrucción). El
+  pipeline CLI aplica además su propio filtro por regex, con detección de tarjetas
+  (Luhn) y registro de flags de sensibilidad en su ledger local.
+- **Solo hechos vigentes por defecto**: las consultas filtran los hechos invalidados;
+  para la historia se pide explícitamente (`only_current=false`).
+- OAuth restringido: `redirect_uri` limitado a clientes MCP conocidos (allowlist).
+- El servicio corre con usuario dedicado sin shell y acceso local restringido por uid.
 
 ## Licencia
 

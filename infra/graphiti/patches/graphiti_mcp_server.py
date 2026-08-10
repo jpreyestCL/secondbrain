@@ -150,10 +150,11 @@ guardarlo o ingerirlo:
 Reporta al final un resumen: qué documento, dominio, fecha y cuántas secciones guardaste.
 
 ## Cómo CONSULTAR
-- Estado actual (p.ej. "¿cuál es mi cuenta?"): usa search_memory_facts / search_nodes;
-  por defecto responde con los hechos VIGENTES (no invalidados).
-- Historia ("¿qué tenía antes?", "dame el historial"): incluye también hechos con
-  invalid_at y los episodios (get_episodes) para reconstruir la línea de tiempo.
+- Estado actual (p.ej. "¿cuál es mi cuenta?"): usa search_memory_facts, que por
+  defecto (only_current=True) devuelve SOLO hechos vigentes.
+- Historia ("¿qué tenía antes?", "dame el historial"): llama search_memory_facts con
+  only_current=False para incluir los hechos invalidados, y/o get_episodes; cada hecho
+  trae valid_at / invalid_at para reconstruir la línea de tiempo.
 - Cita la fecha de vigencia cuando sea relevante. Reformula la búsqueda si no encuentras.
 
 ## Notas
@@ -340,6 +341,36 @@ class GraphitiService:
         return self.client
 
 
+# PATCH (secondbrain): redaccion server-side de credenciales. Patrones alineados
+# con ingest/src/brain_ingest/redact.py.
+import re as _re
+
+_REDACTED = '[CREDENCIAL-REDACTADA]'
+_SECRET_PATTERNS = [
+    _re.compile(r'([A-Za-z0-9_.\-]*(?:password|passwd|pwd|contrase[nñ]a|clave|secret|token|api[_-]?key)[A-Za-z0-9_.\-]*\s*[:=]\s*)(\S+)', _re.I),
+    _re.compile(r'\b([A-Za-z][A-Za-z0-9+.\-]*://[^/\s:@]*:)([^@\s]+)(@)'),
+    _re.compile(r'\b(sk-[A-Za-z0-9]{16,}|nvapi-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16})\b'),
+    _re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----', _re.S),
+]
+
+
+def _redact_secrets(text: str):
+    """Devuelve (texto_redactado, cantidad_de_secretos)."""
+    if not text:
+        return text, 0
+    count = 0
+    out = text
+    for i, pat in enumerate(_SECRET_PATTERNS):
+        if i == 0:
+            out, n = pat.subn(lambda m: m.group(1) + _REDACTED, out)
+        elif i == 1:
+            out, n = pat.subn(lambda m: m.group(1) + _REDACTED + m.group(3), out)
+        else:
+            out, n = pat.subn(_REDACTED, out)
+        count += n
+    return out, count
+
+
 # PATCH (secondbrain): aislamiento multi-tenant.
 # Esta instancia MCP sirve a UN solo tenant (config.graphiti.group_id). El nombre
 # del grafo en FalkorDB es el group_id, por lo que aceptar group_ids arbitrarios
@@ -451,6 +482,30 @@ async def add_memory(
             # silencio). Asumir UTC si no viene offset.
             if parsed_reference_time.tzinfo is None:
                 parsed_reference_time = parsed_reference_time.replace(tzinfo=_tz.utc)
+            # Rango sano: una fecha absurda (año 24 o 2190) contamina el modelo
+            # bi-temporal de forma permanente (los episodios solo se borran).
+            from datetime import timedelta as _td
+
+            _now = _dt.now(_tz.utc)
+            if not (
+                _dt(1900, 1, 1, tzinfo=_tz.utc) <= parsed_reference_time <= _now + _td(days=366)
+            ):
+                return ErrorResponse(
+                    error=(
+                        f"reference_time '{reference_time}' fuera de rango "
+                        '(se admite entre 1900 y un año en el futuro)'
+                    )
+                )
+
+        # PATCH (secondbrain): redactar credenciales ANTES de encolar el episodio.
+        # El prompt le pide a Claude que redacte, pero eso es best-effort; esto es
+        # la garantia real de que un secreto no queda escrito en el grafo.
+        episode_body, _n_secrets = _redact_secrets(episode_body)
+        if _n_secrets:
+            logger.warning(
+                f'PATCH: {_n_secrets} credencial(es) redactada(s) en el episodio "{name}"'
+            )
+            source_description = (source_description or '') + ' | credenciales redactadas'
 
         # Submit to queue service for async processing
         await queue_service.add_episode(
@@ -553,6 +608,7 @@ async def search_memory_facts(
     group_ids: list[str] | None = None,
     max_facts: int = 10,
     center_node_uuid: str | None = None,
+    only_current: bool = True,
 ) -> FactSearchResponse | ErrorResponse:
     """Search the graph memory for relevant facts.
 
@@ -561,6 +617,10 @@ async def search_memory_facts(
         group_ids: Optional list of group IDs to filter results
         max_facts: Maximum number of facts to return (default: 10)
         center_node_uuid: Optional UUID of a node to center the search around
+        only_current: If True (default) only facts that are still valid are returned
+                      (invalid_at IS NULL). Set to False to include superseded facts
+                      when the user asks for history — each fact carries valid_at /
+                      invalid_at so you can build the timeline.
     """
     global graphiti_service
 
@@ -577,11 +637,27 @@ async def search_memory_facts(
         # PATCH (secondbrain): esta instancia solo ve el grafo de su tenant.
         effective_group_ids = _force_tenant_group_ids(group_ids)
 
+        # PATCH (secondbrain): por defecto devolver SOLO hechos vigentes. Sin este
+        # filtro, un hecho superseded (p.ej. la cuenta bancaria anterior) vuelve
+        # mezclado con el vigente y el cliente puede responder el dato obsoleto.
+        search_kwargs = {}
+        if only_current:
+            from graphiti_core.search.search_filters import (
+                ComparisonOperator,
+                DateFilter,
+                SearchFilters,
+            )
+
+            search_kwargs['search_filter'] = SearchFilters(
+                invalid_at=[[DateFilter(comparison_operator=ComparisonOperator.is_null)]]
+            )
+
         relevant_edges = await client.search(
             group_ids=effective_group_ids,
             query=query,
             num_results=max_facts,
             center_node_uuid=center_node_uuid,
+            **search_kwargs,
         )
 
         if not relevant_edges:
