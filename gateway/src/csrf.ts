@@ -8,28 +8,34 @@
  *     moderno SIEMPRE manda Origin en POST, así que un formulario alojado en
  *     otro dominio se rechaza aunque la cookie viaje (SameSite=Lax no protege
  *     los POST top-level en todos los navegadores/versiones).
- *  2. Token: HMAC-SHA256(idDeSesión, AUTH_SECRET) incrustado en el formulario.
+ *  2. Token: HMAC-SHA256(idDeUsuario, AUTH_SECRET) incrustado en el formulario.
  *     Un atacante no puede leerlo (no puede leer la respuesta cross-origin) ni
- *     calcularlo (no conoce AUTH_SECRET ni el id de sesión).
+ *     calcularlo (no conoce AUTH_SECRET).
+ *
+ * Se liga al USUARIO y no a la sesión a proposito: la sesión cambia al volver a
+ * entrar (por ejemplo con Google en otra pestaña) y eso invalidaba el token de
+ * cualquier pagina ya abierta, con un "Token CSRF inválido" que el usuario no
+ * podia entender ni evitar. La proteccion no se debilita: el token sigue siendo
+ * inadivinable y ademas se exige mismo origen.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const CSRF_FIELD = "csrf";
 
-/** Token CSRF ligado a la sesión actual. */
-export function csrfToken(sessionId: string, secret: string): string {
-  return createHmac("sha256", secret).update(`csrf:${sessionId}`).digest("hex");
+/** Token CSRF ligado al usuario (estable entre sesiones). */
+export function csrfToken(userId: string, secret: string): string {
+  return createHmac("sha256", secret).update(`csrf:${userId}`).digest("hex");
 }
 
 /** Verifica el token en tiempo constante. */
 export function verifyCsrfToken(
   token: unknown,
-  sessionId: string,
+  userId: string,
   secret: string,
 ): boolean {
   if (typeof token !== "string" || token.length === 0) return false;
   const a = Buffer.from(token);
-  const b = Buffer.from(csrfToken(sessionId, secret));
+  const b = Buffer.from(csrfToken(userId, secret));
   return a.length === b.length && timingSafeEqual(a, b);
 }
 

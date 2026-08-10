@@ -342,7 +342,7 @@ export function buildApp(
         redirectOrigin: originOfUri(redirectUri),
         userEmail: session.user.email,
         scopes,
-        csrf: csrfToken(session.session.id, config.authSecret),
+        csrf: csrfToken(session.user.id, config.authSecret),
         params,
       }),
     );
@@ -357,8 +357,15 @@ export function buildApp(
     if (!session?.user) return c.redirect("/login", 302);
 
     const body = await c.req.parseBody();
-    if (!verifyCsrfToken(body[CSRF_FIELD], session.session.id, config.authSecret)) {
-      return c.text("Token CSRF inválido. Vuelve a intentarlo.", 403);
+    if (!verifyCsrfToken(body[CSRF_FIELD], session.user.id, config.authSecret)) {
+      return c.html(
+        errorHtml(
+          "La página había caducado",
+          "Por seguridad verificamos que la acción venga de una pestaña actualizada. " +
+            "Vuelve a tu cuenta y repite la acción.",
+        ),
+        403,
+      );
     }
 
     const params: Record<string, string> = {};
@@ -621,7 +628,7 @@ export function buildApp(
     return session?.user
       ? {
           email: session.user.email,
-          csrf: csrfToken(session.session.id, config.authSecret),
+          csrf: csrfToken(session.user.id, config.authSecret),
         }
       : null;
   };
@@ -840,6 +847,21 @@ export function buildApp(
   };
 
   /** Clientes OAuth que este usuario autorizó (consentimiento o token vivo). */
+  // Página de error simple pero presentable: estos fallos los ve una persona en
+  // su navegador, no un cliente de API.
+  const errorHtml = (titulo: string, detalle: string, volverA = "/cuenta") =>
+    `<!doctype html><html lang="es"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<title>${titulo} — Second Brain</title><style>` +
+    `:root{color-scheme:light dark}body{font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;` +
+    `display:grid;place-items:center;min-height:100vh;margin:0;background:Canvas;color:CanvasText;line-height:1.55}` +
+    `.card{width:min(28rem,calc(100vw - 2rem));border:1px solid color-mix(in oklab,CanvasText 15%,transparent);` +
+    `border-radius:12px;padding:1.75rem;background:color-mix(in oklab,Canvas 92%,CanvasText 8%)}` +
+    `h1{margin:0 0 .5rem;font-size:1.2rem}p{margin:0 0 1rem;color:color-mix(in oklab,CanvasText 70%,transparent)}` +
+    `a{display:inline-block;padding:.55rem .95rem;border-radius:8px;background:#4f46e5;color:#fff;` +
+    `text-decoration:none;font-size:.95rem}</style></head><body><main class="card">` +
+    `<h1>${titulo}</h1><p>${detalle}</p><a href="${volverA}">Volver</a></main></body></html>`;
+
   const clientsOf = async (userId: string): Promise<CuentaClientView[]> => {
     const adapter = await adapterOf();
     const consents = await adapter.findMany<{
@@ -909,7 +931,7 @@ export function buildApp(
         upstream: tenants.resolveUpstream(session.user.id, session.user.email),
         sessions,
         clients: await clientsOf(session.user.id),
-        csrf: csrfToken(session.session.id, config.authSecret),
+        csrf: csrfToken(session.user.id, config.authSecret),
         notice,
       }),
     );
@@ -944,7 +966,7 @@ export function buildApp(
         session: session
           ? {
               email: session.user.email,
-              csrf: csrfToken(session.session.id, config.authSecret),
+              csrf: csrfToken(session.user.id, config.authSecret),
             }
           : null,
       }),
@@ -959,8 +981,17 @@ export function buildApp(
     const session = await requireSession(c);
     if (!session) return { error: c.redirect("/login", 302) } as const;
     const body = await c.req.parseBody();
-    if (!verifyCsrfToken(body[CSRF_FIELD], session.session.id, config.authSecret)) {
-      return { error: c.text("Token CSRF inválido. Vuelve a intentarlo.", 403) } as const;
+    if (!verifyCsrfToken(body[CSRF_FIELD], session.user.id, config.authSecret)) {
+      return {
+        error: c.html(
+          errorHtml(
+            "La página había caducado",
+            "Por seguridad verificamos que la acción venga de una pestaña actualizada. " +
+              "Vuelve a tu cuenta y repite la acción.",
+          ),
+          403,
+        ),
+      } as const;
     }
     return { session, body } as const;
   };
