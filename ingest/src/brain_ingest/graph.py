@@ -148,19 +148,26 @@ def build_graphiti(tenant: str):
     # Config espejo del MCP server (infra/graphiti/config.yaml): el LLM y el
     # embedder se configuran POR SEPARADO, para permitir LLM=DeepSeek (que no
     # ofrece embeddings) + embeddings=Ollama. Variables (mismas del .env raiz):
-    #   LLM       -> OPENAI_API_KEY, OPENAI_API_URL, MODEL_NAME
-    #   Embedder  -> EMBEDDER_API_URL (o OPENAI_API_URL), EMBEDDER_MODEL,
-    #                EMBEDDER_DIMENSIONS
+    #   LLM       -> LLM_API_KEY (o OPENAI_API_KEY), LLM_API_URL (u
+    #                OPENAI_API_URL), LLM_MODEL (o MODEL_NAME)
+    #   Embedder  -> EMBEDDER_API_KEY (o OPENAI_API_KEY), EMBEDDER_API_URL
+    #                (o OPENAI_API_URL), EMBEDDER_MODEL, EMBEDDER_DIMENSIONS
+    # Las claves van SEPARADAS (igual que en infra/graphiti/config.yaml) porque
+    # el caso real es chat en OpenAI (gpt-4o-mini) + embeddings en NVIDIA
+    # (nv-embed-v1, 4096 dims): con una sola clave compartida, el proveedor de
+    # embeddings recibe la clave del otro y devuelve 401.
     # Compat: si solo hay OLLAMA_BASE_URL, se usa para ambos.
     ollama_url = os.environ.get("OLLAMA_BASE_URL")
     openai_key = os.environ.get("OPENAI_API_KEY")
-    llm_url = os.environ.get("OPENAI_API_URL") or ollama_url
-    embed_url = os.environ.get("EMBEDDER_API_URL") or llm_url
+    llm_key = os.environ.get("LLM_API_KEY") or openai_key
+    embed_key = os.environ.get("EMBEDDER_API_KEY") or openai_key
+    llm_url = os.environ.get("LLM_API_URL") or os.environ.get("OPENAI_API_URL") or ollama_url
+    embed_url = os.environ.get("EMBEDDER_API_URL") or os.environ.get("OPENAI_API_URL") or ollama_url
 
-    if not openai_key and not ollama_url:
+    if not (llm_key or embed_key) and not ollama_url:
         raise GraphConfigError(
-            "No embedder/LLM configured: set OPENAI_API_KEY (+ OPENAI_API_URL) "
-            "or OLLAMA_BASE_URL."
+            "No embedder/LLM configured: set OPENAI_API_KEY (o LLM_API_KEY / "
+            "EMBEDDER_API_KEY) + su *_API_URL, o bien OLLAMA_BASE_URL."
         )
 
     from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
@@ -169,7 +176,8 @@ def build_graphiti(tenant: str):
     from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
     model = (
-        os.environ.get("MODEL_NAME")
+        os.environ.get("LLM_MODEL")
+        or os.environ.get("MODEL_NAME")
         or os.environ.get("OLLAMA_LLM_MODEL")
         or "gpt-4o-mini"
     )
@@ -180,7 +188,7 @@ def build_graphiti(tenant: str):
     # explícitamente: dejar llm_client=None hacía que graphiti creara su propio
     # cliente por defecto e IGNORARA MODEL_NAME silenciosamente.
     llm_config = LLMConfig(
-        api_key=_api_key_for(llm_url, openai_key),
+        api_key=_api_key_for(llm_url, llm_key),
         model=model,
         small_model=model,
         base_url=llm_url,
@@ -198,7 +206,7 @@ def build_graphiti(tenant: str):
     # Embedder: endpoint propio (mxbai-embed-large en Ollama = 1024 dims). Debe
     # coincidir con el del server o la búsqueda semántica se corrompe.
     _embed_kwargs = dict(
-        api_key=_api_key_for(embed_url, openai_key),
+        api_key=_api_key_for(embed_url, embed_key),
         embedding_model=os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small"),
         base_url=embed_url,
     )

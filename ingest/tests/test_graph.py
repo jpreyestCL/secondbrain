@@ -208,6 +208,7 @@ def test_build_graphiti_splits_llm_deepseek_and_embedder_ollama(monkeypatch):
     """LLM=DeepSeek (generic client) + embedder=Ollama/mxbai 1024 dims, como el server."""
     import brain_ingest.graph as graph_mod
 
+    _clear_llm_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-deepseek")
     monkeypatch.setenv("OPENAI_API_URL", "https://api.deepseek.com/v1")
     monkeypatch.setenv("MODEL_NAME", "deepseek-chat")
@@ -267,6 +268,13 @@ def _clear_llm_env(monkeypatch):
     for var in (
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
+        # Variables por proveedor (espejo de infra/graphiti/config.yaml). Si no
+        # se limpian aqui, el .env real del desarrollador se filtra a los tests
+        # y estos pasan o fallan segun la maquina.
+        "LLM_API_KEY",
+        "LLM_API_URL",
+        "LLM_MODEL",
+        "EMBEDDER_API_KEY",
         "EMBEDDER_API_URL",
         "EMBEDDER_MODEL",
         "EMBEDDER_DIMENSIONS",
