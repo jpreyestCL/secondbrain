@@ -61,6 +61,75 @@ def test_xlsx_to_structured_json(tmp_path):
     assert data["sheets"][0]["rows"] == [["a", "1"]]
 
 
+def test_xls_html_disfrazado(tmp_path):
+    """La cartola del banco se llama .xls pero es una tabla HTML.
+
+    Es el caso real de ~/Documents/Sociedades: 24 de 25 archivos .xls eran
+    HTML. Despachar por extension los mandaba a xlrd, que fallaba con
+    "Unsupported format", y los documentos quedaban fuera del grafo.
+    """
+    p = tmp_path / "octubre.xls"
+    p.write_text(
+        "<html><body><table>"
+        "<tr><th>fecha</th><th>cargo</th></tr>"
+        "<tr><td>2024-10-01</td><td>1.500</td></tr>"
+        "<tr><td>2024-10-02</td><td>2.300</td></tr>"
+        "</table></body></html>",
+        encoding="utf-8",
+    )
+    content, kind = extract_file(p)
+    assert kind == "json"
+    hoja = json.loads(content)["sheets"][0]
+    assert hoja["headers"] == ["fecha", "cargo"]
+    assert hoja["rows"] == [["2024-10-01", "1.500"], ["2024-10-02", "2.300"]]
+
+
+def test_xls_que_en_realidad_es_xlsx(tmp_path):
+    """Un .xlsx renombrado a .xls: la firma PK manda, no la extension."""
+    openpyxl = pytest.importorskip("openpyxl")
+    p = tmp_path / "cartola.xls"
+    wb = openpyxl.Workbook()
+    wb.active.title = "Movimientos"
+    wb.active.append(["glosa", "monto"])
+    wb.active.append(["transferencia", 42])
+    wb.save(p)
+    content, kind = extract_file(p)
+    assert kind == "json"
+    assert json.loads(content)["sheets"][0]["rows"] == [["transferencia", "42"]]
+
+
+def test_xls_ole2_convierte_fechas(tmp_path):
+    """Excel 97-2003 real: las fechas deben salir como fecha, no como float.
+
+    xlrd entrega los serales de fecha como float (45231.0); dejarlos crudos
+    mete numeros sin sentido en el grafo, justo lo que prohibe la regla de las
+    fechas reales.
+    """
+    xlwt = pytest.importorskip("xlwt")
+    import datetime
+
+    p = tmp_path / "antiguo.xls"
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Hoja1")
+    ws.write(0, 0, "fecha")
+    estilo = xlwt.easyxf(num_format_str="YYYY-MM-DD")
+    ws.write(1, 0, datetime.datetime(2022, 10, 31), estilo)
+    wb.save(str(p))
+
+    content, kind = extract_file(p)
+    assert kind == "json"
+    assert json.loads(content)["sheets"][0]["rows"][0][0].startswith("2022-10-31")
+
+
+def test_xls_binario_ilegible_da_error(tmp_path):
+    from brain_ingest.extract import ExtractError
+
+    p = tmp_path / "roto.xls"
+    p.write_bytes(b"\x01\x02\x03 no soy ni OLE2 ni zip ni HTML")
+    with pytest.raises(ExtractError):
+        extract_file(p)
+
+
 def test_docx_extraction(tmp_path):
     docx = pytest.importorskip("docx")
     p = tmp_path / "doc.docx"

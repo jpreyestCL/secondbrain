@@ -6,7 +6,11 @@ Dispatch by extension:
 * ``.pdf``                    — PyMuPDF text; pages without a text layer are
                                 OCR'd (ocrmac / macOS Vision, tesseract fallback)
 * ``.docx``                   — python-docx; ``.doc`` via macOS ``textutil``
-* ``.xlsx`` / ``.csv``        — structured JSON (per-sheet headers + rows)
+* ``.xlsx`` / ``.xls`` / ``.csv`` — structured JSON (per-sheet headers + rows).
+                                Los ``.xls`` se despachan por contenido, no por
+                                extension: muchos exports de banca y
+                                contabilidad son en realidad tablas HTML (o un
+                                .xlsx) con el nombre cambiado.
 * images (.png/.jpg/.heic...) — OCR
 * code files                  — skipped ("code goes to codebase-memory-mcp")
 
@@ -22,6 +26,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from html.parser import HTMLParser
 from pathlib import Path
 
 log = logging.getLogger("brain")
@@ -61,8 +66,10 @@ def extract_file(path: Path) -> tuple[str, str]:
         return _extract_docx(path), "text"
     if ext == ".doc":
         return _extract_doc(path), "text"
-    if ext == ".xlsx":
+    if ext in (".xlsx", ".xlsm"):
         return _extract_xlsx(path), "json"
+    if ext == ".xls":
+        return _extract_xls(path), "json"
     if ext == ".csv":
         return _extract_csv(path), "json"
     if ext in IMAGE_EXTS:
@@ -169,7 +176,16 @@ def _extract_doc(path: Path) -> str:
 def _extract_xlsx(path: Path) -> str:
     import openpyxl
 
-    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    # Se abre como stream y no por ruta a proposito: load_workbook(str(path))
+    # rechaza el archivo por la EXTENSION antes de mirarlo, asi que un .xlsx
+    # renombrado a .xls (caso comun en exports) fallaria pese a ser valido.
+    with path.open("rb") as fh:
+        wb = openpyxl.load_workbook(fh, read_only=True, data_only=True)
+        sheets = _hojas_openpyxl(wb)
+    return _sheets_json(path, sheets)
+
+
+def _hojas_openpyxl(wb) -> list[dict]:
     sheets = []
     for ws in wb.worksheets:
         rows = [
@@ -179,7 +195,122 @@ def _extract_xlsx(path: Path) -> str:
         headers = rows[0] if rows else []
         sheets.append({"sheet": ws.title, "headers": headers, "rows": rows[1:]})
     wb.close()
+    return sheets
+
+
+def _sheets_json(path: Path, sheets: list[dict]) -> str:
     return json.dumps({"source": path.name, "sheets": sheets}, ensure_ascii=False, indent=1)
+
+
+def _extract_xls(path: Path) -> str:
+    """Extrae un ``.xls`` despachando por los primeros bytes, no por el nombre.
+
+    La extension .xls miente a menudo: los exports de cartolas bancarias y de
+    software contable suelen ser una tabla HTML (o directamente un .xlsx) con el
+    nombre cambiado, y abrirlos con xlrd falla con "Unsupported format". Se mira
+    la firma real del archivo:
+
+    * ``D0 CF 11 E0`` — OLE2, el .xls binario de verdad  -> xlrd
+    * ``PK``          — zip, o sea un .xlsx mal nombrado -> openpyxl
+    * cualquier otra  — se intenta como HTML con <table>
+    """
+    firma = path.read_bytes()[:8]
+    if firma.startswith(b"\xd0\xcf\x11\xe0"):
+        return _extract_xls_ole2(path)
+    if firma.startswith(b"PK"):
+        return _extract_xlsx(path)
+    return _extract_html_tables(path)
+
+
+def _extract_xls_ole2(path: Path) -> str:
+    """.xls binario (Excel 97-2003) via xlrd."""
+    import xlrd
+
+    wb = xlrd.open_workbook(str(path))
+    sheets = []
+    for ws in wb.sheets():
+        rows = []
+        for r in range(ws.nrows):
+            fila = []
+            for c in range(ws.ncols):
+                celda = ws.cell(r, c)
+                # Las fechas viajan como float; sin convertirlas el grafo
+                # recibiria "45231.0" en vez de una fecha (regla de oro #1).
+                if celda.ctype == xlrd.XL_CELL_DATE:
+                    try:
+                        fila.append(xlrd.xldate_as_datetime(celda.value, wb.datemode).isoformat())
+                        continue
+                    except (ValueError, OverflowError):
+                        pass
+                fila.append("" if celda.value is None else str(celda.value))
+            rows.append(fila)
+        sheets.append({"sheet": ws.name, "headers": rows[0] if rows else [], "rows": rows[1:]})
+    return _sheets_json(path, sheets)
+
+
+class _TablasHTML(HTMLParser):
+    """Saca las filas de cada <table> de un documento HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tablas: list[list[list[str]]] = []
+        self._tabla: list[list[str]] | None = None
+        self._fila: list[str] | None = None
+        self._celda: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self._tabla = []
+        elif tag == "tr" and self._tabla is not None:
+            self._fila = []
+        elif tag in ("td", "th") and self._fila is not None:
+            self._celda = []
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._celda is not None:
+            self._fila.append(" ".join("".join(self._celda).split()))
+            self._celda = None
+        elif tag == "tr" and self._fila is not None:
+            if any(v for v in self._fila):
+                self._tabla.append(self._fila)
+            self._fila = None
+        elif tag == "table" and self._tabla is not None:
+            if self._tabla:
+                self.tablas.append(self._tabla)
+            self._tabla = None
+
+    def handle_data(self, data):
+        if self._celda is not None:
+            self._celda.append(data)
+
+
+def _extract_html_tables(path: Path) -> str:
+    """Tabla HTML disfrazada de hoja de calculo (cartolas, reportes contables)."""
+    raw = path.read_bytes()
+    for enc in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            texto = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        texto = raw.decode("utf-8", errors="replace")
+
+    parser = _TablasHTML()
+    parser.feed(texto)
+    if not parser.tablas:
+        raise ExtractError(
+            "el .xls no es OLE2 ni zip ni trae tablas HTML; formato desconocido"
+        )
+    sheets = [
+        {
+            "sheet": f"tabla_{i + 1}" if len(parser.tablas) > 1 else path.stem,
+            "headers": t[0],
+            "rows": t[1:],
+        }
+        for i, t in enumerate(parser.tablas)
+    ]
+    return _sheets_json(path, sheets)
 
 
 def _extract_csv(path: Path) -> str:
