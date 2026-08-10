@@ -39,6 +39,7 @@ import hashlib
 import http.cookiejar
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -128,6 +129,7 @@ class Client:
         form_body=None,
         headers: dict | None = None,
         timeout: float | None = None,
+        no_cookies: bool = False,
     ) -> Response:
         url = path if path.startswith("http") else f"{self.base_url}{path}"
         data = None
@@ -141,8 +143,13 @@ class Client:
         hdrs.update(headers or {})
 
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+        # Un opener sin cookie jar: para el DCR, que debe viajar como lo hace un
+        # cliente MCP real (server-to-server, sin sesion del navegador).
+        opener = self._opener
+        if no_cookies:
+            opener = urllib.request.build_opener(_NoRedirect())
         try:
-            with self._opener.open(req, timeout=timeout or self.timeout) as resp:
+            with opener.open(req, timeout=timeout or self.timeout) as resp:
                 out = Response(resp.status, resp.headers, resp.read(), url)
         except urllib.error.HTTPError as exc:  # 4xx/5xx still carry a body
             out = Response(exc.code, exc.headers, exc.read(), url)
@@ -213,6 +220,11 @@ def register_client(client: Client, endpoint: str, redirect_uri: str) -> tuple[s
 
     ``token_endpoint_auth_method: "none"`` registers a *public* client, so the
     response carries no ``client_secret`` and the token exchange is PKCE-only.
+
+    IMPORTANTE: se envia SIN la cookie de sesion. Better Auth aplica su chequeo
+    de origen (CSRF) a las peticiones que llevan sesion, y el DCR no manda
+    ``Origin`` -> 403 MISSING_OR_NULL_ORIGIN. Los clientes MCP reales (claude.ai)
+    registran server-to-server sin cookie, asi que esto refleja el flujo real.
     """
     body = {
         "client_name": "secondbrain-healthcheck",
@@ -221,7 +233,7 @@ def register_client(client: Client, endpoint: str, redirect_uri: str) -> tuple[s
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
     }
-    resp = client.request("POST", endpoint, json_body=body)
+    resp = client.request("POST", endpoint, json_body=body, no_cookies=True)
     if resp.status == 429:
         raise HealthcheckError(
             "dynamic client registration is rate-limited (HTTP 429). Set "
@@ -262,6 +274,37 @@ def _code_from_location(location: str, redirect_uri: str, state: str) -> str | N
     return code
 
 
+
+def _submit_consent(client: "Client", html: str, page_url: str) -> "Response":
+    """Aprueba la pantalla de consentimiento y devuelve la respuesta del POST.
+
+    El gateway muestra una pantalla propia antes de emitir el código (defensa
+    frente al robo de tokens vía redirect_uri). Un cliente real la ve en el
+    navegador; aquí la enviamos igual que lo haría el usuario al pulsar
+    "Autorizar": mismos campos ocultos + CSRF + Origin/Referer del propio sitio.
+    """
+    action_m = re.search(r'<form[^>]*action="([^"]+)"', html)
+    action = action_m.group(1) if action_m else "/consentimiento"
+    fields: dict[str, str] = {}
+    for m in re.finditer(r"<input\b[^>]*>", html):
+        tag = m.group(0)
+        name_m = re.search(r'name="([^"]+)"', tag)
+        value_m = re.search(r'value="([^"]*)"', tag)
+        if name_m:
+            fields[name_m.group(1)] = value_m.group(1) if value_m else ""
+    fields["decision"] = "autorizar"
+    return client.request(
+        "POST",
+        action,
+        form_body=fields,
+        headers={
+            "Origin": client.base_url,
+            "Referer": page_url,
+            "Accept": "text/html,application/json",
+        },
+    )
+
+
 def authorize(
     client: Client,
     endpoint: str,
@@ -289,6 +332,26 @@ def authorize(
     }
     url = f"{endpoint}?{urllib.parse.urlencode(params)}"
     resp = client.request("GET", url, headers={"Accept": "text/html,application/json"})
+
+    # Pantalla de consentimiento propia del gateway: aprobarla y reintentar.
+    if resp.status == 200 and "text/html" in (resp.headers.get("Content-Type") or ""):
+        client.log("consent screen shown -> approving")
+        post = _submit_consent(client, resp.text, url)
+        if post.status in (301, 302, 303, 307, 308):
+            loc = post.headers.get("Location") or ""
+            code = _code_from_location(loc, redirect_uri, state)
+            if code:
+                return code, verifier
+            # El POST vuelve a /authorize: repetir el GET, ya consentido.
+            resp = client.request(
+                "GET",
+                loc if loc.startswith("http") else f"{client.base_url}{loc}",
+                headers={"Accept": "text/html,application/json"},
+            )
+        else:
+            raise HealthcheckError(
+                f"consent submit returned HTTP {post.status}: {post.text[:200]}"
+            )
 
     if resp.status in (301, 302, 303, 307, 308):
         location = resp.headers.get("Location") or ""
@@ -342,7 +405,9 @@ def exchange_token(
     }
     if client_secret:  # confidential clients only; public (PKCE) clients omit it
         form["client_secret"] = client_secret
-    resp = client.request("POST", endpoint, form_body=form)
+    # Sin cookie de sesion: el canje de token es server-to-server (asi lo hace
+    # claude.ai). Con cookie, Better Auth exige Origin y responde 403.
+    resp = client.request("POST", endpoint, form_body=form, no_cookies=True)
     if resp.status != 200:
         raise HealthcheckError(
             f"token exchange failed: HTTP {resp.status} {resp.text[:400]}"
@@ -502,12 +567,35 @@ def _iter_json_objects(text: str):
             yield json.loads(line)
         except json.JSONDecodeError:
             continue
+    # El texto plano de FastMCP es JSON pretty-printed (multilinea): intentar
+    # tambien parsear el bloque completo, no solo linea a linea.
+    try:
+        yield json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+
+def _episode_lists(obj):
+    """Todas las listas de episodios dentro de una respuesta de tool.
+
+    FastMCP envuelve la salida en ``structuredContent.result``, y el texto plano
+    viene como JSON *pretty-printed* (multilinea). Por eso hay que mirar tanto el
+    nivel raiz como ``result``, en vez de asumir ``obj["episodes"]``.
+    """
+    if isinstance(obj, list):
+        yield obj
+        return
+    if not isinstance(obj, dict):
+        return
+    for node in (obj, obj.get("result")):
+        if isinstance(node, dict) and isinstance(node.get("episodes"), list):
+            yield node["episodes"]
 
 
 def _find_episode_uuid(episodes_text: str, marker: str) -> str | None:
     """Locate the UUID of the episode carrying ``marker`` in a get_episodes reply."""
     for obj in _iter_json_objects(episodes_text):
-        candidates = obj.get("episodes") if isinstance(obj, dict) else obj
+      for candidates in _episode_lists(obj):
         if not isinstance(candidates, list):
             continue
         for ep in candidates:
