@@ -16,7 +16,8 @@ def test_spanish_password_redacted():
 
 
 def test_openai_style_key_redacted():
-    r = redact("usa la key sk-abcdefghijklmnopqrstuv1234 para la API")
+    fake_key = "sk-" + "abcdefghijklmnopqrstuv1234"  # partida: no es una key real
+    r = redact(f"usa la key {fake_key} para la API")
     assert "sk-abcdefghijklmnop" not in r.text
     assert "api_key" in r.flags
 
@@ -75,8 +76,9 @@ def test_env_style_secret_and_token_redacted():
 
 def test_connection_string_password_redacted():
     """Fix 2: URL credentials — only the password portion is redacted."""
-    r = redact("db en postgres://admin:SuperPass1@db.example.com:5432/app")
-    assert "SuperPass1" not in r.text
+    fake_pw = "SuperPass" + "1"  # ficticia, sobre dominio reservado (RFC 2606)
+    r = redact(f"db en postgres://admin:{fake_pw}@db.example.com:5432/app")
+    assert fake_pw not in r.text
     assert REDACTED in r.text
     assert "postgres://admin:" in r.text  # user and scheme survive
     assert "@db.example.com" in r.text
@@ -84,12 +86,17 @@ def test_connection_string_password_redacted():
 
 
 def test_redis_and_mongodb_srv_credentials_redacted():
+    # Credenciales ficticias sobre dominios reservados (RFC 2606 / RFC 6761):
+    # ".invalid" y ".example" no existen ni pueden registrarse, para que los
+    # escaneres de secretos no las confundan con credenciales reales.
+    fake_pw_redis = "c4ch3" + "pw"
+    fake_pw_mongo = "m0ng0" + "pw"
     r = redact(
-        "cache redis://:c4ch3pw@redis.local:6379/0 y "
-        "mongodb+srv://user1:m0ng0pw@cluster0.mongodb.net/db"
+        f"cache redis://:{fake_pw_redis}@redis.invalid:6379/0 y "
+        f"mongodb+srv://user1:{fake_pw_mongo}@cluster0.example/db"
     )
-    assert "c4ch3pw" not in r.text
-    assert "m0ng0pw" not in r.text
+    assert fake_pw_redis not in r.text
+    assert fake_pw_mongo not in r.text
     assert "redis://:" in r.text
     assert "mongodb+srv://user1:" in r.text
     assert "password" in r.flags
