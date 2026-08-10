@@ -1,0 +1,16 @@
+[Unit]
+Description=Second Brain: chequeo E2E (guardar -> procesar -> buscar -> limpiar)
+After=network-online.target brain-gateway.service
+
+[Service]
+Type=oneshot
+User=secondbrain
+Group=secondbrain
+EnvironmentFile=/opt/secondbrain-native/healthcheck.env
+Environment=HOME=/opt/secondbrain-native
+ExecStart=/usr/bin/python3 /opt/secondbrain-native/healthcheck.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+UMask=0077

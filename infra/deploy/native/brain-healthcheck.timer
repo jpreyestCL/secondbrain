@@ -1,0 +1,8 @@
+[Unit]
+Description=Chequeo del Second Brain cada 6 horas
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00
+Persistent=true
+RandomizedDelaySec=300
+[Install]
+WantedBy=timers.target

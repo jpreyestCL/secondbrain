@@ -221,3 +221,41 @@ Consideraciones:
   crear un usuario aparte y darle su instancia.
 - El schedule de GitHub Actions se **desactiva solo** tras 60 días de
   inactividad del repositorio; si eso pasa, reactívalo desde la pestaña Actions.
+
+
+## Recomendado: correr el chequeo en el propio servidor (no en GitHub)
+
+El healthcheck necesita tu correo y contraseña del gateway. Guardarlos como
+*secrets* de GitHub le daría a GitHub Actions acceso a tu memoria personal
+(datos médicos y financieros). Para un despliegue propio es preferible que las
+credenciales **no salgan de la máquina**: se corre por systemd en el mismo
+servidor.
+
+Instalado en `mybrain.rlz.cl` así (ver `infra/deploy/native/brain-healthcheck.*`):
+
+```bash
+# credenciales solo locales, 600, propiedad del usuario del servicio
+cat > /opt/secondbrain-native/healthcheck.env <<EOF
+BRAIN_URL=https://mybrain.rlz.cl
+BRAIN_EMAIL=tu@correo
+BRAIN_PASSWORD=...
+EOF
+chmod 600 /opt/secondbrain-native/healthcheck.env
+chown secondbrain:secondbrain /opt/secondbrain-native/healthcheck.env
+
+install -m 644 infra/deploy/native/brain-healthcheck.service /etc/systemd/system/
+install -m 644 infra/deploy/native/brain-healthcheck.timer   /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now brain-healthcheck.timer
+```
+
+Corre a las 00/06/12/18:15 UTC (con jitter). Ver resultados:
+
+```bash
+systemctl start brain-healthcheck.service      # corrida manual
+journalctl -u brain-healthcheck -n 30 --no-pager
+systemctl list-timers brain-* --no-pager
+```
+
+El workflow de GitHub Actions sigue disponible para quien prefiera esa vía
+(queda inerte mientras no existan los secrets), pero **el timer de systemd es la
+opción recomendada** para instancias con datos personales.
