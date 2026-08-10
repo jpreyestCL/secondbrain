@@ -48,6 +48,18 @@ export function createAuth(config: GatewayConfig, _opts: CreateAuthOptions = {})
     database: db,
     trustedOrigins: [config.baseUrl],
     ...(socialProviders ? { socialProviders } : {}),
+    // Enlazar la cuenta de Google con la de email+contraseña del MISMO correo.
+    // Sin `trustedProviders`, Better Auth rechaza el login con
+    // `error=account_not_linked` cuando el correo ya existe con contraseña.
+    // Es seguro para Google porque verifica el correo antes de emitirlo; NO
+    // añadir aquí proveedores que no lo hagan (permitiría tomar una cuenta
+    // registrando ese correo en el proveedor).
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["google"],
+      },
+    },
     emailAndPassword: {
       enabled: true,
       // El gate del endpoint público vive en server.ts (ver CreateAuthOptions).
