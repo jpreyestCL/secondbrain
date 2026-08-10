@@ -19,6 +19,34 @@ NO usa Docker ni toca el redis/nginx de producción.
   `meta/llama-3.1-70b-instruct` (extracción) + `nvidia/nv-embed-v1` (embeddings, 4096).
 - **nginx**: `sites-available/mybrain.rlz.cl.conf` → `proxy_pass 127.0.0.1:8787` (SSE-friendly).
 
+## Usuario y aislamiento local
+
+Los tres servicios corren como el usuario de sistema **`secondbrain`** (sin shell,
+`useradd -r -M -s /usr/sbin/nologin -d /opt/secondbrain-native`), **no** como `root`
+ni como un usuario compartido con otros proyectos. Motivo: en un servidor compartido,
+cualquier proyecto comprometido que corriera con el mismo usuario podría leer los
+secretos del brain y hablarle al MCP saltándose el OAuth.
+
+Capas de aislamiento:
+
+1. **Propiedad y permisos**: todo `/opt/secondbrain-native` es `secondbrain:secondbrain`;
+   `users.acl`, `mcp.env`, `gateway/.env`, `tenants.json` y `auth.sqlite` en `600`;
+   `data/` y `backups/` en `700`.
+2. **Firewall por uid** (`firewall-local.sh` + `brain-firewall.service`): el MCP (8021)
+   solo acepta conexiones locales de `secondbrain` y `root`; el gateway (8787) además
+   de `www-data` (nginx). Cualquier otro usuario local recibe REJECT. Las reglas se
+   insertan al **inicio** de la cadena OUTPUT porque ufw acepta loopback antes.
+3. **Hardening systemd**: `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`,
+   `ProtectSystem=strict` con `ReadWritePaths=/opt/secondbrain-native`, y protecciones
+   de kernel/cgroups.
+
+Verificación rápida (debe dar `000` para un usuario ajeno y `200`/JSON para los válidos):
+
+```bash
+sudo -u dev  curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8021/health  # 000
+sudo -u www-data curl -s http://127.0.0.1:8787/health                                # {"ok":true}
+```
+
 ## Secretos (fuera de git, solo en el server)
 
 - `/opt/secondbrain-native/users.acl` — passwords ACL de FalkorDB (admin + tenant).

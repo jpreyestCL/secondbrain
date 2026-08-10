@@ -1,0 +1,9 @@
+[Unit]
+Description=Second Brain: restringe acceso local a MCP/gateway por uid
+After=network.target ufw.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/secondbrain-native/firewall-local.sh
+[Install]
+WantedBy=multi-user.target
