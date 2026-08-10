@@ -2,6 +2,63 @@ import { serve, type ServerType } from "@hono/node-server";
 import type { Hono } from "hono";
 import type { AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
+import { MailError, type MailMessage, type Mailer } from "../src/mailer.js";
+import type { Provisioner } from "../src/provision.js";
+
+/** Mailer de mentira: guarda lo enviado y puede fingir fallos de Resend. */
+export interface FakeMailer extends Mailer {
+  readonly sent: MailMessage[];
+  /** Cuando es true, cada envío lanza como si Resend devolviera 403. */
+  fail: boolean;
+  last(): MailMessage | undefined;
+  clear(): void;
+}
+
+export function fakeMailer(): FakeMailer {
+  const sent: MailMessage[] = [];
+  return {
+    enabled: true,
+    debug: false,
+    from: "Second Brain <test@rlz.cl>",
+    sent,
+    fail: false,
+    last: () => sent[sent.length - 1],
+    clear: () => {
+      sent.length = 0;
+    },
+    async send(message: MailMessage) {
+      if ((this as FakeMailer).fail) {
+        throw new MailError("resend_error", "Resend respondió 403: dominio sin verificar", 403);
+      }
+      sent.push(message);
+      return { id: `fake_${sent.length}`, debug: false };
+    },
+  };
+}
+
+/** Aprovisionador de mentira: no ejecuta nada, solo devuelve un upstream. */
+export function fakeProvisioner(upstream = "http://127.0.0.1:9099/mcp"): Provisioner {
+  let n = 0;
+  return {
+    async provision(email: string) {
+      n += 1;
+      return { slug: `t${n}-${email.split("@")[0]}`, port: 9000 + n, upstreamUrl: upstream };
+    },
+  };
+}
+
+/** Extrae la primera URL http(s) del texto plano de un correo. */
+export function urlInMail(text: string): string {
+  const match = /https?:\/\/\S+/.exec(text);
+  if (!match) throw new Error(`el correo no trae ninguna URL:\n${text}`);
+  return match[0];
+}
+
+/** Reescribe una URL del correo para apuntarla al servidor de pruebas. */
+export function onTestServer(url: string, baseUrl: string): string {
+  const original = new URL(url);
+  return `${baseUrl}${original.pathname}${original.search}`;
+}
 
 export async function listen(app: Hono): Promise<{ server: ServerType; baseUrl: string }> {
   return new Promise((resolve) => {

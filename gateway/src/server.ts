@@ -22,7 +22,19 @@ import {
   registroErrorProvisionHtml,
   registroCapacidadHtml,
   googleSinInvitacionHtml,
+  type VerificationState,
 } from "./registro-page.js";
+import {
+  verificadoPageHtml,
+  reenvioVerificacionHtml,
+  olvidePasswordHtml,
+  olvidePasswordEnviadoHtml,
+  restablecerPasswordHtml,
+  restablecerTokenInvalidoHtml,
+  restablecerOkHtml,
+} from "./mail-pages.js";
+import { lastDelivery } from "./mailer.js";
+import { VERIFY_CALLBACK_PATH, RESET_PASSWORD_PATH } from "./auth.js";
 import { createRateLimiter, clientIpFrom } from "./rate-limit.js";
 import { consentPageHtml } from "./consent-page.js";
 import {
@@ -517,9 +529,16 @@ export function buildApp(
     if (atCapacity()) return refuseForCapacity(c, email);
 
     // 1) Crear el usuario (server-side; funciona aunque ALLOW_SIGNUP=false).
+    //    El alta dispara el correo de verificación (emailVerification.sendOnSignUp);
+    //    el callback nunca lanza, así que un fallo de correo NO rompe el alta.
     try {
       await auth.api.signUpEmail({
-        body: { email, password, name: email.split("@")[0] ?? email },
+        body: {
+          email,
+          password,
+          name: email.split("@")[0] ?? email,
+          callbackURL: VERIFY_CALLBACK_PATH,
+        },
       });
     } catch (err) {
       // Mensaje NEUTRO: no distinguir "correo ya registrado" de otros fallos
@@ -535,7 +554,18 @@ export function buildApp(
       console.log(
         `[registro] tenant listo: ${email} -> ${result.upstreamUrl} (slug=${result.slug})`,
       );
-      return c.html(registroExitoHtml(config.baseUrl, email));
+      // El aprovisionamiento ya está hecho y NO se deshace por un fallo de
+      // correo: si la verificación no salió, la página lo dice y ofrece
+      // reenviar, en vez de dejar a la persona con un 500 y una cuenta a medias.
+      const delivery = lastDelivery(email);
+      const verification: VerificationState = delivery?.ok ? "enviado" : "pendiente";
+      if (!delivery?.ok) {
+        console.warn(
+          `[registro] cuenta y tenant OK pero SIN correo de verificación para ${email}` +
+            (delivery?.error ? `: ${delivery.error}` : " (correo deshabilitado)"),
+        );
+      }
+      return c.html(registroExitoHtml(config.baseUrl, email, verification));
     } catch (err) {
       console.error(`[registro] fallo aprovisionando tenant para ${email}:`, err);
       // Rollback: la cuenta recién creada se borra para no dejar un usuario
@@ -577,6 +607,127 @@ export function buildApp(
       maxAge: REGISTRO_COOKIE_MAX_AGE,
     });
     return c.json({ ok: true });
+  });
+
+  // --- Correo: verificación y recuperación de contraseña ---------------------
+  // Todo lo que dispara un envío comparte un rate limit por IP: son las rutas
+  // que un abusador usaría para bombardear el buzón de otra persona (o para
+  // quemar la cuota de Resend). Las respuestas son NEUTRAS: nunca dicen si una
+  // dirección existe, para no convertir el formulario en un enumerador.
+  const mailLimiter = createRateLimiter(config.mailRateLimit);
+
+  const sessionViewOf = async (c: Context) => {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    return session?.user
+      ? {
+          email: session.user.email,
+          csrf: csrfToken(session.session.id, config.authSecret),
+        }
+      : null;
+  };
+
+  // Aterrizaje del enlace del correo. Better Auth verifica el token en
+  // /api/auth/verify-email y redirige aquí; si algo falla, añade ?error=CÓDIGO.
+  app.get(VERIFY_CALLBACK_PATH, async (c) =>
+    c.html(
+      verificadoPageHtml({
+        session: await sessionViewOf(c),
+        error: c.req.query("error") ?? null,
+      }),
+      c.req.query("error") ? 400 : 200,
+    ),
+  );
+
+  /**
+   * Reenvío de la verificación SIN sesión (lo usa la página de "verificación
+   * pendiente" del registro y la de enlace caducado). Responde siempre lo
+   * mismo, exista o no la cuenta.
+   */
+  app.post("/reenviar-verificacion", async (c) => {
+    if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
+      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+    }
+    const body = await c.req.parseBody();
+    const email = String(body["email"] ?? "").trim().toLowerCase();
+    if (EMAIL_RE.test(email)) {
+      try {
+        await auth.api.sendVerificationEmail({
+          body: { email, callbackURL: VERIFY_CALLBACK_PATH },
+        });
+      } catch (err) {
+        // Incluye "ya verificado" y "no existe": no se distinguen hacia fuera.
+        console.warn(`[mail] reenvío de verificación sin efecto para ${email}:`, err);
+      }
+    }
+    return c.html(reenvioVerificacionHtml());
+  });
+
+  // --- Recuperación de contraseña --------------------------------------------
+  app.get("/olvide-password", (c) => c.html(olvidePasswordHtml()));
+
+  app.post("/olvide-password", async (c) => {
+    if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
+      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+    }
+    const body = await c.req.parseBody();
+    const email = String(body["email"] ?? "").trim().toLowerCase();
+    if (!EMAIL_RE.test(email)) {
+      return c.html(olvidePasswordHtml({ error: "Correo inválido.", email }), 400);
+    }
+    try {
+      await auth.api.requestPasswordReset({
+        body: { email, redirectTo: RESET_PASSWORD_PATH },
+      });
+    } catch (err) {
+      // Un fallo aquí (correo caído, Resend con errores) no debe delatar nada
+      // ni devolver un 500: queda en el log y la respuesta es la misma.
+      console.error(`[mail] fallo pidiendo recuperación para ${email}:`, err);
+    }
+    return c.html(olvidePasswordEnviadoHtml());
+  });
+
+  app.get(RESET_PASSWORD_PATH, (c) => {
+    const token = c.req.query("token") ?? "";
+    // Better Auth redirige aquí con ?error=INVALID_TOKEN cuando el enlace ya no
+    // vale; sin token no hay nada que hacer tampoco.
+    if (c.req.query("error") || !token) {
+      return c.html(restablecerTokenInvalidoHtml(), 400);
+    }
+    return c.html(restablecerPasswordHtml({ token }));
+  });
+
+  app.post(RESET_PASSWORD_PATH, async (c) => {
+    if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
+      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+    }
+    const body = await c.req.parseBody();
+    const token = String(body["token"] ?? "");
+    const password = String(body["password"] ?? "");
+    const confirm = String(body["confirm"] ?? "");
+    if (!token) return c.html(restablecerTokenInvalidoHtml(), 400);
+    if (password.length < 10) {
+      return c.html(
+        restablecerPasswordHtml({
+          token,
+          error: "La contraseña debe tener al menos 10 caracteres.",
+        }),
+        400,
+      );
+    }
+    if (password !== confirm) {
+      return c.html(
+        restablecerPasswordHtml({ token, error: "Las contraseñas no coinciden." }),
+        400,
+      );
+    }
+    try {
+      await auth.api.resetPassword({ body: { token, newPassword: password } });
+    } catch (err) {
+      console.warn("[mail] restablecimiento rechazado:", err);
+      return c.html(restablecerTokenInvalidoHtml(), 400);
+    }
+    console.log("[cuenta] contraseña restablecida con un enlace de correo");
+    return c.html(restablecerOkHtml());
   });
 
   /** Cierra la sesión actual y devuelve `html` con `status` (cookies borradas). */
@@ -754,6 +905,7 @@ export function buildApp(
     return c.html(
       cuentaPageHtml({
         email: session.user.email,
+        emailVerified: Boolean(session.user.emailVerified),
         upstream: tenants.resolveUpstream(session.user.id, session.user.email),
         sessions,
         clients: await clientsOf(session.user.id),
@@ -766,6 +918,10 @@ export function buildApp(
   const NOTICES: Record<string, string> = {
     "cliente-revocado": "Aplicación revocada: se borraron su consentimiento y sus tokens.",
     "sesiones-cerradas": "Se cerraron todas las demás sesiones.",
+    "verificacion-enviada":
+      "Te enviamos un correo de verificación. Revisa la bandeja de entrada y el spam.",
+    "verificacion-fallo":
+      "No pudimos enviar el correo de verificación ahora mismo. Vuelve a intentarlo en unos minutos.",
   };
 
   app.get("/cuenta", (c) => renderCuenta(c, NOTICES[c.req.query("ok") ?? ""] ?? null));
@@ -816,6 +972,34 @@ export function buildApp(
       response.headers.append("set-cookie", setCookieHeader);
     }
     return response;
+  });
+
+  // Reenvío de la verificación DESDE el panel (con sesión y CSRF). A diferencia
+  // del reenvío público, aquí sí se le dice a la persona si salió o no: es su
+  // propia cuenta, no hay nada que enumerar.
+  app.post("/cuenta/reenviar-verificacion", async (c) => {
+    const guard = await guardedPost(c);
+    if ("error" in guard) return guard.error;
+    const email = guard.session.user.email;
+    if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
+      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+    }
+    if (guard.session.user.emailVerified) return c.redirect("/cuenta", 302);
+    try {
+      await auth.api.sendVerificationEmail({
+        headers: c.req.raw.headers,
+        body: { email, callbackURL: VERIFY_CALLBACK_PATH },
+      });
+    } catch (err) {
+      console.error(`[mail] reenvío de verificación falló para ${email}:`, err);
+      return c.redirect("/cuenta?ok=verificacion-fallo", 302);
+    }
+    // El callback de envío no lanza; el resultado real está en el registro.
+    const delivery = lastDelivery(email);
+    return c.redirect(
+      delivery?.ok ? "/cuenta?ok=verificacion-enviada" : "/cuenta?ok=verificacion-fallo",
+      302,
+    );
   });
 
   app.post("/cuenta/cerrar-sesiones", async (c) => {

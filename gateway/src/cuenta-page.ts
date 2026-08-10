@@ -31,6 +31,13 @@ export interface CuentaClientView {
 
 export interface CuentaPageOptions {
   email: string;
+  /**
+   * ¿El correo está verificado? Importa más de lo que parece: mientras esté
+   * pendiente, Better Auth NO enlaza la cuenta de Google con esta (ver
+   * `requireLocalEmailVerified` en oauth2/link-account), así que "Continuar con
+   * Google" falla con `account_not_linked`.
+   */
+  emailVerified: boolean;
   /** Upstream MCP del tenant, o null si aún no tiene uno asignado. */
   upstream: string | null;
   sessions: CuentaSessionView[];
@@ -91,12 +98,27 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
         .join("\n")
     : `    <p class="muted">Todavía no has autorizado ninguna aplicación.</p>`;
 
+  const verificacion = opts.emailVerified
+    ? `      <dt>Verificación</dt><dd>verificado ✅</dd>`
+    : `      <dt>Verificación</dt><dd>pendiente ⚠️</dd>`;
+
+  const reenviar = opts.emailVerified
+    ? ""
+    : `
+    <p class="warn">Tu correo todavía no está verificado. Hasta que lo confirmes no
+      podrás iniciar sesión con Google usando esta misma cuenta.</p>
+    <form method="post" action="/cuenta/reenviar-verificacion">
+      <input type="hidden" name="${CSRF_FIELD}" value="${escapeHtml(opts.csrf)}">
+      <button type="submit">Reenviar verificación</button>
+    </form>`;
+
   const body = `  <section>
     <h1>Tu cuenta</h1>${notice}
     <dl>
       <dt>Correo</dt><dd>${escapeHtml(opts.email)}</dd>
+${verificacion}
       <dt>Tu memoria</dt><dd><code>${escapeHtml(opts.upstream ?? "sin servidor asignado todavía")}</code></dd>
-    </dl>
+    </dl>${reenviar}
     <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>
 

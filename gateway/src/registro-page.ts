@@ -38,7 +38,20 @@ const STYLE = `
   code { background: color-mix(in srgb, CanvasText 8%, transparent); padding: .1rem .35rem; border-radius: 6px; font-size: .85em; word-break: break-all; }
   a { color: #4f46e5; }
   p { margin: 0; font-size: .9rem; }
+  .notice { border-left: 3px solid #4f46e5; padding: .55rem .7rem; background: color-mix(in srgb, #4f46e5 12%, transparent); border-radius: 4px; font-size: .88rem; line-height: 1.45; }
+  .ok { border-left-color: #15803d; background: color-mix(in srgb, #15803d 12%, transparent); }
+  .bad { border-left-color: #b91c1c; background: color-mix(in srgb, #b91c1c 12%, transparent); }
+  form.inline { background: transparent; border: 0; padding: 0; width: auto; }
 `;
+
+/**
+ * Tarjeta centrada con el mismo lenguaje visual que /login y /registro. La usan
+ * también las páginas de contraseña olvidada y de verificación pendiente
+ * (mail-pages.ts) para que no haya dos estilos de "página suelta".
+ */
+export function cardPage(title: string, body: string): string {
+  return page(title, body);
+}
 
 function page(title: string, body: string): string {
   return `<!doctype html>
@@ -213,13 +226,44 @@ export function googleSinInvitacionHtml(): string {
   );
 }
 
+/**
+ * Estado del correo de verificación al terminar el registro:
+ *  - `enviado`   : el correo salió (o se registró en el log en modo debug).
+ *  - `pendiente` : no se pudo enviar (sin RESEND_API_KEY, dominio sin verificar,
+ *                  caída de Resend...). La cuenta y el tenant SÍ se crearon.
+ */
+export type VerificationState = "enviado" | "pendiente";
+
+/** Bloque "verifica tu correo" que se inserta en la página de éxito. */
+function verificacionBlock(email: string, state: VerificationState): string {
+  if (state === "enviado") {
+    return `  <p class="notice">Te enviamos un correo a <strong>${escapeHtml(email)}</strong> para
+  confirmar tu dirección. Ábrelo y pulsa el botón: es lo que habilita entrar
+  también con Google. Si no lo ves, revisa el spam.</p>`;
+  }
+  return `  <p class="notice"><strong>Verificación pendiente.</strong> Tu cuenta y tu memoria
+  quedaron creadas, pero <strong>no pudimos enviarte el correo de confirmación</strong>
+  a <strong>${escapeHtml(email)}</strong> (el envío de correo está fallando ahora mismo).
+  Puedes entrar con tu correo y contraseña igualmente; la verificación solo hace
+  falta para enlazar Google.</p>
+  <form class="inline" method="post" action="/reenviar-verificacion">
+    <input type="hidden" name="email" value="${escapeHtml(email)}">
+    <button type="submit">Reenviar correo</button>
+  </form>`;
+}
+
 /** Página de éxito con la guía paso a paso para conectar Claude. */
-export function registroExitoHtml(baseUrl: string, email: string): string {
+export function registroExitoHtml(
+  baseUrl: string,
+  email: string,
+  verification: VerificationState = "enviado",
+): string {
   const mcpUrl = `${baseUrl.replace(/\/+$/, "")}/mcp`;
   return page(
     "Second Brain — Cuenta creada",
     `<main>
-  <h1>¡Cuenta creada! 🎉</h1>
+  <h1>Cuenta creada 🎉</h1>
+${verificacionBlock(email, verification)}
   <p>Tu memoria personal (<strong>${escapeHtml(email)}</strong>) ya está aprovisionada.
   Ahora conecta tu Claude:</p>
   <ol>
