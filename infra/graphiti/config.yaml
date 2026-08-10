@@ -33,7 +33,13 @@ embedder:
 
   providers:
     openai:
-      api_key: ${OPENAI_API_KEY}
+      # Clave PROPIA del embedder (OBLIGATORIA si se define): permite chat en un
+      # proveedor (p.ej. OpenAI gpt-4o-mini) y embeddings en otro (NVIDIA
+      # nv-embed-v1, 4096 dims). El loader NO soporta ${VAR:${OTRA}} anidado, asi
+      # que hay que fijarla explicitamente en mcp.env.
+      # OJO: cambiar el proveedor/dimension de embeddings de un grafo existente
+      # CORROMPE la busqueda semantica.
+      api_key: ${EMBEDDER_API_KEY}
       # URL propia del embedder: permite LLM=DeepSeek (sin embeddings) +
       # embeddings en Ollama u OpenAI. Si no se define, api.openai.com.
       api_url: ${EMBEDDER_API_URL:https://api.openai.com/v1}

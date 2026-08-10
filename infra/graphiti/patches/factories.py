@@ -94,6 +94,46 @@ def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     return api_key
 
 
+# PATCH (secondbrain): contabilidad de tokens y costo.
+# graphiti no expone el uso de tokens, asi que se envuelve el cliente OpenAI para
+# registrar cada llamada en un JSONL. scripts/llm-cost.py lo resume.
+def _wrap_usage_logging(client, model: str):
+    import json as _json
+    import logging as _logging
+    import os as _os
+    import time as _time
+    from pathlib import Path as _Path
+
+    log_path = _os.environ.get('LLM_USAGE_LOG')
+    if not log_path:
+        return client
+    _log = _logging.getLogger(__name__)
+    inner = client.client.chat.completions.create  # AsyncOpenAI
+
+    async def _create(*args, **kwargs):
+        t0 = _time.time()
+        resp = await inner(*args, **kwargs)
+        try:
+            u = getattr(resp, 'usage', None)
+            rec = {
+                'ts': _time.strftime('%Y-%m-%dT%H:%M:%SZ', _time.gmtime()),
+                'model': kwargs.get('model') or model,
+                'prompt_tokens': getattr(u, 'prompt_tokens', None),
+                'completion_tokens': getattr(u, 'completion_tokens', None),
+                'total_tokens': getattr(u, 'total_tokens', None),
+                'seconds': round(_time.time() - t0, 2),
+            }
+            _Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, 'a', encoding='utf-8') as fh:
+                fh.write(_json.dumps(rec) + '\n')
+        except Exception as exc:  # nunca romper la ingesta por la contabilidad
+            _log.debug(f'no se pudo registrar uso de tokens: {exc}')
+        return resp
+
+    client.client.chat.completions.create = _create
+    return client
+
+
 class LLMClientFactory:
     """Factory for creating LLM clients based on configuration."""
 
@@ -140,7 +180,7 @@ class LLMClientFactory:
                     )
 
                     logger.info(f'PATCH: usando OpenAIGenericClient contra {api_url}')
-                    return OpenAIGenericClient(config=llm_config)
+                    return _wrap_usage_logging(OpenAIGenericClient(config=llm_config), config.model)
 
                 # Check if this is a reasoning model (o1, o3, gpt-5 family)
                 reasoning_prefixes = ('o1', 'o3', 'gpt-5')
@@ -148,10 +188,16 @@ class LLMClientFactory:
 
                 # Only pass reasoning/verbosity parameters for reasoning models (gpt-5 family)
                 if is_reasoning_model:
-                    return OpenAIClient(config=llm_config, reasoning='minimal', verbosity='low')
+                    return _wrap_usage_logging(
+                        OpenAIClient(config=llm_config, reasoning='minimal', verbosity='low'),
+                        config.model,
+                    )
                 else:
                     # For non-reasoning models, explicitly pass None to disable these parameters
-                    return OpenAIClient(config=llm_config, reasoning=None, verbosity=None)
+                    return _wrap_usage_logging(
+                        OpenAIClient(config=llm_config, reasoning=None, verbosity=None),
+                        config.model,
+                    )
 
             case 'azure_openai':
                 if not HAS_AZURE_LLM:
