@@ -218,6 +218,7 @@ export function landingPageHtml(baseUrl: string): string {
     <a href="#como">Cómo funciona</a>
     <a href="#usar">Qué le preguntas</a>
     <a href="#conectar">Conectar</a>
+    <a href="/guia">Guía</a>
     <a href="/cuenta">Tu cuenta</a>
     <a href="https://github.com/jpreyestCL/secondbrain">GitHub</a>
   </div>

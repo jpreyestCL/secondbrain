@@ -130,7 +130,7 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
       <dt>Correo</dt><dd>${escapeHtml(opts.email)}</dd>
       <dt>Tu memoria</dt><dd><code>${escapeHtml(opts.upstream ?? "sin servidor asignado todavía")}</code></dd>
     </dl>
-    <p class="muted"><a href="/">← Volver al inicio</a></p>
+    <p class="muted"><a href="/guia">Guía de uso</a> · <a href="/">← Volver al inicio</a></p>
   </section>
 
   <section>

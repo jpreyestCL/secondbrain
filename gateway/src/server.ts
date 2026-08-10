@@ -31,6 +31,7 @@ import {
 } from "./cuenta-page.js";
 import { CSRF_FIELD, csrfToken, verifyCsrfToken, isSameOrigin } from "./csrf.js";
 import { exportGraph } from "./export.js";
+import { guiaPageHtml } from "./guia-page.js";
 import {
   REGISTRO_COOKIE_NAME,
   REGISTRO_COOKIE_MAX_AGE,
@@ -666,6 +667,14 @@ export function buildApp(
   };
 
   app.get("/cuenta", (c) => renderCuenta(c, NOTICES[c.req.query("ok") ?? ""] ?? null));
+
+  // Guía de uso: contenido estático, pero solo para gente con sesión (describe
+  // el pipeline de ingesta y las herramientas del conector, no es página pública).
+  app.get("/guia", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.redirect("/login", 302);
+    return c.html(guiaPageHtml());
+  });
 
   /** Guardia común de los POST del panel: same-origin + token CSRF + sesión. */
   const guardedPost = async (c: Context) => {
