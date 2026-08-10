@@ -119,8 +119,8 @@ export function loginPageHtml(opts: LoginPageOptions = {}): string {
         // Reanuda el flujo OAuth original con los mismos parámetros.
         window.location.href = '/api/auth/mcp/authorize' + params;
       } else {
-        // Misma pagina con estilo que usa /post-google, en vez de texto suelto.
-        window.location.href = '/sesion-iniciada';
+        // Sin flujo OAuth que reanudar: entrar directo al panel.
+        window.location.href = '/cuenta';
       }
     } catch (err) {
       errEl.textContent = 'Error de red. Inténtalo de nuevo.';

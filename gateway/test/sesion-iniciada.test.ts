@@ -28,37 +28,25 @@ afterAll(async () => {
   await closeServer(server);
 });
 
-describe("página de sesión iniciada", () => {
-  it("sin sesión redirige al login", async () => {
+describe("tras iniciar sesión se entra directo al panel", () => {
+  it("/sesion-iniciada redirige a /cuenta (sin pantalla intermedia)", async () => {
+    // Regresión: antes se mostraba una pantalla de "ya puedes cerrar esta
+    // pestaña", que era un paso de más cuando no hay flujo OAuth que reanudar.
     const res = await fetch(`${baseUrl}/sesion-iniciada`, { redirect: "manual" });
     expect([302, 303]).toContain(res.status);
+    expect(res.headers.get("location")).toBe("/cuenta");
+  });
+
+  it("el login por correo lleva al panel, no a una pantalla suelta", async () => {
+    const res = await fetch(`${baseUrl}/login`);
+    const html = await res.text();
+    expect(html).toContain("window.location.href = '/cuenta'");
+    expect(html).not.toContain("Ya puedes cerrar esta pestaña");
+  });
+
+  it("/post-google sin sesión sigue mandando al login", async () => {
+    const res = await fetch(`${baseUrl}/post-google`, { redirect: "manual" });
+    expect([302, 303]).toContain(res.status);
     expect(res.headers.get("location")).toContain("/login");
-  });
-
-  it("no es texto suelto: trae estilos y acciones", async () => {
-    // Regresión: antes /post-google devolvía un <p> sin estilo, que era lo
-    // primero que veía alguien al conectar su conector.
-    const { sesionIniciadaHtml } = await import("../src/sesion-iniciada-page.js");
-    const html = sesionIniciadaHtml({ email: "quien@example.com" });
-    expect(html).toContain("<!doctype html>");
-    expect(html).toContain("<style>");
-    expect(html).toContain("Ya puedes cerrar esta pestaña");
-    expect(html).toContain("quien@example.com");
-    expect(html).toContain('href="/guia#conectar"');
-    expect(html).toContain('href="/cuenta"');
-    expect(html).not.toContain('style="font-family:system-ui"');
-  });
-
-  it("avisa cuando el correo está pendiente de verificar", async () => {
-    const { sesionIniciadaHtml } = await import("../src/sesion-iniciada-page.js");
-    const html = sesionIniciadaHtml({ email: "x@example.com", pendienteVerificacion: true });
-    expect(html).toMatch(/confirmar tu dirección/i);
-  });
-
-  it("escapa el correo (defensa ante HTML en el valor)", async () => {
-    const { sesionIniciadaHtml } = await import("../src/sesion-iniciada-page.js");
-    const html = sesionIniciadaHtml({ email: '<img src=x onerror=alert(1)>@e.com' });
-    expect(html).not.toContain("<img src=x");
-    expect(html).toContain("&lt;img");
   });
 });

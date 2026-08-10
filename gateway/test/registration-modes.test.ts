@@ -231,8 +231,10 @@ describe("REGISTRATION_MODE=open", () => {
       headers: { cookie },
       redirect: "manual",
     });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Sesión iniciada");
+    // Tras aprovisionar se entra DIRECTO al panel (antes habia una pantalla
+    // intermedia de "sesion iniciada").
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.get("location")).toBe("/cuenta");
     expect(mapping(gw.tenantsFile)[email]).toBe(
       `http://127.0.0.1:${gw.upstreamPort + 1}/mcp`,
     );

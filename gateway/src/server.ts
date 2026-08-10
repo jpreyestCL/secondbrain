@@ -13,7 +13,6 @@ import type { GatewayConfig } from "./env.js";
 import type { Auth } from "./auth.js";
 import { proxyMcp } from "./proxy.js";
 import { landingPageHtml } from "./landing-page.js";
-import { sesionIniciadaHtml } from "./sesion-iniciada-page.js";
 import { loginPageHtml } from "./login-page.js";
 import type { TenantRegistry } from "./tenants.js";
 import { createProvisioner, type Provisioner } from "./provision.js";
@@ -767,12 +766,10 @@ export function buildApp(
         const qs = resume.startsWith("?") ? resume : `?${resume}`;
         return c.redirect(`/api/auth/mcp/authorize${qs}`);
       }
-      return c.html(
-        sesionIniciadaHtml({
-          email,
-          pendienteVerificacion: session.user.emailVerified === false,
-        }),
-      );
+      // Sin flujo OAuth que reanudar, entrar directo al panel: mostrar una
+      // pantalla intermedia de "ya puedes cerrar" era un paso de mas. /cuenta
+      // ya indica si el correo esta pendiente de verificar.
+      return c.redirect("/cuenta", 302);
     };
 
     const upstream = tenants.resolveUpstream(userId, email);
@@ -937,16 +934,8 @@ export function buildApp(
   // el correo y "Cerrar sesión"; sin sesión, "Iniciar sesión".
   // Página de "sesión iniciada" con estilo, compartida por el login por correo
   // y por el retorno de Google cuando no hay flujo OAuth que reanudar.
-  app.get("/sesion-iniciada", async (c) => {
-    const session = await requireSession(c);
-    if (!session) return c.redirect("/login", 302);
-    return c.html(
-      sesionIniciadaHtml({
-        email: session.user.email,
-        pendienteVerificacion: session.user.emailVerified === false,
-      }),
-    );
-  });
+  // Se conserva por compatibilidad con enlaces antiguos: ahora lleva al panel.
+  app.get("/sesion-iniciada", (c) => c.redirect("/cuenta", 302));
 
   app.get("/guia", async (c) => {
     const session = await requireSession(c);
