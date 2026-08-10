@@ -670,11 +670,11 @@ export function buildApp(
 
   // Guía de uso: contenido estático, pero solo para gente con sesión (describe
   // el pipeline de ingesta y las herramientas del conector, no es página pública).
-  app.get("/guia", async (c) => {
-    const session = await requireSession(c);
-    if (!session) return c.redirect("/login", 302);
-    return c.html(guiaPageHtml());
-  });
+  // La guía es PÚBLICA: es documentación (todo está en el repo público) y se
+  // enlaza desde la landing, así que exigir sesión solo rebotaba al login a
+  // quien todavía no tiene cuenta. No contiene secretos: los comandos usan
+  // marcadores (<password del tenant>, <key>).
+  app.get("/guia", (c) => c.html(guiaPageHtml()));
 
   /** Guardia común de los POST del panel: same-origin + token CSRF + sesión. */
   const guardedPost = async (c: Context) => {

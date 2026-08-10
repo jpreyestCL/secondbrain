@@ -259,3 +259,285 @@ systemctl list-timers brain-* --no-pager
 El workflow de GitHub Actions sigue disponible para quien prefiera esa vía
 (queda inerte mientras no existan los secrets), pero **el timer de systemd es la
 opción recomendada** para instancias con datos personales.
+
+---
+
+# Importar Apple Notes al second brain
+
+844 notas de Apple Notes → grafo, separando señal de ruido y **sin perder la
+fecha real de cada nota** (regla #1 de `CLAUDE.md`: la fecha del hecho manda,
+nunca la de ingesta).
+
+Tres scripts, cada uno con una responsabilidad:
+
+| Script | Qué hace | Destruye algo? |
+|---|---|---|
+| `notes-export.py` | `NoteStore.sqlite` → un `.md` por nota con front-matter | no (abre una copia; jamás escribe en la DB de Notes) |
+| `notes-triage.py` | etiqueta cada nota `guardar` / `descartar` / `dudoso` | no (solo escribe `triage.json` + `triage.md`) |
+| `notes-apply.py` | copia **solo** las `guardar` a una carpeta lista para `brain scan` y rellena el manifest de `brain classify` | no (copia; el export completo se queda intacto) |
+
+## Flujo completo
+
+```bash
+# 1. Exportar (lectura pura de la base de Notes)
+scripts/notes-export.py --out /tmp/notas-export
+
+# 2. Layer 0: filtro determinista y gratis
+scripts/notes-triage.py --in /tmp/notas-export --work /tmp/notas-triage
+
+# 3. Layer 0 + Layer 1 (LLM). Primero en seco, para ver qué se enviaría:
+scripts/notes-triage.py --in /tmp/notas-export --work /tmp/notas-triage \
+    --llm --dry-run
+# ...y cuando convenza, gastando llamadas (reanudable):
+scripts/notes-triage.py --in /tmp/notas-export --work /tmp/notas-triage --llm
+
+# 4. Revisar A MANO /tmp/notas-triage/triage.md (todos los `dudoso` y una
+#    muestra de `descartar`) y corregir el campo `decision` en triage.json.
+
+# 5. Construir la carpeta de ingesta
+scripts/notes-apply.py --triage /tmp/notas-triage/triage.json \
+    --out ~/notas-guardar --prefill
+
+# 6. Pipeline normal del CLI brain (ver más abajo)
+```
+
+## `notes-export.py`
+
+Lee `~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite`.
+
+**El cuerpo de las notas no es texto**: vive en `ZICNOTEDATA.ZDATA` como
+**protobuf comprimido con gzip**. Descomprimir y decodificar como UTF-8 "casi"
+funciona, pero deja la basura del framing protobuf mezclada con la prosa
+(`( ( ( " L8U$K[O+`). Este script recorre el protobuf de verdad. Estructura
+verificada empíricamente en esta base (proto "1.5"):
+
+```
+NoteStoreProto { Document document = 2 }
+Document       { Note note = 3 }
+Note           { string note_text = 2      <- el texto limpio
+                 <metadata CRDT>      = 3  <- ignorado
+                 repeated AttributeRun = 5 }
+AttributeRun   { uint32 length = 1; ParagraphStyle paragraph_style = 2 }
+ParagraphStyle { uint32 style_type = 1; uint32 indent = 3; Checklist = 5 }
+```
+
+Los `AttributeRun` se usan solo para reconstruir títulos, viñetas y checkboxes
+como Markdown (`--plain` los ignora y emite el texto crudo).
+
+**Seguridad de la base**: por defecto copia `NoteStore.sqlite` (+ `-wal`/`-shm`)
+a un directorio temporal y consulta la copia, así el WAL pendiente se aplica y
+el archivo original nunca se abre en escritura. `--no-copy` usa
+`mode=ro&immutable=1` sobre el original (más rápido, pero ignora el WAL y puede
+perder ediciones recientes).
+
+**Fechas**: en este esquema la columna de creación poblada es
+`ZCREATIONDATE3` (`ZCREATIONDATE1` está NULL en las 874 filas) y la de
+modificación es `ZMODIFICATIONDATE1`. Ambas en epoch Apple (`+978307200`).
+El `created` del front-matter es lo que después será el `reference_time` de
+Graphiti.
+
+Salida: `NNNN-slug.md`, numeración por fecha de creación ascendente, sin
+colisiones. Front-matter:
+
+```yaml
+---
+title: "VPS al mundo"
+created: "2017-03-16T19:57:54.743485"
+modified: "2017-03-20T20:39:43.411926"
+folder: "Notes"
+source: "apple-notes"
+note_id: "430DF38C-69F1-424B-BAB0-D178C915D56A"
+---
+```
+
+| Flag | Default | Qué hace |
+|---|---|---|
+| `--out` | `/tmp/notas-export` | directorio de salida |
+| `--db` | ruta estándar de Notes | otra `NoteStore.sqlite` |
+| `--limit` | `0` | corta después de N notas |
+| `--since` | — | solo notas creadas desde `YYYY-MM-DD` |
+| `--dry-run` | — | no escribe nada; imprime estadísticas y 3 muestras |
+| `--plain` | — | no reconstruye viñetas/títulos en Markdown |
+| `--keep-empty` | — | exporta también las notas de cuerpo vacío |
+| `--no-copy` | — | lee la DB viva con `immutable=1` en vez de copiarla |
+
+**Limitación conocida**: los adjuntos (fotos, PDFs, escaneos) **no** se
+exportan; Apple los referencia con el carácter `￼`, que se elimina. Las notas
+cuyo contenido real era una foto quedan casi vacías y caen en `casi_vacio`
+(p. ej. `#pasaporte`, `RUT JP scan ->`). Las notas protegidas con contraseña
+están cifradas (no son gzip) y se saltan con aviso.
+
+## `notes-triage.py`
+
+**Layer 0 — determinista, gratis, sin LLM.** Motivos emitidos por nota:
+`vacio`, `casi_vacio` (< `--min-chars`, default 15), `solo_url`,
+`solo_numeros`, `duplicado_exacto` (hash del contenido normalizado; sobrevive
+la copia más antigua).
+
+Detalle importante: los tests corren sobre **título + cuerpo juntos**. Apple
+guarda el título como primera línea del cuerpo, pero no siempre; si se mira
+solo el cuerpo, una nota titulada `banco santander` cuyo cuerpo son puros
+dígitos cae en `solo_numeros` — y es un dato bancario real. El criterio no es
+"¿está bien escrita?" sino "¿es un dato de mi vida que querría recuperar?".
+
+**Layer 1 — LLM por lotes.** 40 notas por llamada (título + primeros 400
+caracteres), endpoint compatible con OpenAI y salida estructurada
+`json_schema`. Cada nota recibe `decision` (`guardar|descartar|dudoso`),
+`dominio` (`personal|salud|finanzas|trabajo|proyectos`), `doc_date` (solo si el
+**texto** menciona una fecha; nunca la de creación) y una `razon` breve.
+
+* **Reanudable**: cada nota clasificada se anexa a
+  `<work>/checkpoint.jsonl`. Volver a correr el script solo envía los lotes
+  que faltan.
+* **Consciente del costo**: imprime cuántas llamadas hará antes de hacerlas, y
+  los tokens de cada una. Con 804 notas pendientes son **21 llamadas**.
+* **`--dry-run`** imprime el payload exacto del primer lote (system prompt,
+  user prompt y schema) y no gasta nada.
+* **Secretos**: el `.md` local puede tener contraseñas, pero el extracto que
+  se envía a la API se limpia antes — si la nota habla de claves/tokens, los
+  tokens alfanuméricos se reemplazan por `[REDACTADO]` (regla #2 de
+  `CLAUDE.md`). Los `.md` locales quedan tal cual; `redact.py` de `ingest/`
+  los limpia otra vez antes del grafo.
+
+| Flag | Default | Qué hace |
+|---|---|---|
+| `--in` | `/tmp/notas-export` | carpeta del exportador |
+| `--work` | `/tmp/notas-triage` | dónde van `triage.json`, `triage.md`, checkpoint |
+| `--min-chars` | `15` | umbral de `casi_vacio` |
+| `--llm` | — | ejecuta Layer 1 |
+| `--dry-run` | — | con `--llm`: muestra el lote 1 y no gasta |
+| `--batch-size` | `40` | notas por llamada |
+| `--model` | `$MODEL_NAME` | modelo (necesita `json_schema`) |
+| `--api-url` | `$OPENAI_API_URL` | endpoint compatible OpenAI |
+| `--api-key` | `$OPENAI_API_KEY` | clave |
+| `--env-file` | `<repo>/.env` | de dónde leer esas variables (las del entorno mandan) |
+| `--checkpoint` | `<work>/checkpoint.jsonl` | archivo de reanudación |
+
+Usa las **mismas variables que el resto del proyecto**. Con el `.env` del repo
+apunta a NVIDIA NIM (`https://integrate.api.nvidia.com/v1`,
+`meta/llama-3.1-70b-instruct`). DeepSeek **no** sirve: no soporta
+`json_schema`.
+
+Salida:
+
+* `triage.json` — una fila por nota con `decision`, `razon`, `dominio`,
+  `doc_date`, `layer`, `path`, `hash`. **Este es el archivo que se edita a
+  mano** tras la revisión.
+* `triage.md` — resumen legible: totales, tabla de motivos de Layer 0, **todos**
+  los `dudoso` y una muestra de 40 de `descartar` y `guardar`.
+
+## `notes-apply.py`
+
+Copia a `--out` solo las notas con `decision` en `--include` (default
+`guardar`) y les añade al front-matter `dominio`, `doc_date` y `doc_type`, para
+no volver a decidir lo mismo dos veces. `doc_date` usa la fecha que dio el LLM
+y, si no hay, la fecha de creación de la nota — nunca hoy.
+
+`sensitivity_flags` se deduce: `salud → medical`, `finanzas → financial`, más
+`credentials` si el texto menciona claves/tokens y `pii` si aparece un RUT.
+
+| Flag | Default | Qué hace |
+|---|---|---|
+| `--triage` | (obligatorio) | `triage.json` ya revisado |
+| `--out` | `~/notas-guardar` | carpeta destino para `brain scan` |
+| `--include` | `guardar` | decisiones a copiar (`guardar,dudoso` para incluir dudosas) |
+| `--doc-type` | `nota` | `doc_type` del manifest |
+| `--prefill` | — | escribe `prefill.json` (junto a `triage.json`, **nunca** dentro de `--out`) |
+| `--merge-manifest` | — | rellena un `classify-<batch>.json` de `brain classify` |
+| `--manifest-out` | — | escribe el manifest fusionado aparte en vez de in-place |
+| `--dry-run` | — | no escribe nada |
+
+## Ingesta al grafo
+
+### 1. Pipeline local del CLI `brain`
+
+```bash
+cd ingest
+uv sync --all-extras
+uv run brain scan ~/notas-guardar
+uv run brain extract
+uv run brain classify                     # emite ~/.brain/jpreyest/work/classify-<batch>.json
+```
+
+En vez de clasificar a mano las cientos de notas otra vez, se rellena el
+manifest con lo que ya decidió el triage:
+
+```bash
+scripts/notes-apply.py --triage /tmp/notas-triage/triage.json \
+    --out ~/notas-guardar \
+    --merge-manifest ~/.brain/jpreyest/work/classify-<batch>.json
+
+cd ingest
+uv run brain classify --apply ~/.brain/jpreyest/work/classify-<batch>.json
+uv run brain chunk
+```
+
+El emparejamiento manifest ↔ nota es por `path` (y como respaldo, por nombre de
+archivo); los documentos que no vengan de Notes quedan intactos.
+
+### 2. Túnel SSH a FalkorDB
+
+FalkorDB de producción escucha en `127.0.0.1:6380` del servidor
+(`infra/deploy/native/`), nunca expuesto a internet. Para ingestar desde el Mac
+hay que abrir un túnel:
+
+```bash
+ssh -N -L 16380:127.0.0.1:6380 root@178.62.201.63
+# (dejar corriendo en otra terminal; -N = sin shell remota)
+```
+
+### 3. Entorno de ingesta
+
+Con el túnel arriba, en la terminal donde corre `brain ingest-graph`:
+
+```bash
+export FALKORDB_HOST=127.0.0.1
+export FALKORDB_PORT=16380
+export FALKORDB_USERNAME=tenant_jpreyest
+export FALKORDB_PASSWORD=<FALKORDB_TENANT_PASSWORD de infra/tenants/jpreyest.env>
+
+# LLM de extracción (NVIDIA NIM; debe soportar json_schema)
+export OPENAI_API_KEY=<clave NIM>
+export OPENAI_API_URL=https://integrate.api.nvidia.com/v1
+export MODEL_NAME=meta/llama-3.1-70b-instruct
+
+# EMBEDDINGS: tienen que ser EXACTAMENTE los del servidor
+export EMBEDDER_PROVIDER=openai
+export EMBEDDER_MODEL=nvidia/nv-embed-v1
+export EMBEDDER_DIMENSIONS=4096
+export EMBEDDER_API_URL=https://integrate.api.nvidia.com/v1
+
+cd ingest && uv run brain ingest-graph
+uv run brain status
+```
+
+> ⚠️ **El embedder debe ser `nvidia/nv-embed-v1` con `EMBEDDER_DIMENSIONS=4096`.**
+> Los vectores del grafo ya están en ese espacio de 4096 dimensiones. Ingestar
+> con otro modelo (o con otras dimensiones) no da error inmediato: mete
+> vectores incompatibles y **la búsqueda semántica deja de funcionar** para
+> todo lo que se ingeste así. Si hay duda, verificar contra
+> `infra/deploy/native/` antes de ingestar.
+
+El grafo es `jpreyest` y `GRAPHITI_GROUP_ID=jpreyest` (regla #6: el `group_id`
+es SIEMPRE el tenant, nunca el dominio; el dominio viaja como metadata).
+
+### 4. Verificar
+
+```bash
+scripts/healthcheck.py --url https://mybrain.rlz.cl --email ... --password ...
+```
+
+o consultar con la skill `/consultar` algo que solo esté en las notas
+importadas (p. ej. "¿qué pretensiones de sueldo pedía Carlos?").
+
+## Notas operacionales
+
+* Los tres scripts son **idempotentes**: volver a exportar sobre el mismo
+  `--out` regenera los mismos nombres de archivo; el triage reanuda desde el
+  checkpoint; `notes-apply` reescribe la carpeta destino.
+* El ledger de `brain` evita duplicados por `(path, sha256)`, así que volver a
+  correr `brain scan` sobre `~/notas-guardar` no re-ingesta nada que no haya
+  cambiado.
+* Nada de esto borra notas de Apple Notes ni del export. Lo único que se
+  "descarta" es la decisión de no meterlas al grafo, siempre reversible
+  editando `triage.json` y volviendo a correr `notes-apply.py`.
