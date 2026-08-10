@@ -14,3 +14,4 @@ node_modules/
 __pycache__/
 .venv/
 .deepseek-key
+.nvidia-key
