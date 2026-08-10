@@ -32,7 +32,7 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
   ni reiniciar contenedores con episodios en vuelo (se pierden silenciosamente). Verificar
   antes con `docker logs brain-mcp-<tenant>` que no haya "Processing episode" sin su
   "Successfully processed". La vía durable para lotes es la CLI `brain` (ledger reanudable).
-- La extracción con qwen3:8b local tarda 1,5–6 min por episodio (es un modelo razonador).
+- La extracción usa qwen2.5:7b-instruct local (~1 min/episodio). NO usar modelos razonadores (qwen3) — 20x más lentos. NO usar DeepSeek — no soporta json_schema.
   Para acelerar: `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` en `.env`, o un modelo
   no-razonador en `MODEL_NAME`.
 
