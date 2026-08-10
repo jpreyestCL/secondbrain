@@ -10,6 +10,7 @@
  * token sin que la persona lea QUÉ aplicación pide acceso y a QUÉ.
  */
 import { escapeHtml } from "./html.js";
+import { AUTH_STYLE, THEME_BOOT } from "./auth-chrome.js";
 import { CSRF_FIELD } from "./csrf.js";
 
 export interface ConsentPageOptions {
@@ -44,25 +45,8 @@ export function consentPageHtml(opts: ConsentPageOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Second Brain — Autorizar acceso</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #f5f5f4; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1917; color: #e7e5e4; } }
-  form { background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 12px; padding: 2rem; width: min(92vw, 26rem); display: grid; gap: .75rem; }
-  h1 { font-size: 1.15rem; margin: 0 0 .25rem; }
-  p.sub { margin: 0 0 .5rem; font-size: .85rem; opacity: .7; }
-  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .35rem .8rem; font-size: .9rem; }
-  dt { font-weight: 600; }
-  dd { margin: 0; word-break: break-word; }
-  ul { margin: .2rem 0 0; padding-left: 1.1rem; font-size: .9rem; }
-  .warn { font-size: .85rem; border-left: 3px solid #b45309; padding: .5rem .7rem; background: color-mix(in srgb, #b45309 12%, transparent); border-radius: 4px; }
-  .scopes { margin: 0; font-size: .78rem; opacity: .7; }
-  .row { display: flex; gap: .6rem; }
-  button { font: inherit; font-weight: 600; padding: .6rem; border: 0; border-radius: 8px; background: #4f46e5; color: white; cursor: pointer; flex: 1; }
-  button.cancel { background: transparent; color: inherit; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); }
-  p.alt { margin: 0; font-size: .85rem; } p.alt a { color: #4f46e5; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-</style>
+${THEME_BOOT}
+<style>${AUTH_STYLE}</style>
 </head>
 <body>
 <form method="post" action="/consentimiento">

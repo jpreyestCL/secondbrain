@@ -147,6 +147,20 @@ describe("panel de cuenta", () => {
     expect(await cuenta(cookie)).toContain("esta sesión");
   });
 
+  it("en móvil no esconde los datos que la propia página pide revisar", async () => {
+    // La página dice "si ves uno que no reconoces, ciérralos todos": para eso
+    // hacen falta la hora de inicio y el User-Agent crudo, en cualquier pantalla.
+    const cookie = await signIn();
+    const html = await cuenta(cookie);
+    expect(html).not.toMatch(/\.sesiones (th|td):nth-child\(2\)[^}]*display: none/);
+    expect(html).not.toMatch(/\.sesiones td\.ua small \{ display: none/);
+    // La tabla sigue siendo alcanzable: se desplaza en horizontal.
+    expect(html).toContain('<div class="scroll">');
+    expect(html).toContain(".scroll table { min-width:");
+    // Y el User-Agent completo viaja en el HTML, no solo la etiqueta resumida.
+    expect(html).toContain("<small>");
+  });
+
   it("los POST rechazan peticiones cross-origin y tokens CSRF inválidos", async () => {
     const cookie = await signIn();
     const csrf = hiddenFields(await cuenta(cookie))["csrf"]!;

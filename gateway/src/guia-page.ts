@@ -124,13 +124,14 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
     <h1>Guía de uso</h1>
     <p class="lede">Cómo guardar, consultar e ingerir información en tu second brain.
       Todo lo de esta página está verificado contra el servidor real.</p>
-    <nav class="toc" aria-label="Índice de la guía">
-      <a href="#conversar">01 · Conversar con el cerebro</a>
-      <a href="#herramientas">02 · Las 9 herramientas MCP</a>
-      <a href="#masiva">03 · Ingesta masiva de una carpeta</a>
-      <a href="#accesos">04 · Exportar y cerrar accesos</a>
-    </nav>
   </section>
+
+  <nav class="toc" aria-label="Índice de la guía">
+    <a href="#conversar">01 · Conversar con el cerebro</a>
+    <a href="#herramientas">02 · Las 9 herramientas MCP</a>
+    <a href="#masiva">03 · Ingesta masiva de una carpeta</a>
+    <a href="#accesos">04 · Exportar y cerrar accesos</a>
+  </nav>
 
   <section id="conversar">
     <p class="secnum">01</p>

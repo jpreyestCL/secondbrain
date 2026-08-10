@@ -56,6 +56,11 @@ const GRAIN =
  */
 const STYLE = `
   :root {
+    /* El navegador pinta sus propias superficies (barras de desplazamiento, el
+       lienzo antes de aplicar el CSS) según esto: sin declararlo, forzar el tema
+       oscuro deja barras claras sobre una página negra. Y las tablas de /cuenta
+       siempre traen barra horizontal en pantallas angostas. */
+    color-scheme: light dark;
     --paper: #f1eee8; --surface: #fbf9f5; --surface-2: #eae5dc; --line: #d7d1c6; --line-soft: #e4dfd5;
     --text: #16201f; --muted: #5d6763;
     --accent: #1d7364; --accent-soft: #d8ebe6; --accent-text: #155a4e; --on-accent: #ffffff;
@@ -88,7 +93,9 @@ const STYLE = `
     --grain: .22;
     --shadow: 0 1px 2px rgba(0,0,0,.5), 0 24px 50px -28px rgba(0,0,0,.9);
   }
+  :root[data-theme="dark"] { color-scheme: dark; }
   :root[data-theme="light"] {
+    color-scheme: light;
     --paper: #f1eee8; --surface: #fbf9f5; --surface-2: #eae5dc; --line: #d7d1c6; --line-soft: #e4dfd5;
     --text: #16201f; --muted: #5d6763;
     --accent: #1d7364; --accent-soft: #d8ebe6; --accent-text: #155a4e; --on-accent: #ffffff;
@@ -224,8 +231,15 @@ const STYLE = `
   pre code { font-size: inherit; }
   code { font-family: var(--mono); font-size: .86em; overflow-wrap: anywhere; }
   .block { position: relative; }
-  .block .copy { position: absolute; top: .5rem; right: .5rem; font-family: var(--sans); font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; padding: .25rem .55rem; background: var(--surface); color: var(--muted); border: 1px solid var(--line); opacity: 0; transform: none; box-shadow: none; }
-  .block:hover .copy, .block .copy:focus-visible { opacity: 1; }
+  .block .copy { position: absolute; top: .5rem; right: .5rem; font-family: var(--sans); font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; padding: .25rem .55rem; background: var(--surface); color: var(--muted); border: 1px solid var(--line); transform: none; box-shadow: none; }
+  /* Solo se esconde donde existe el hover que lo revela. En una pantalla táctil
+     quedaría invisible pero pulsable, justo encima del bloque que se desplaza. */
+  @media (hover: hover) {
+    .block .copy { opacity: 0; }
+    .block:hover .copy, .block .copy:focus-visible { opacity: 1; }
+  }
+  /* Sitio reservado para el botón: no puede taparse con la primera línea. */
+  .block pre { padding-right: 5.5rem; }
   .block .copy:hover { color: var(--accent); border-color: var(--accent); transform: none; box-shadow: none; }
   .block .copy.done { color: var(--on-accent); background: var(--accent); border-color: var(--accent); opacity: 1; }
   .quote { position: relative; font-family: var(--mono); font-size: .82rem; line-height: 1.55; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 2px; padding: .65rem .8rem .65rem 1.5rem; transition: border-color .25s ease, transform .25s var(--ease); }
@@ -233,7 +247,9 @@ const STYLE = `
   .quote:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); transform: translateX(3px); }
 
   /* Índice pegajoso de la guía */
-  .toc { position: sticky; top: 3.4rem; z-index: 40; display: flex; flex-wrap: wrap; gap: .35rem .4rem; margin: 0 -.4rem; padding: .5rem .4rem; background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(8px); font-family: var(--mono); font-size: .7rem; }
+  /* Hijo directo de <main>, no de una sección: un elemento pegajoso se ancla a
+     su bloque contenedor y dentro de la portada se despegaba a los 26px. */
+  .toc { position: sticky; top: 3.2rem; z-index: 40; display: flex; flex-wrap: wrap; gap: .35rem .4rem; margin: 0; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 3px; background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(10px) saturate(1.2); font-family: var(--mono); font-size: .7rem; }
   .toc a { text-decoration: none; color: var(--muted); border: 1px solid transparent; border-radius: 999px; padding: .22rem .65rem; white-space: nowrap; transition: color .2s, border-color .2s, background .2s; }
   .toc a:hover { color: var(--text); border-color: var(--line); }
   .toc a.on { color: var(--accent-text); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -241,16 +257,11 @@ const STYLE = `
   :target { scroll-margin-top: 6.5rem; }
 
   @media (max-width: 34rem) {
-    /* La tabla de sesiones deja de mostrar la columna «Inicio» y el User-Agent
-       crudo: en un teléfono basta con el último uso, la IP y el navegador. */
-    .sesiones th:nth-child(2), .sesiones td:nth-child(2) { display: none; }
-    .sesiones td.ua small { display: none; }
-    .sesiones td.ua { min-width: 8rem; }
     .topbar-inner { gap: .4rem .6rem; }
     .brand { width: 100%; }
     .nav a { padding: .3rem .5rem; }
     .session { width: 100%; justify-content: flex-start; }
-    .toc { top: 5.6rem; }
+    .toc { top: 5.4rem; }
   }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }

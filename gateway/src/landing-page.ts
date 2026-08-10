@@ -77,6 +77,10 @@ export function landingPageHtml(
 </script>
 <style>
   :root {
+    /* El navegador pinta sus propias superficies (barras de desplazamiento, el
+       lienzo antes de aplicar el CSS) según esto: sin declararlo, forzar el tema
+       oscuro deja barras claras sobre una página negra. */
+    color-scheme: light dark;
     --paper: #f1eee8;
     --surface: #fbf9f5;
     --surface-2: #eae5dc;
@@ -117,7 +121,9 @@ export function landingPageHtml(
     --shadow: 0 1px 2px rgba(0,0,0,.5), 0 24px 50px -28px rgba(0,0,0,.9);
     --grain: .22;
   }
+  :root[data-theme="dark"] { color-scheme: dark; }
   :root[data-theme="light"] {
+    color-scheme: light;
     --paper: #f1eee8; --surface: #fbf9f5; --surface-2: #eae5dc; --line: #d7d1c6; --line-soft: #e4dfd5;
     --text: #16201f; --muted: #5d6763;
     --vigente: #1d7364; --vigente-soft: #d8ebe6;
@@ -174,7 +180,10 @@ export function landingPageHtml(
     transition: border-color .3s ease, background .3s ease;
   }
   nav.stuck { border-bottom-color: var(--line); }
-  nav .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; height: 64px; }
+  /* La fila envuelve en vez de desbordar: overflow-x hidden en el body
+     recortaría lo que sobresalga y dejaría el botón de tema inalcanzable. */
+  nav .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .3rem 1rem; min-height: 64px; padding-block: .5rem; }
+  .brand { min-width: 0; }
   .brand { display: flex; align-items: baseline; gap: .55rem; font-size: 1.2rem; letter-spacing: -.01em; }
   .brand span { font-family: var(--mono); font-size: .64rem; letter-spacing: .16em; color: var(--vigente); text-transform: uppercase; }
   .navright { display: flex; align-items: center; gap: 1.3rem; }
@@ -353,14 +362,19 @@ export function landingPageHtml(
     content: ""; position: absolute; top: -1px; left: 50%; width: 9px; height: 9px;
     margin-left: -4.5px; background: var(--text); transform: rotate(45deg);
   }
-  .axis input[type=range] {
+  /* Sin JavaScript el eje pintado (segmentos y aguja) nunca se dibuja, así que
+     el deslizador se queda con su aspecto nativo en vez de parecer roto. */
+  .segs, .needle { display: none; }
+  .js .segs, .js .needle { display: block; }
+  .axis input[type=range] { width: 100%; margin: 12px 0 0; accent-color: var(--vigente); cursor: ew-resize; }
+  .js .axis input[type=range] {
     position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
-    -webkit-appearance: none; appearance: none; background: transparent; cursor: ew-resize;
+    -webkit-appearance: none; appearance: none; background: transparent;
   }
-  .axis input[type=range]::-webkit-slider-runnable-track { height: 44px; background: transparent; }
-  .axis input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 44px; background: transparent; }
-  .axis input[type=range]::-moz-range-track { height: 44px; background: transparent; }
-  .axis input[type=range]::-moz-range-thumb { width: 26px; height: 44px; border: 0; background: transparent; }
+  .js .axis input[type=range]::-webkit-slider-runnable-track { height: 44px; background: transparent; }
+  .js .axis input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 44px; background: transparent; }
+  .js .axis input[type=range]::-moz-range-track { height: 44px; background: transparent; }
+  .js .axis input[type=range]::-moz-range-thumb { width: 26px; height: 44px; border: 0; background: transparent; }
   .ticks {
     display: flex; justify-content: space-between; font-family: var(--mono);
     font-size: .68rem; color: var(--muted); margin-top: .1rem; font-variant-numeric: tabular-nums;
@@ -390,6 +404,9 @@ export function landingPageHtml(
 
   /* ---------- secciones ---------- */
   section { position: relative; padding: clamp(3.4rem, 7vw, 5.6rem) 0; border-top: 1px solid var(--line); }
+  /* El nav es pegajoso y mide 64px: sin esto el título de cada sección aterriza
+     debajo de él al saltar por un ancla. */
+  section[id], header[id] { scroll-margin-top: 4.5rem; }
   .sec-head { display: flex; flex-direction: column; gap: .75rem; margin-bottom: 2.8rem; max-width: 54ch; }
   .sec-head .eyebrow { display: flex; align-items: center; gap: .6rem; }
   .sec-head .eyebrow::after { content: ""; height: 1px; width: 3rem; background: var(--line); }
@@ -727,7 +744,7 @@ export function landingPageHtml(
         <div class="stepline"><div>En Claude, abre <strong>Ajustes → Conectores</strong> y elige
           <strong>Agregar conector personalizado</strong>.</div></div>
         <div class="stepline"><div>Pega esta dirección:
-          <span class="copy"><code id="mcp">${mcpUrl}</code><button type="button" id="copy">Copiar</button></span></div></div>
+          <span class="copy"><code id="mcp">${mcpUrl}</code><button type="button" id="copy" hidden>Copiar</button></span></div></div>
         <div class="stepline"><div>Inicia sesión cuando se abra la ventana. Listo: tu cerebro
           queda disponible en todas tus conversaciones.</div></div>
       </div>
@@ -855,21 +872,28 @@ export function landingPageHtml(
   }
 
   /* ---------- copiar la dirección MCP ---------- */
+  /* En un contexto inseguro (http plano, que es justo el caso de quien se
+     autoaloja) navigator.clipboard no existe. Antes el botón se quedaba mudo;
+     ahora sencillamente no aparece y la dirección se copia a mano. */
   var copyBtn = document.getElementById("copy");
-  copyBtn.addEventListener("click", function () {
-    var text = document.getElementById("mcp").textContent;
-    var done = function () {
-      copyBtn.textContent = "Copiado ✓";
-      copyBtn.classList.add("done");
-      setTimeout(function () {
-        copyBtn.textContent = "Copiar";
-        copyBtn.classList.remove("done");
-      }, 1800);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, function () {});
-    }
-  });
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    copyBtn.hidden = false;
+    copyBtn.addEventListener("click", function () {
+      var text = document.getElementById("mcp").textContent;
+      var flash = function (label, ok) {
+        copyBtn.textContent = label;
+        copyBtn.classList.toggle("done", ok);
+        setTimeout(function () {
+          copyBtn.textContent = "Copiar";
+          copyBtn.classList.remove("done");
+        }, 1800);
+      };
+      navigator.clipboard.writeText(text).then(
+        function () { flash("Copiado ✓", true); },
+        function () { flash("Copia a mano", false); }
+      );
+    });
+  }
 
   /* ---------- expediente temporal ---------- */
   var MIN = 2010, MAX = 2026;
@@ -887,6 +911,7 @@ export function landingPageHtml(
   var alabel = document.getElementById("alabel");
   var stamp = document.getElementById("stamp");
   var recs = document.getElementById("recs");
+  var answerLive = document.querySelector(".answer");
   var segs = document.getElementById("segs");
   var needle = document.getElementById("needle");
   var last = null;
@@ -959,10 +984,21 @@ export function landingPageHtml(
   sl.addEventListener("input", function () { stop(); render(parseInt(sl.value, 10)); });
   render(parseInt(sl.value, 10));
 
+  /* La respuesta vive en una región aria-live. El recorrido automático la
+     reescribe ~26 veces seguidas, así que mientras dura se silencia: un lector
+     de pantalla no puede quedar atrapado en una cola de anuncios que nadie
+     pidió. Se reactiva en cuanto el recorrido termina o el usuario interviene. */
+  function live(on) { answerLive.setAttribute("aria-live", on ? "polite" : "off"); }
+
   /* Una pasada automática al cargar para que se entienda el gesto; cualquier
      interacción la cancela y devuelve el control. */
   var tour = null;
-  function stop() { if (tour) { cancelAnimationFrame(tour.raf); tour = null; } }
+  var voiceBack = null;
+  function stop() {
+    if (tour) { cancelAnimationFrame(tour.raf); tour = null; }
+    if (voiceBack) { clearTimeout(voiceBack); voiceBack = null; }
+    live(true);
+  }
   ["pointerdown", "keydown", "wheel", "touchstart"].forEach(function (ev) {
     window.addEventListener(ev, stop, { passive: true, once: true });
   });
@@ -987,8 +1023,15 @@ export function landingPageHtml(
       if (p < 1) { tour.raf = requestAnimationFrame(step); return; }
       leg++;
       t0 = null;
-      if (leg < legs.length) { tour.raf = requestAnimationFrame(step); } else { tour = null; }
+      if (leg < legs.length) { tour.raf = requestAnimationFrame(step); } else { stop(); }
     };
+    live(false);
+    /* requestAnimationFrame se congela en una pestaña de fondo: sin esta red el
+       recorrido no llegaría a su fin y la región se quedaría muda para siempre.
+       setTimeout sí corre (estrangulado) en segundo plano. */
+    var total = 0;
+    for (var g = 0; g < legs.length; g++) total += legs[g].wait + legs[g].ms;
+    voiceBack = setTimeout(stop, total + 500);
     tour.raf = requestAnimationFrame(step);
   }
 })();

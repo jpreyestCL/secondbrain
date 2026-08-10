@@ -89,6 +89,55 @@ describe("landing", () => {
     expect(html).toContain('aria-label="Cambiar entre tema claro y oscuro"');
   });
 
+  it("el recorrido automático silencia la región aria-live mientras dura", () => {
+    // Barrer el deslizador solo reescribe ~26 veces la respuesta: si la región
+    // sigue anunciando, un lector de pantalla queda atrapado en la cola.
+    expect(html).toContain('answerLive.setAttribute("aria-live", on ? "polite" : "off")');
+    expect(html).toContain("live(false);");
+    // Y se reactiva tanto al terminar como al intervenir el usuario: `stop()`
+    // es el único camino de salida y siempre devuelve la voz.
+    expect(html).toMatch(/function stop\(\) \{[\s\S]*?live\(true\);\n  \}/);
+    expect(html).toContain("if (leg < legs.length) { tour.raf = requestAnimationFrame(step); } else { stop(); }");
+  });
+
+  it("el botón de copiar no se muestra si el navegador no puede copiar", () => {
+    // En http plano navigator.clipboard no existe: antes el botón quedaba mudo.
+    expect(html).toContain('id="copy" hidden');
+    expect(html).toContain("if (navigator.clipboard && navigator.clipboard.writeText) {");
+    expect(html).toContain("copyBtn.hidden = false;");
+    // Un rechazo del permiso tampoco se traga en silencio.
+    expect(html).toContain('flash("Copia a mano", false)');
+  });
+
+  it("declara color-scheme para que el navegador pinte sus superficies acorde", () => {
+    expect(html).toContain("color-scheme: light dark;");
+    expect(html).toContain('[data-theme="dark"] { color-scheme: dark; }');
+    expect(html).toContain("color-scheme: light;");
+  });
+
+  it("las anclas no aterrizan bajo el nav pegajoso", () => {
+    expect(html).toMatch(/section\[id\][^{]*\{[^}]*scroll-margin-top/);
+  });
+
+  it("la barra superior envuelve en vez de recortarse en pantallas angostas", () => {
+    // body tiene overflow-x hidden: lo que desborde se pierde sin poder alcanzarlo.
+    expect(html).toMatch(/nav \.wrap \{[^}]*flex-wrap: wrap/);
+    expect(html).toMatch(/nav \.wrap \{[^}]*min-height: 64px/);
+    expect(html).not.toMatch(/nav \.wrap \{[^}]*[^-]height: 64px/);
+  });
+
+  it("sin JavaScript el deslizador conserva su aspecto nativo", () => {
+    // El eje pintado (segmentos y aguja) solo existe con JS; sin él, el control
+    // debe verse como un deslizador normal y no como una barra vacía.
+    expect(html).toContain(".segs, .needle { display: none; }");
+    expect(html).toContain(".js .segs, .js .needle { display: block; }");
+    expect(html).toMatch(/\n  \.axis input\[type=range\] \{[^}]*accent-color: var\(--vigente\)/);
+    // Y las reglas que lo vuelven invisible cuelgan todas de .js.
+    for (const rule of html.match(/[^\n]*input\[type=range\][^\n]*background: transparent[^\n]*/g) ?? []) {
+      expect(rule.trimStart().startsWith(".js ")).toBe(true);
+    }
+  });
+
   it("escapa el baseUrl interpolado", () => {
     const evil = landingPageHtml('https://x.test/"><script>alert(1)</script>');
     expect(evil).not.toContain("<script>alert(1)</script>");

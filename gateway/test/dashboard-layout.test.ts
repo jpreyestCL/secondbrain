@@ -143,6 +143,31 @@ describe("shell del dashboard", () => {
     expect(CUENTA).toMatch(/prefers-reduced-motion: reduce[\s\S]*\.js section \{ opacity: 1/);
   });
 
+  it("el índice de la guía cuelga de <main>, no de una sección (si no, no se pega)", () => {
+    const guia = guiaPageHtml();
+    // Un elemento pegajoso se ancla a su bloque contenedor: dentro de
+    // section.head solo tenía 1.6rem de recorrido antes de despegarse.
+    expect(guia).toMatch(/<\/section>\s*<nav class="toc"/);
+    expect(guia).not.toMatch(/<nav class="toc"[\s\S]*?<\/nav>\s*<\/section>/);
+    expect(guia).toContain(".toc { position: sticky;");
+  });
+
+  it("declara color-scheme para que las barras de scroll sigan al tema", () => {
+    // /cuenta siempre trae barra horizontal en móvil (.scroll table min-width).
+    expect(CUENTA).toContain("color-scheme: light dark;");
+    expect(CUENTA).toContain('[data-theme="dark"] { color-scheme: dark; }');
+    expect(CUENTA).toContain("color-scheme: light;");
+  });
+
+  it("el botón de copiar solo se esconde donde hay hover que lo revele", () => {
+    // En táctil quedaría invisible pero pulsable, encima del bloque scrollable.
+    expect(CUENTA).toContain("@media (hover: hover) {");
+    expect(CUENTA).toMatch(/@media \(hover: hover\) \{\s*\.block \.copy \{ opacity: 0; \}/);
+    expect(CUENTA).not.toMatch(/\n  \.block \.copy \{[^}]*opacity: 0/);
+    // Y no se solapa con la primera línea del código.
+    expect(CUENTA).toContain(".block pre { padding-right:");
+  });
+
   it("/guia es pública y se sirve dentro del shell sin sesión", async () => {
     const res = await fetch(`${baseUrl}/guia`, { redirect: "manual" });
     expect(res.status).toBe(200);
