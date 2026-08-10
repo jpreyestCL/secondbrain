@@ -1,6 +1,7 @@
 /**
- * Panel de cuenta (/cuenta), en español y con el mismo lenguaje visual que
- * /login y /consentimiento.
+ * Panel de cuenta (/cuenta). Solo produce el CONTENIDO; el `<head>`, el CSS y
+ * la barra de navegación vienen del shell compartido (dashboard-layout.ts), el
+ * mismo que envuelve /guia.
  *
  * Muestra lo mínimo que alguien necesita para auditar y cortar accesos sin
  * pedirle nada al administrador: su correo, a qué servidor de memoria está
@@ -9,6 +10,7 @@
  */
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
+import { dashboardShell } from "./dashboard-layout.js";
 
 export interface CuentaSessionView {
   id: string;
@@ -46,7 +48,7 @@ function fmtDate(value: string): string {
 
 export function cuentaPageHtml(opts: CuentaPageOptions): string {
   const notice = opts.notice
-    ? `\n  <p class="notice">${escapeHtml(opts.notice)}</p>`
+    ? `\n    <p class="notice">${escapeHtml(opts.notice)}</p>`
     : "";
 
   const sessionRows = opts.sessions
@@ -89,48 +91,13 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
         .join("\n")
     : `    <p class="muted">Todavía no has autorizado ninguna aplicación.</p>`;
 
-  return `<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>Second Brain — Tu cuenta</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #f5f5f4; padding: 2rem 1rem; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1917; color: #e7e5e4; } }
-  main { width: min(94vw, 48rem); margin-inline: auto; display: grid; gap: 1.2rem; }
-  section { background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 12px; padding: 1.5rem; display: grid; gap: .8rem; }
-  h1 { font-size: 1.3rem; margin: 0; }
-  h2 { font-size: 1rem; margin: 0; }
-  p { margin: 0; }
-  .muted { font-size: .85rem; opacity: .7; }
-  .notice { border-left: 3px solid #4f46e5; padding: .5rem .7rem; background: color-mix(in srgb, #4f46e5 12%, transparent); border-radius: 4px; font-size: .9rem; }
-  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem; font-size: .92rem; }
-  dt { font-weight: 600; } dd { margin: 0; word-break: break-word; }
-  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); vertical-align: top; }
-  td.ua { max-width: 16rem; overflow-wrap: anywhere; opacity: .7; }
-  .tag { font-size: .7rem; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 999px; padding: 0 .4rem; }
-  .item { display: flex; gap: 1rem; align-items: center; justify-content: space-between; border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: .7rem .9rem; }
-  button { font: inherit; font-weight: 600; padding: .5rem .9rem; border: 0; border-radius: 8px; background: #4f46e5; color: white; cursor: pointer; }
-  button.danger { background: #b91c1c; }
-  a.btn { display: inline-block; font-weight: 600; padding: .5rem .9rem; border-radius: 8px; background: #4f46e5; color: #fff; text-decoration: none; }
-  .scroll { overflow-x: auto; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
-  a { color: #4f46e5; }
-</style>
-</head>
-<body>
-<main>
-  <section>
+  const body = `  <section>
     <h1>Tu cuenta</h1>${notice}
     <dl>
       <dt>Correo</dt><dd>${escapeHtml(opts.email)}</dd>
       <dt>Tu memoria</dt><dd><code>${escapeHtml(opts.upstream ?? "sin servidor asignado todavía")}</code></dd>
     </dl>
-    <p class="muted"><a href="/guia">Guía de uso</a> · <a href="/">← Volver al inicio</a></p>
+    <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>
 
   <section>
@@ -157,8 +124,12 @@ ${closeOthers}
     <p class="muted">Revocar corta el acceso: se borran sus tokens y se te volverá a
       pedir permiso la próxima vez que la app intente conectarse.</p>
 ${clientCards}
-  </section>
-</main>
-</body>
-</html>`;
+  </section>`;
+
+  return dashboardShell({
+    title: "Tu cuenta",
+    active: "cuenta",
+    session: { email: opts.email, csrf: opts.csrf },
+    body,
+  });
 }

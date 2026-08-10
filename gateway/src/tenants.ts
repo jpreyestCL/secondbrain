@@ -19,6 +19,12 @@ export interface TenantRegistry {
   resolveUpstream(userId: string, email: string | null): string | null;
   /** Add or replace a mapping and persist it. */
   setMapping(key: string, upstreamUrl: string): void;
+  /**
+   * Cuántos tenants hay mapeados ahora mismo. Lo usa la válvula MAX_TENANTS
+   * antes de crear ninguna cuenta: cada tenant levanta un MCP con
+   * MemoryMax=500M y la máquina tiene ~1 GB libre.
+   */
+  count(): number;
   readonly filePath: string;
 }
 
@@ -68,6 +74,9 @@ export function createTenantRegistry(filePath: string): TenantRegistry {
         if (byEmail) return byEmail;
       }
       return null;
+    },
+    count() {
+      return Object.keys(load()).length;
     },
     setMapping(key, upstreamUrl) {
       const mapping = { ...load(), [key.trim().toLowerCase()]: upstreamUrl };

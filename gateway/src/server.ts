@@ -20,6 +20,7 @@ import {
   registroPageHtml,
   registroExitoHtml,
   registroErrorProvisionHtml,
+  registroCapacidadHtml,
   googleSinInvitacionHtml,
 } from "./registro-page.js";
 import { createRateLimiter, clientIpFrom } from "./rate-limit.js";
@@ -414,37 +415,86 @@ export function buildApp(
   app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
   // --- Login page (single owner, Spanish) ---
-  const registrationEnabled = () => config.registrationCode.length > 0;
+  const mode = config.registrationMode;
+  const registrationEnabled = () => mode !== "closed";
   // Google es opcional: sin AMBAS credenciales, no hay botón ni proveedor.
   const googleEnabled = Boolean(config.googleClientId && config.googleClientSecret);
   const secureCookies = config.baseUrl.startsWith("https://");
   app.get("/login", (c) =>
-    c.html(loginPageHtml({ showRegisterLink: registrationEnabled(), showGoogle: googleEnabled })),
+    c.html(
+      loginPageHtml({
+        showRegisterLink: registrationEnabled(),
+        openRegistration: mode === "open",
+        showGoogle: googleEnabled,
+      }),
+    ),
   );
-  app.get("/", (c) => c.html(landingPageHtml(config.baseUrl)));
+  app.get("/", (c) => c.html(landingPageHtml(config.baseUrl, mode)));
   app.get("/health", (c) => c.json({ ok: true }));
 
-  // --- Registro self-service con código de invitación (/registro) ---
-  app.get("/registro", (c) => {
-    const enabled = registrationEnabled();
-    return c.html(
-      registroPageHtml({ enabled, showGoogle: googleEnabled }),
-      enabled ? 200 : 403,
+  // --- VÁLVULA DE SEGURIDAD: tope duro de tenants (MAX_TENANTS) --------------
+  // El MCP de cada tenant corre con MemoryMax=500M y el servidor tiene ~1 GB de
+  // RAM libre, compartida con las apps de producción del dueño. Un registro
+  // abierto sin tope puede dejar la máquina sin memoria (OOM), así que se
+  // comprueba ANTES de crear la cuenta: si está lleno no se crea usuario, no se
+  // aprovisiona nada y se muestra la página de capacidad.
+  const atCapacity = (): boolean => {
+    try {
+      return tenants.count() >= config.maxTenants;
+    } catch (err) {
+      // tenants.json ilegible: se prefiere NO registrar antes que arriesgar el
+      // tope. El error queda en el log.
+      console.error("[registro] no se pudo contar los tenants:", err);
+      return true;
+    }
+  };
+
+  const refuseForCapacity = (c: Context, who: string) => {
+    console.warn(
+      `[registro] RECHAZADO por capacidad (MAX_TENANTS=${config.maxTenants}): ${who}`,
     );
-  });
+    return c.html(registroCapacidadHtml(), 503);
+  };
+
+  // --- Registro self-service (/registro) ---
+  app.get("/registro", (c) =>
+    c.html(
+      registroPageHtml({ mode, showGoogle: googleEnabled }),
+      mode === "closed" ? 403 : 200,
+    ),
+  );
 
   // Rate limit en memoria para POST /registro: registroRateLimit req/min/IP.
   // La IP se toma del salto de confianza (cf-connecting-ip o el ÚLTIMO valor
   // de X-Forwarded-For), nunca del primero (controlado por el cliente).
   const registroLimiter = createRateLimiter(config.registroRateLimit);
 
+  /**
+   * Borra por completo un usuario recién creado (cuenta de credenciales y
+   * sesiones incluidas). Se usa cuando el aprovisionamiento falla: así el
+   * correo no queda "quemado" —un reintento con el mismo correo funciona— y no
+   * queda una cuenta que inicia sesión pero no tiene memoria detrás.
+   */
+  const deleteUserByEmail = async (email: string): Promise<void> => {
+    const adapter = await adapterOf();
+    const user = await adapter.findOne<{ id: string }>({
+      model: "user",
+      where: [{ field: "email", value: email }],
+    });
+    if (!user?.id) return;
+    for (const model of ["session", "account"]) {
+      await adapter.deleteMany({ model, where: [{ field: "userId", value: user.id }] });
+    }
+    await adapter.deleteMany({ model: "user", where: [{ field: "id", value: user.id }] });
+  };
+
   app.post("/registro", async (c) => {
     const ip = clientIpFrom(c.req.raw.headers);
     if (!registroLimiter.ok(ip)) {
       return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
     }
-    if (!registrationEnabled()) {
-      return c.html(registroPageHtml({ enabled: false }), 403);
+    if (mode === "closed") {
+      return c.html(registroPageHtml({ mode: "closed" }), 403);
     }
 
     const body = await c.req.parseBody();
@@ -454,14 +504,17 @@ export function buildApp(
     const code = String(body["code"] ?? "");
 
     const fail = (error: string, status: 400 | 403 = 400) =>
-      c.html(registroPageHtml({ enabled: true, error, email }), status);
+      c.html(registroPageHtml({ mode, error, email, showGoogle: googleEnabled }), status);
 
-    if (!safeEquals(code, config.registrationCode)) {
+    if (mode === "invite" && !safeEquals(code, config.registrationCode)) {
       return fail("Código de invitación incorrecto.", 403);
     }
     if (!EMAIL_RE.test(email)) return fail("Correo inválido.");
     if (password.length < 10) return fail("La contraseña debe tener al menos 10 caracteres.");
     if (password !== confirm) return fail("Las contraseñas no coinciden.");
+
+    // Tope de capacidad ANTES de tocar la base: ni usuario ni tenant.
+    if (atCapacity()) return refuseForCapacity(c, email);
 
     // 1) Crear el usuario (server-side; funciona aunque ALLOW_SIGNUP=false).
     try {
@@ -485,6 +538,14 @@ export function buildApp(
       return c.html(registroExitoHtml(config.baseUrl, email));
     } catch (err) {
       console.error(`[registro] fallo aprovisionando tenant para ${email}:`, err);
+      // Rollback: la cuenta recién creada se borra para no dejar un usuario
+      // que entra pero no tiene memoria (y para que el correo siga libre).
+      try {
+        await deleteUserByEmail(email);
+        console.warn(`[registro] rollback: usuario ${email} borrado tras fallo de provisión`);
+      } catch (cleanupErr) {
+        console.error(`[registro] rollback FALLÓ para ${email}:`, cleanupErr);
+      }
       return c.html(registroErrorProvisionHtml(email), 500);
     }
   });
@@ -498,7 +559,9 @@ export function buildApp(
     if (!registroLimiter.ok(ip)) {
       return c.json({ error: "too_many_requests" }, 429);
     }
-    if (!registrationEnabled()) {
+    // Solo tiene sentido en modo `invite`: en `open` no hay código que validar
+    // y en `closed` no se registra nadie.
+    if (mode !== "invite") {
       return c.json({ error: "registro_deshabilitado" }, 403);
     }
     const body = (await c.req.json().catch(() => ({}))) as { code?: unknown };
@@ -516,16 +579,29 @@ export function buildApp(
     return c.json({ ok: true });
   });
 
-  // --- Post-callback de Google: HACE CUMPLIR el gate de invitación ---
+  /** Cierra la sesión actual y devuelve `html` con `status` (cookies borradas). */
+  const signOutWith = async (c: Context, html: string, status: 403 | 503) => {
+    const signOut = await auth.api.signOut({ headers: c.req.raw.headers, asResponse: true });
+    const response = new Response(html, {
+      status,
+      headers: { "content-type": "text/html; charset=UTF-8" },
+    });
+    for (const setCookieHeader of signOut.headers.getSetCookie()) {
+      response.headers.append("set-cookie", setCookieHeader);
+    }
+    return response;
+  };
+
+  // --- Post-callback de Google: HACE CUMPLIR el modo de registro ---
   // El callback de Better Auth (/api/auth/callback/google) redirige aquí. En
   // este punto el usuario YA está autenticado (sesión creada). Reglas:
-  //   - Usuario con tenant mapeado  -> login normal (reanuda OAuth si aplica).
-  //   - Usuario sin tenant + cookie `registro_ok` válida -> aprovisiona y mapea
-  //     (mismo flujo serializado que /registro).
-  //   - Usuario sin tenant sin cookie válida -> NO aprovisiona, cierra sesión y
-  //     muestra la página que pide un código de invitación.
-  // Invariante: jamás se crea un mapeo de tenant sin un código de invitación
-  // válido; un usuario sin mapeo sigue recibiendo 403 en /mcp.
+  //   - Usuario con tenant mapeado -> login normal (reanuda OAuth si aplica).
+  //   - Usuario sin tenant, según REGISTRATION_MODE:
+  //       · `open`   -> aprovisiona y mapea (rate limit + tope MAX_TENANTS).
+  //       · `invite` -> solo con cookie `registro_ok` válida; si no, se cierra
+  //                     la sesión y se pide un código de invitación.
+  //       · `closed` -> nunca aprovisiona; se cierra la sesión.
+  // Invariante: un usuario sin mapeo sigue recibiendo 403 en /mcp.
   app.get("/post-google", async (c) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session?.user) return c.redirect("/login");
@@ -548,34 +624,60 @@ export function buildApp(
     const upstream = tenants.resolveUpstream(userId, email);
     if (upstream) return done(); // usuario existente: login normal
 
-    // Usuario sin tenant: solo se aprovisiona con cookie de invitación válida.
-    const cookie = getCookie(c, REGISTRO_COOKIE_NAME);
-    if (verifyRegistroOk(cookie, config.registrationCode, config.authSecret)) {
-      try {
-        const result = await provisioner.provision(email);
-        tenants.setMapping(email, result.upstreamUrl);
-        deleteCookie(c, REGISTRO_COOKIE_NAME, { path: "/" });
-        console.log(
-          `[google] tenant listo: ${email} -> ${result.upstreamUrl} (slug=${result.slug})`,
-        );
-        return done();
-      } catch (err) {
-        console.error(`[google] fallo aprovisionando tenant para ${email}:`, err);
-        return c.html(registroErrorProvisionHtml(email), 500);
-      }
+    // Registro cerrado: nadie nuevo entra por Google.
+    if (mode === "closed") {
+      console.warn(`[google] sesión sin tenant con registro cerrado: ${email} — cerrando sesión`);
+      return signOutWith(c, registroPageHtml({ mode: "closed" }), 403);
     }
 
-    // Sin cookie válida: NO aprovisionar. Cierra la sesión y explica.
-    console.warn(`[google] sesión sin tenant ni invitación válida: ${email} — cerrando sesión`);
-    const signOut = await auth.api.signOut({ headers: c.req.raw.headers, asResponse: true });
-    const response = new Response(googleSinInvitacionHtml(), {
-      status: 403,
-      headers: { "content-type": "text/html; charset=UTF-8" },
-    });
-    for (const setCookieHeader of signOut.headers.getSetCookie()) {
-      response.headers.append("set-cookie", setCookieHeader);
+    // Alta de un usuario nuevo por Google: mismo rate limit por IP que /registro.
+    const ip = clientIpFrom(c.req.raw.headers);
+    if (!registroLimiter.ok(ip)) {
+      console.warn(`[google] rate limit alcanzado en el alta por Google desde ${ip}`);
+      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
     }
-    return response;
+
+    // En modo `invite` sigue haciendo falta la cookie `registro_ok`; en `open`
+    // el alta procede directamente.
+    const cookie = getCookie(c, REGISTRO_COOKIE_NAME);
+    const invited =
+      mode === "open" ||
+      verifyRegistroOk(cookie, config.registrationCode, config.authSecret);
+
+    if (!invited) {
+      // Sin cookie válida: NO aprovisionar. Cierra la sesión y explica.
+      console.warn(`[google] sesión sin tenant ni invitación válida: ${email} — cerrando sesión`);
+      return signOutWith(c, googleSinInvitacionHtml(), 403);
+    }
+
+    // Tope de capacidad: se comprueba también aquí (misma válvula que /registro).
+    if (atCapacity()) {
+      console.warn(
+        `[google] alta RECHAZADA por capacidad (MAX_TENANTS=${config.maxTenants}): ${email}`,
+      );
+      return signOutWith(c, registroCapacidadHtml(), 503);
+    }
+
+    try {
+      const result = await provisioner.provision(email);
+      tenants.setMapping(email, result.upstreamUrl);
+      deleteCookie(c, REGISTRO_COOKIE_NAME, { path: "/" });
+      console.log(
+        `[google] tenant listo: ${email} -> ${result.upstreamUrl} (slug=${result.slug})`,
+      );
+      return done();
+    } catch (err) {
+      console.error(`[google] fallo aprovisionando tenant para ${email}:`, err);
+      // Mismo rollback que en /registro: se borra el usuario recién creado para
+      // no dejar una cuenta que entra pero no tiene memoria.
+      try {
+        await deleteUserByEmail(email);
+        console.warn(`[google] rollback: usuario ${email} borrado tras fallo de provisión`);
+      } catch (cleanupErr) {
+        console.error(`[google] rollback FALLÓ para ${email}:`, cleanupErr);
+      }
+      return c.html(registroErrorProvisionHtml(email), 500);
+    }
   });
 
   // --- Panel de cuenta (/cuenta) y exportación (/export) ----------------------
@@ -668,13 +770,25 @@ export function buildApp(
 
   app.get("/cuenta", (c) => renderCuenta(c, NOTICES[c.req.query("ok") ?? ""] ?? null));
 
-  // Guía de uso: contenido estático, pero solo para gente con sesión (describe
-  // el pipeline de ingesta y las herramientas del conector, no es página pública).
   // La guía es PÚBLICA: es documentación (todo está en el repo público) y se
   // enlaza desde la landing, así que exigir sesión solo rebotaba al login a
   // quien todavía no tiene cuenta. No contiene secretos: los comandos usan
   // marcadores (<password del tenant>, <key>).
-  app.get("/guia", (c) => c.html(guiaPageHtml()));
+  // Se renderiza dentro del MISMO shell que /cuenta: con sesión la barra trae
+  // el correo y "Cerrar sesión"; sin sesión, "Iniciar sesión".
+  app.get("/guia", async (c) => {
+    const session = await requireSession(c);
+    return c.html(
+      guiaPageHtml({
+        session: session
+          ? {
+              email: session.user.email,
+              csrf: csrfToken(session.session.id, config.authSecret),
+            }
+          : null,
+      }),
+    );
+  });
 
   /** Guardia común de los POST del panel: same-origin + token CSRF + sesión. */
   const guardedPost = async (c: Context) => {
@@ -689,6 +803,20 @@ export function buildApp(
     }
     return { session, body } as const;
   };
+
+  // "Cerrar sesión" de la barra del dashboard. Es un POST protegido igual que
+  // el resto de acciones de /cuenta (same-origin + CSRF): un GET permitiría que
+  // cualquier <img src="/logout"> ajeno te desconectara.
+  app.post("/cuenta/cerrar-sesion", async (c) => {
+    const guard = await guardedPost(c);
+    if ("error" in guard) return guard.error;
+    const signOut = await auth.api.signOut({ headers: c.req.raw.headers, asResponse: true });
+    const response = new Response(null, { status: 302, headers: { location: "/" } });
+    for (const setCookieHeader of signOut.headers.getSetCookie()) {
+      response.headers.append("set-cookie", setCookieHeader);
+    }
+    return response;
+  });
 
   app.post("/cuenta/cerrar-sesiones", async (c) => {
     const guard = await guardedPost(c);

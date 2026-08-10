@@ -228,7 +228,9 @@ describe("registro self-service", () => {
   });
 });
 
-describe("registro deshabilitado (sin REGISTRATION_CODE)", () => {
+// Antes "registro deshabilitado" era la ausencia de REGISTRATION_CODE. Ahora el
+// registro es ABIERTO por defecto y cerrarlo es explícito: REGISTRATION_MODE=closed.
+describe("registro deshabilitado (REGISTRATION_MODE=closed)", () => {
   let closedUrl: string;
   let closedServer: ServerType;
   let closedTmp: string;
@@ -241,6 +243,7 @@ describe("registro deshabilitado (sin REGISTRATION_CODE)", () => {
       baseUrl: "http://127.0.0.1:8787",
       tenantsFile: path.join(closedTmp, "tenants.json"),
       registrationCode: "",
+      registrationMode: "closed",
       brainRepoRoot: closedTmp,
       provisionCmd: "false", // jamás debería ejecutarse
     });

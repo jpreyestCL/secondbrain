@@ -7,11 +7,43 @@
  */
 
 import { escapeHtml } from "./html.js";
+import type { RegistrationMode } from "./env.js";
 
-export function landingPageHtml(baseUrl: string): string {
+export function landingPageHtml(
+  baseUrl: string,
+  registrationMode: RegistrationMode = "open",
+): string {
   // baseUrl viene de la configuración, pero se escapa igual: ningún valor
   // interpolado entra crudo en el HTML (defensa en profundidad).
   const mcpUrl = escapeHtml(baseUrl.replace(/\/$/, "") + "/mcp");
+  // La tarjeta "¿Todavía no tienes cuenta?" cambia con REGISTRATION_MODE: en
+  // `open` no se menciona ningún código porque no existe.
+  const registroCard =
+    registrationMode === "closed"
+      ? `<h3>Registro cerrado por ahora</h3>
+      <p>Esta instancia no está aceptando cuentas nuevas en este momento. Si ya tienes
+        una, puedes entrar; y si quieres tu propio espacio, el proyecto es abierto.</p>
+      <div class="cta-row" style="margin-top:.4rem">
+        <a class="btn" href="/login">Ya tengo cuenta</a>
+      </div>`
+      : registrationMode === "invite"
+        ? `<h3>¿Todavía no tienes cuenta?</h3>
+      <p>El acceso es por invitación: necesitas un código para crear tu espacio. Si ya lo
+        tienes, regístrate y en el mismo momento se crea tu grafo privado. Si ya tienes
+        cuenta, puedes entrar con Google.</p>
+      <div class="cta-row" style="margin-top:.4rem">
+        <a class="btn" href="/registro">Crear cuenta</a>
+        <a class="btn ghost" href="/login">Ya tengo cuenta</a>
+      </div>`
+        : `<h3>¿Todavía no tienes cuenta?</h3>
+      <p>El registro está abierto: no necesitas código ni invitación de nadie. Crea tu
+        cuenta —con correo o con Google— y en el mismo momento se prepara tu grafo
+        privado. Los cupos de esta instancia son limitados: se atienden por orden de
+        llegada.</p>
+      <div class="cta-row" style="margin-top:.4rem">
+        <a class="btn" href="/registro">Crear cuenta gratis</a>
+        <a class="btn ghost" href="/login">Ya tengo cuenta</a>
+      </div>`;
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -368,14 +400,7 @@ export function landingPageHtml(baseUrl: string): string {
       </div>
     </div>
     <div class="card">
-      <h3>¿Todavía no tienes cuenta?</h3>
-      <p>El acceso es por invitación: necesitas un código para crear tu espacio. Si ya lo
-        tienes, regístrate y en el mismo momento se crea tu grafo privado. Si ya tienes
-        cuenta, puedes entrar con Google.</p>
-      <div class="cta-row" style="margin-top:.4rem">
-        <a class="btn" href="/registro">Crear cuenta</a>
-        <a class="btn ghost" href="/login">Ya tengo cuenta</a>
-      </div>
+      ${registroCard}
       <p style="margin-top:.8rem">¿Prefieres control total? El proyecto es abierto y puedes
         <a href="https://github.com/jpreyestCL/secondbrain">levantarlo en tu propio servidor</a>.</p>
     </div>

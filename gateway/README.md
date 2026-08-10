@@ -57,13 +57,14 @@ Claude (claude.ai / Desktop / móvil)
 | `/api/auth/mcp/authorize` · `token` · `register` | Autorización, tokens y registro dinámico |
 | `/api/auth/*` | Resto de Better Auth (sign-in, sesión, jwks…) |
 | `/login` | Página de inicio de sesión (español) |
-| `/registro` | Registro self-service con código de invitación (español) |
-| `/registro/validar-codigo` | Valida el código y emite la cookie `registro_ok` (registro vía Google) |
-| `/post-google` | Post-callback de Google: hace cumplir el gate de invitación (ver «Habilitar Google») |
+| `/registro` | Registro self-service (español). Sin código en modo `open`; con código en `invite` |
+| `/registro/validar-codigo` | Solo en modo `invite`: valida el código y emite la cookie `registro_ok` (registro vía Google) |
+| `/post-google` | Post-callback de Google: hace cumplir `REGISTRATION_MODE` y el tope `MAX_TENANTS` |
 | `/api/auth/callback/google` | Callback OAuth de Google (Better Auth); redirige a `/post-google` |
 | `/consentimiento` | Decide la pantalla de consentimiento propia (POST, CSRF) |
 | `/cuenta` | Panel de cuenta: sesiones, apps autorizadas, exportación (español) |
-| `/cuenta/cerrar-sesiones` · `/cuenta/revocar-cliente` | Acciones del panel (POST, same-origin + token CSRF) |
+| `/guia` | Guía de uso. **Pública**, dentro del mismo shell del dashboard |
+| `/cuenta/cerrar-sesion` · `/cuenta/cerrar-sesiones` · `/cuenta/revocar-cliente` | Acciones del panel (POST, same-origin + token CSRF) |
 | `/export` | Descarga JSON de toda tu memoria (requiere sesión) |
 | `/mcp` | Endpoint MCP protegido (proxy por tenant) |
 | `/health` | Chequeo simple |
@@ -81,7 +82,9 @@ Copia `.env.example` a `.env`:
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | Listener local. |
 | `ALLOW_SIGNUP` | `false` | Registro **abierto** (sin código) vía `/api/auth/sign-up/*`. Mantener en `false`. No afecta a `/registro`. |
 | `DB_PATH` | `gateway/data/auth.sqlite` | Base SQLite de Better Auth. |
-| `REGISTRATION_CODE` | — (vacío) | Código de invitación para `/registro`. **Vacío ⇒ registro deshabilitado.** |
+| `REGISTRATION_MODE` | `open` | `open` (cualquiera se registra, sin código) · `invite` (hace falta `REGISTRATION_CODE`) · `closed` (`/registro` responde 403). Si no se define pero sí hay `REGISTRATION_CODE`, el modo efectivo es `invite`. |
+| `REGISTRATION_CODE` | — (vacío) | Código de invitación. Solo se usa en modo `invite`. |
+| `MAX_TENANTS` | `5` | **Válvula de seguridad**: tope duro de tenants. Al alcanzarlo el registro se cierra temporalmente (ver abajo). |
 | `BRAIN_REPO_ROOT` | `..` (relativo a `gateway/`) | Raíz del repo (contiene `infra/`). Ahí se escanean `infra/tenants/*.env` y se ejecuta `PROVISION_CMD`. |
 | `PROVISION_CMD` | `bash infra/scripts/provision-tenant.sh {slug} {port}` | Comando de aprovisionamiento (`{slug}`/`{port}` se sustituyen; sin placeholders se agregan como args). |
 | `TENANT_PORT_BASE` | `9021` | Primer puerto MCP considerado al asignar puerto a un tenant nuevo. |
@@ -142,24 +145,46 @@ npm run add-user -- otra@persona.cl "su-contraseña-larga"
 # 4. La persona agrega el conector en su claude.ai con la misma URL /mcp
 ```
 
-## Registro self-service (`/registro`)
+## Registro self-service (`/registro`) y `REGISTRATION_MODE`
 
-Con `REGISTRATION_CODE` definido en `.env`, cualquier persona con el código
-puede crear su cuenta en `https://<túnel>/registro` (correo, contraseña,
-confirmación y código de invitación; validación en el servidor). La página de
-login muestra el enlace «¿No tienes cuenta? Regístrate» solo cuando el código
-está definido. Si `REGISTRATION_CODE` está vacío, `/registro` muestra
-«Registro deshabilitado».
+El registro tiene **tres modos**, gobernados por `REGISTRATION_MODE`:
+
+| Modo | `/registro` | Google |
+|---|---|---|
+| `open` (**default**) | Formulario **sin** campo de código: correo, contraseña y confirmación. Se crea la cuenta y se aprovisiona el tenant en el acto. | Botón «Continuar con Google» habilitado desde el primer momento; un usuario nuevo obtiene tenant automáticamente en `/post-google`. |
+| `invite` | Formulario **con** código de invitación (`REGISTRATION_CODE`), comparado en tiempo constante. | Botón deshabilitado hasta canjear el código por la cookie `registro_ok`. |
+| `closed` | 403 «Registro deshabilitado»; `/login` no enlaza a `/registro`. | Un usuario nuevo por Google no se aprovisiona nunca: se cierra su sesión. |
+
+**Compatibilidad hacia atrás**: si `REGISTRATION_MODE` no está definido pero
+`REGISTRATION_CODE` sí, el modo efectivo es `invite` (el comportamiento
+anterior). Sin ninguna de las dos, el modo es `open`.
+
+### Válvula de seguridad: `MAX_TENANTS` (default 5)
+
+**Antes de crear ninguna cuenta**, el gateway cuenta las entradas de
+`tenants.json`. Si ya se alcanzó `MAX_TENANTS`, el registro se rechaza con una
+página en español («Registro cerrado temporalmente», HTTP 503), se escribe un
+aviso en el log y **no se crea usuario ni se aprovisiona nada**. El mismo tope
+se aplica al alta por Google.
+
+Por qué existe: el servidor tiene **~1 GB de RAM libre** y el MCP de cada tenant
+corre con **`MemoryMax=500M`**. Con el registro abierto, un puñado de altas
+seguidas basta para dejar la máquina sin memoria — y en ese mismo equipo viven
+las apps de producción del dueño, así que un OOM no solo rompería el second
+brain. `MAX_TENANTS` es el límite duro que hace que «registro abierto» siga
+siendo seguro; súbelo solo cuando haya RAM que lo respalde.
+
+El `POST /registro` conserva su **rate limit por IP** (`REGISTRO_RATE_LIMIT`,
+default 5/min) y el alta por Google en `/post-google` usa **el mismo limitador**.
 
 **Interacción con `ALLOW_SIGNUP`**: son independientes.
 
-- `ALLOW_SIGNUP` gobierna el registro **abierto** (sin código) por el endpoint
-  público `/api/auth/sign-up/*`. Déjalo en `false`.
-- `REGISTRATION_CODE` gobierna el registro **con código** en `/registro`, que
-  funciona aunque `ALLOW_SIGNUP=false`: el gateway crea el usuario del lado
-  del servidor tras validar el código. (Internamente Better Auth tiene el
-  sign-up habilitado y el endpoint público se bloquea en la capa HTTP según
-  `ALLOW_SIGNUP`.)
+- `ALLOW_SIGNUP` gobierna el endpoint HTTP público `/api/auth/sign-up/*`.
+  Déjalo en `false`.
+- `REGISTRATION_MODE` gobierna `/registro`, que funciona aunque
+  `ALLOW_SIGNUP=false`: el gateway crea el usuario del lado del servidor.
+  (Internamente Better Auth tiene el sign-up habilitado y el endpoint público
+  se bloquea en la capa HTTP según `ALLOW_SIGNUP`.)
 
 Tras un registro exitoso el gateway **aprovisiona el tenant automáticamente**:
 
@@ -179,11 +204,13 @@ Tras un registro exitoso el gateway **aprovisiona el tenant automáticamente**:
 Los aprovisionamientos concurrentes se **serializan** en proceso (cola +
 reserva de slug/puerto), así dos registros simultáneos nunca comparten puerto.
 
-Si el aprovisionamiento falla, la cuenta queda creada pero **sin tenant**: la
-página pide contactar al administrador, el error completo queda en el log del
-gateway y `/mcp` responde `403` (nunca datos de otra persona). El
-administrador puede terminar a mano: `bash infra/scripts/provision-tenant.sh
-<slug> <puerto>` + mapeo en `tenants.json`.
+Si el aprovisionamiento **falla**, el gateway hace *rollback*: **borra el
+usuario recién creado** (con sus sesiones y su fila de `account`) y muestra la
+página de error. Así el correo no queda «quemado» —un reintento con el mismo
+correo funciona— y no queda una cuenta que inicia sesión pero no tiene memoria
+detrás. El error completo queda en el log del gateway. Se mantiene la
+invariante de siempre: un usuario sin mapeo en `tenants.json` recibe `403` en
+`/mcp`, nunca los datos de otra persona.
 
 Al terminar, la página de éxito guía a la persona: agregar el conector
 `https://<BASE_URL>/mcp` en claude.ai (Ajustes → Conectores → Agregar conector
@@ -194,8 +221,9 @@ Los CLIs `create-owner` y `add-user` siguen funcionando igual.
 
 ## Habilitar Google ("Continuar con Google")
 
-Google es **opcional** y respeta el gate de invitación: **nunca** crea un tenant
-sin un código válido. Si `GOOGLE_CLIENT_ID` o `GOOGLE_CLIENT_SECRET` faltan, el
+Google es **opcional** y respeta `REGISTRATION_MODE`: en `invite` **nunca** crea
+un tenant sin un código válido; en `open` sí aprovisiona a un usuario nuevo
+(sujeto al rate limit y a `MAX_TENANTS`); en `closed` no aprovisiona a nadie. Si `GOOGLE_CLIENT_ID` o `GOOGLE_CLIENT_SECRET` faltan, el
 proveedor social no se registra y el botón no se muestra en ninguna página (sin
 crash).
 
@@ -236,19 +264,26 @@ Reinicia el gateway (`npm run dev` o `npm run build && npm start`). El botón
 
 - **Usuario existente** (ya en `tenants.json`) que entra con Google → inicia
   sesión normal.
-- **Usuario nuevo con Google**: el flujo obliga a validar primero el código de
-  invitación. En `/registro` el botón de Google está deshabilitado hasta que se
-  ingresa un código; al validarlo (`POST /registro/validar-codigo`, comparación
-  en tiempo constante) se emite una cookie httpOnly de vida corta
+- **Usuario nuevo con Google en modo `open`**: el botón está habilitado desde
+  el principio y no hay cookie que canjear. Tras el callback, `/post-google`
+  aprovisiona su tenant directamente (con el rate limit por IP de `/registro` y
+  el tope `MAX_TENANTS` aplicados).
+- **Usuario nuevo con Google en modo `invite`**: el flujo obliga a validar
+  primero el código. En `/registro` el botón de Google está deshabilitado hasta
+  que se ingresa un código; al validarlo (`POST /registro/validar-codigo`,
+  comparación en tiempo constante) se emite una cookie httpOnly de vida corta
   (`registro_ok`, 10 min, valor = HMAC del código con `AUTH_SECRET`).
 - Tras el callback de Google, el gateway redirige a `/post-google`, que:
   - si el usuario ya tiene tenant → login normal;
-  - si no tiene tenant **y** la cookie `registro_ok` es válida → aprovisiona el
-    tenant (mismo flujo serializado que `/registro`) y lo mapea;
-  - si no tiene tenant **y no** hay cookie válida → **no aprovisiona**, cierra la
-    sesión y muestra una página en español pidiendo un código de invitación.
-- **Invariante**: jamás se crea un mapeo de tenant sin un código válido; un
-  usuario sin mapeo sigue recibiendo `403` en `/mcp`.
+  - si no tiene tenant y el modo lo permite (`open`, o `invite` con cookie
+    `registro_ok` válida) → aprovisiona el tenant (mismo flujo serializado que
+    `/registro`) y lo mapea;
+  - si no tiene tenant y el modo **no** lo permite (`closed`, o `invite` sin
+    cookie válida) → **no aprovisiona**, cierra la sesión y lo explica;
+  - si el tope `MAX_TENANTS` está alcanzado → **no aprovisiona**, cierra la
+    sesión y muestra la página de capacidad.
+- **Invariante**: un usuario sin mapeo sigue recibiendo `403` en `/mcp`, y en
+  modo `invite` jamás se crea un mapeo sin un código válido.
 
 Si rotas `REGISTRATION_CODE`, las cookies `registro_ok` emitidas con el código
 anterior dejan de validar automáticamente (el HMAC deja de coincidir).
@@ -268,7 +303,22 @@ le queda consentimiento ni token a nadie, se borra también el registro del
 cliente (los clientes se crean por DCR, uno por conexión). La próxima vez que
 la app intente conectarse volverá a pedirse consentimiento.
 
-Los dos POST del panel (`/cuenta/cerrar-sesiones`, `/cuenta/revocar-cliente`)
+### Shell compartido del dashboard
+
+`/cuenta` y `/guia` se renderizan dentro del **mismo layout**
+(`src/dashboard-layout.ts`): un solo `<head>`, un solo bloque CSS (antes estaba
+duplicado en las dos páginas) y una barra superior con el nombre del producto y
+las secciones **Cuenta · Guía · Exportar**, marcando la activa con
+`aria-current="page"`. Con sesión, la barra muestra el correo y un botón
+«Cerrar sesión»; sin sesión (la guía es pública) muestra «Iniciar sesión». La
+barra envuelve y se apila en móvil, así que no desborda.
+
+«Cerrar sesión» es un **POST** a `/cuenta/cerrar-sesion` protegido igual que el
+resto de acciones del panel (same-origin + token CSRF) y redirige a `/`; como
+`GET` sería activable desde cualquier página de terceros.
+
+Los POST del panel (`/cuenta/cerrar-sesion`, `/cuenta/cerrar-sesiones`,
+`/cuenta/revocar-cliente`)
 y el de `/consentimiento` exigen **same-origin** (cabecera `Origin`/`Referer`
 del propio gateway) **y** un token CSRF `HMAC(idDeSesión, AUTH_SECRET)`
 incrustado en el formulario. Sin cabecera `Origin` se rechaza.
@@ -350,10 +400,14 @@ tailscale funnel 8787
   `X-Forwarded-For`, así que el túnel debe ponerla, como hace cloudflared).
   Es un límite básico en proceso: se reinicia con el gateway y no sustituye a
   un rate limit real en el borde si esperas abuso.
-- **Rota `REGISTRATION_CODE`** periódicamente y cuando termines una tanda de
-  invitaciones; déjalo vacío para cerrar el registro (basta reiniciar el
-  gateway con el `.env` actualizado). Trátalo como una contraseña: quien lo
-  tenga puede crear cuentas y contenedores en tu máquina.
+- **`MAX_TENANTS` es la contención del registro abierto**: cada tenant levanta
+  un MCP con `MemoryMax=500M` sobre ~1 GB de RAM libre, compartida con las apps
+  de producción del dueño. Con `REGISTRATION_MODE=open` es lo único que separa
+  un registro legítimo de un OOM de la máquina completa. Súbelo solo con RAM
+  que lo respalde; para cerrar del todo usa `REGISTRATION_MODE=closed`.
+- Si usas `REGISTRATION_MODE=invite`, **rota `REGISTRATION_CODE`**
+  periódicamente y al terminar una tanda de invitaciones. Trátalo como una
+  contraseña: quien lo tenga puede crear cuentas y contenedores en tu máquina.
 - El gateway escucha solo en `127.0.0.1`; la única puerta es el túnel HTTPS.
 - Los upstreams de Graphiti deben escuchar **solo en localhost** (o red
   interna de Docker): nadie debe poder saltarse el gateway.
@@ -386,10 +440,19 @@ Cubren: metadatos OAuth, `401 + WWW-Authenticate` sin token, página de login,
 flujo OAuth completo (registro dinámico → login → authorize PKCE → token),
 enrutamiento multi-tenant a upstreams distintos, `403` para usuario sin
 tenant, rechazo de authorize sin PKCE, y el registro self-service: código
-ausente/incorrecto, registro deshabilitado sin `REGISTRATION_CODE`, registro
-exitoso con aprovisionamiento (stub de `PROVISION_CMD`) + mapeo + flujo OAuth
-completo hasta `/mcp`, colisión de slugs, correo duplicado, bloqueo del
-sign-up público y rate limit. Además, «Continuar con Google»: botón ausente y
+ausente/incorrecto, `REGISTRATION_MODE=closed` ⇒ 403, registro exitoso con
+aprovisionamiento (stub de `PROVISION_CMD`) + mapeo + flujo OAuth completo
+hasta `/mcp`, colisión de slugs, correo duplicado, bloqueo del sign-up público
+y rate limit. Los tres modos de registro tienen su propia suite: `open`
+(sin campo de código, POST sin código ⇒ cuenta creada y tenant aprovisionado,
+Google sin cookie `registro_ok`), `invite` (el código sigue siendo obligatorio,
+también para Google) y `closed`; más la válvula `MAX_TENANTS` (al tope ⇒ 503,
+**ninguna** fila de usuario creada, ni por formulario ni por Google) y el
+rollback (provisión fallida ⇒ el usuario se borra y el reintento con el mismo
+correo funciona). El shell del dashboard tiene la suya: mismo bloque CSS en
+`/cuenta` y `/guia`, sección activa correcta, barra con correo + «Cerrar
+sesión» con sesión y «Iniciar sesión» sin ella, y el POST de cerrar sesión
+(CSRF y cross-origin ⇒ 403). Además, «Continuar con Google»: botón ausente y
 proveedor no cableado cuando faltan las credenciales (callback seguro), botón
 presente y proveedor cableado con credenciales, y el invariante del gate de
 invitación (usuario de Google sin cookie `registro_ok` válida ⇒ no se aprovisiona

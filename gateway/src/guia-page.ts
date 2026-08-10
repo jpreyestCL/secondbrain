@@ -1,6 +1,11 @@
 /**
- * Guía de uso (/guia), en español y con el mismo lenguaje visual que /cuenta,
- * /login y /consentimiento.
+ * Guía de uso (/guia). Solo produce el CONTENIDO; el `<head>`, el CSS y la
+ * barra de navegación vienen del shell compartido (dashboard-layout.ts), el
+ * mismo que envuelve /cuenta.
+ *
+ * La página es PÚBLICA: sin sesión la barra ofrece «Iniciar sesión» en vez del
+ * correo y el botón de cerrar sesión, pero el contenido es el mismo (todo está
+ * en el repo público y los comandos usan marcadores, no secretos).
  *
  * Documenta las dos formas de meter información al cerebro: hablando con Claude
  * por el conector MCP (el camino de todos los días) y la ingesta masiva de una
@@ -8,6 +13,7 @@
  * aparece aquí está verificado contra el servidor real.
  */
 import { escapeHtml } from "./html.js";
+import { dashboardShell, type DashboardSessionView } from "./dashboard-layout.js";
 
 interface Tool {
   name: string;
@@ -92,7 +98,12 @@ brain --tenant <slug> classify --apply manifiesto.json
 brain --tenant <slug> chunk
 brain --tenant <slug> ingest-graph`;
 
-export function guiaPageHtml(): string {
+export interface GuiaPageOptions {
+  /** Sesión del navegador, o null si se está viendo sin iniciar sesión. */
+  session?: DashboardSessionView | null;
+}
+
+export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
   const toolRows = TOOLS.map(
     (t) => `      <tr>
         <td><code>${escapeHtml(t.name)}</code></td>
@@ -108,45 +119,7 @@ export function guiaPageHtml(): string {
       </tr>`,
   ).join("\n");
 
-  return `<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>Second Brain — Guía de uso</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #f5f5f4; padding: 2rem 1rem; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1917; color: #e7e5e4; } }
-  main { width: min(94vw, 48rem); margin-inline: auto; display: grid; gap: 1.2rem; }
-  section { background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 12px; padding: 1.5rem; display: grid; gap: .8rem; }
-  h1 { font-size: 1.3rem; margin: 0; }
-  h2 { font-size: 1rem; margin: 0; }
-  h3 { font-size: .92rem; margin: .4rem 0 0; }
-  p { margin: 0; }
-  ul, ol { margin: 0; padding-left: 1.2rem; display: grid; gap: .35rem; font-size: .92rem; }
-  .muted { font-size: .85rem; opacity: .7; }
-  .notice { border-left: 3px solid #4f46e5; padding: .5rem .7rem; background: color-mix(in srgb, #4f46e5 12%, transparent); border-radius: 4px; font-size: .9rem; }
-  .warn { border-left: 3px solid #b91c1c; padding: .6rem .8rem; background: color-mix(in srgb, #b91c1c 12%, transparent); border-radius: 4px; font-size: .9rem; font-weight: 600; }
-  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); vertical-align: top; }
-  td.params { opacity: .75; overflow-wrap: anywhere; }
-  .tag { font-size: .7rem; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 999px; padding: 0 .4rem; }
-  a.btn { display: inline-block; font-weight: 600; padding: .5rem .9rem; border-radius: 8px; background: #4f46e5; color: #fff; text-decoration: none; }
-  .scroll { overflow-x: auto; }
-  pre { margin: 0; overflow-x: auto; background: color-mix(in srgb, CanvasText 7%, transparent); border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: .8rem .9rem; font-size: .8rem; line-height: 1.5; }
-  pre code { font-size: inherit; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; overflow-wrap: anywhere; }
-  .quote { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: .55rem .7rem; }
-  .toc { display: flex; flex-wrap: wrap; gap: .4rem .9rem; font-size: .88rem; }
-  a { color: #4f46e5; }
-  :target { scroll-margin-top: 1rem; }
-</style>
-</head>
-<body>
-<main>
-  <section>
+  const body = `  <section>
     <h1>Guía de uso</h1>
     <p class="muted">Cómo guardar, consultar e ingerir información en tu second brain.
       Todo lo de esta página está verificado contra el servidor real.</p>
@@ -156,7 +129,6 @@ export function guiaPageHtml(): string {
       <a href="#masiva">3. Ingesta masiva de una carpeta</a>
       <a href="#accesos">4. Exportar y cerrar accesos</a>
     </nav>
-    <p class="muted"><a href="/cuenta">← Tu cuenta</a> · <a href="/">Inicio</a></p>
   </section>
 
   <section id="conversar">
@@ -270,8 +242,12 @@ ${cliRows}
     <p><a class="btn" href="/export">Descargar mi memoria (JSON)</a></p>
     <p class="muted">En <a href="/cuenta">tu cuenta</a> puedes revisar las sesiones abiertas,
       cerrarlas todas de golpe y revocar cualquier aplicación OAuth que hayas autorizado.</p>
-  </section>
-</main>
-</body>
-</html>`;
+  </section>`;
+
+  return dashboardShell({
+    title: "Guía de uso",
+    active: "guia",
+    session: opts.session ?? null,
+    body,
+  });
 }

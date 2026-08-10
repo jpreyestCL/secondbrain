@@ -6,6 +6,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // Works both from src/ (tsx) and dist/ (compiled): gateway root is one level up.
 export const gatewayRoot = path.resolve(here, "..");
 
+/**
+ * Modo de registro del gateway:
+ *  - `open`   : cualquiera crea cuenta sin código (incluido Google).
+ *  - `invite` : hace falta el REGISTRATION_CODE (también para Google).
+ *  - `closed` : /registro responde 403 y Google no aprovisiona a nadie nuevo.
+ */
+export type RegistrationMode = "open" | "invite" | "closed";
+
+const REGISTRATION_MODES: RegistrationMode[] = ["open", "invite", "closed"];
+
 export interface GatewayConfig {
   /** Public base URL of the gateway (tunnel URL in production). */
   baseUrl: string;
@@ -30,6 +40,24 @@ export interface GatewayConfig {
    * Independent of ALLOW_SIGNUP, which governs OPEN signup without a code.
    */
   registrationCode: string;
+  /**
+   * Modo de registro (REGISTRATION_MODE). Default `open`. Compatibilidad hacia
+   * atrás: si REGISTRATION_MODE no está definido pero REGISTRATION_CODE sí,
+   * el modo efectivo es `invite`.
+   */
+  registrationMode: RegistrationMode;
+  /**
+   * VÁLVULA DE SEGURIDAD (MAX_TENANTS, default 5). Tope duro de tenants que
+   * esta instancia acepta aprovisionar. Antes de crear ninguna cuenta se
+   * cuentan las entradas de tenants.json; al alcanzar el tope el registro se
+   * cierra temporalmente (no se crea usuario ni se aprovisiona nada).
+   *
+   * Por qué existe: el servidor tiene ~1 GB de RAM libre y el MCP de cada
+   * tenant corre con MemoryMax=500M, así que un registro sin tope puede dejar
+   * la máquina sin memoria — y en esa misma máquina viven las apps de
+   * producción del dueño.
+   */
+  maxTenants: number;
   /** Root of the second-brain repo (contains infra/). Default: gateway/.. */
   brainRepoRoot: string;
   /**
@@ -84,11 +112,17 @@ function nonNegative(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/** REGISTRATION_MODE del entorno, o null si falta / no es un valor conocido. */
+function envRegistrationMode(): RegistrationMode | null {
+  const raw = (process.env.REGISTRATION_MODE ?? "").trim().toLowerCase();
+  return (REGISTRATION_MODES as string[]).includes(raw) ? (raw as RegistrationMode) : null;
+}
+
 export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   const port = Number(process.env.PORT ?? 8787);
   const baseUrl = (process.env.BASE_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
   const authSecret = process.env.AUTH_SECRET ?? "";
-  return {
+  const config: GatewayConfig = {
     baseUrl,
     authSecret,
     graphitiMcpUrl: process.env.GRAPHITI_MCP_URL ?? "http://127.0.0.1:8020/mcp",
@@ -98,6 +132,8 @@ export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
     allowSignup: (process.env.ALLOW_SIGNUP ?? "false").toLowerCase() === "true",
     dbPath: process.env.DB_PATH ?? path.join(gatewayRoot, "data", "auth.sqlite"),
     registrationCode: (process.env.REGISTRATION_CODE ?? "").trim(),
+    registrationMode: envRegistrationMode() ?? "open",
+    maxTenants: positive(process.env.MAX_TENANTS, 5),
     brainRepoRoot: path.resolve(gatewayRoot, process.env.BRAIN_REPO_ROOT ?? ".."),
     provisionCmd:
       process.env.PROVISION_CMD ?? "bash infra/scripts/provision-tenant.sh {slug} {port}",
@@ -121,6 +157,14 @@ export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
     exportMaxNodes: positive(process.env.EXPORT_MAX_NODES, 500),
     ...overrides,
   };
+
+  // Compatibilidad hacia atrás: sin REGISTRATION_MODE explícito (ni en el
+  // entorno ni en los overrides), un REGISTRATION_CODE presente significa
+  // "solo por invitación", que era el comportamiento anterior.
+  if (!overrides.registrationMode && !envRegistrationMode()) {
+    config.registrationMode = config.registrationCode.length > 0 ? "invite" : "open";
+  }
+  return config;
 }
 
 export function requireSecret(config: GatewayConfig): void {

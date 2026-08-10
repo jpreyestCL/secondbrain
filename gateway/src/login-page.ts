@@ -4,15 +4,24 @@
  * OAuth original (los parámetros llegan en la query string).
  */
 export interface LoginPageOptions {
-  /** Muestra el enlace a /registro (solo cuando hay REGISTRATION_CODE). */
+  /** Muestra el enlace a /registro (en modo `open` o `invite`). */
   showRegisterLink?: boolean;
+  /**
+   * Registro ABIERTO: el enlace invita a crear cuenta sin mencionar códigos de
+   * invitación (que en este modo no existen).
+   */
+  openRegistration?: boolean;
   /** Muestra el botón "Continuar con Google" (solo cuando Google está configurado). */
   showGoogle?: boolean;
 }
 
 export function loginPageHtml(opts: LoginPageOptions = {}): string {
   const registerLink = opts.showRegisterLink
-    ? `\n  <p class="alt"><a href="/registro">¿No tienes cuenta? Regístrate</a></p>`
+    ? opts.openRegistration
+      ? `\n  <p class="alt"><a href="/registro">¿No tienes cuenta? Regístrate</a> — el registro
+    está abierto, no necesitas código de invitación.</p>`
+      : `\n  <p class="alt"><a href="/registro">¿No tienes cuenta? Regístrate</a> — necesitas un
+    código de invitación del administrador.</p>`
     : "";
   const googleBlock = opts.showGoogle
     ? `\n  <button type="button" id="google" class="google">Continuar con Google</button>
