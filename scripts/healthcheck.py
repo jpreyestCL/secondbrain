@@ -617,6 +617,36 @@ def _fetch_episode_uuid(mcp: "MCPClient", marker: str, max_episodes: int = 20) -
     return _find_episode_uuid(out, marker)
 
 
+def _limpiar_hechos_canario(mcp, search_tool: str, marker: str) -> None:
+    """Borra los hechos que el LLM extrajo del canario.
+
+    `delete_episode` no borra en cascada, y un modelo bueno (gpt-4o-mini) genera
+    hechos incluso de un "ping HC-...". Sin esto, cada corrida (4 al dia) dejaba
+    basura permanente en el grafo del usuario.
+    """
+    try:
+        out = mcp.call_tool(search_tool, {"query": marker, "max_facts": 20, "only_current": False})
+    except HealthcheckError as exc:
+        print(f"      WARNING: no se pudieron buscar los hechos del canario: {exc}", file=sys.stderr)
+        return
+    borrados = 0
+    for obj in _iter_json_objects(out):
+        nodo = obj.get("result") if isinstance(obj, dict) and "result" in obj else obj
+        hechos = nodo.get("facts") if isinstance(nodo, dict) else None
+        for h in hechos or []:
+            if not isinstance(h, dict) or marker not in json.dumps(h, ensure_ascii=False):
+                continue
+            uuid_h = h.get("uuid")
+            if isinstance(uuid_h, str):
+                try:
+                    mcp.call_tool("delete_entity_edge", {"uuid": uuid_h})
+                    borrados += 1
+                except HealthcheckError:
+                    pass
+    if borrados:
+        print(f"      deleted {borrados} canary fact(s)", file=sys.stderr)
+
+
 def run(args) -> None:
     marker = f"HC-{uuid.uuid4().hex[:12].upper()}"
     now = datetime.now(timezone.utc)
@@ -762,6 +792,7 @@ def run(args) -> None:
             try:
                 mcp.call_tool(delete_tool, {"uuid": episode_uuid})
                 print(f"      deleted canary episode {episode_uuid}", file=sys.stderr)
+                _limpiar_hechos_canario(mcp, search_tool, marker)
             except HealthcheckError as exc:
                 msg = f"could not delete canary episode {episode_uuid}: {exc}"
                 if failure is None:

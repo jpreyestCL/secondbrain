@@ -108,18 +108,28 @@ def _wrap_usage_logging(client, model: str):
     if not log_path:
         return client
     _log = _logging.getLogger(__name__)
-    inner = client.client.chat.completions.create  # AsyncOpenAI
 
-    async def _create(*args, **kwargs):
-        t0 = _time.time()
-        resp = await inner(*args, **kwargs)
+    def _mk(inner, kind):
+        async def _create(*args, **kwargs):
+            t0 = _time.time()
+            resp = await inner(*args, **kwargs)
+            _record(resp, kwargs, t0, kind)
+            return resp
+
+        return _create
+
+    def _record(resp, kwargs, t0, kind):
         try:
             u = getattr(resp, 'usage', None)
+            # /v1/responses usa input_tokens/output_tokens; chat.completions usa
+            # prompt_tokens/completion_tokens. Graphiti llama al primero cuando el
+            # proveedor es OpenAI oficial.
             rec = {
                 'ts': _time.strftime('%Y-%m-%dT%H:%M:%SZ', _time.gmtime()),
+                'api': kind,
                 'model': kwargs.get('model') or model,
-                'prompt_tokens': getattr(u, 'prompt_tokens', None),
-                'completion_tokens': getattr(u, 'completion_tokens', None),
+                'prompt_tokens': getattr(u, 'prompt_tokens', None) or getattr(u, 'input_tokens', None),
+                'completion_tokens': getattr(u, 'completion_tokens', None) or getattr(u, 'output_tokens', None),
                 'total_tokens': getattr(u, 'total_tokens', None),
                 'seconds': round(_time.time() - t0, 2),
             }
@@ -127,10 +137,36 @@ def _wrap_usage_logging(client, model: str):
             with open(log_path, 'a', encoding='utf-8') as fh:
                 fh.write(_json.dumps(rec) + '\n')
         except Exception as exc:  # nunca romper la ingesta por la contabilidad
-            _log.debug(f'no se pudo registrar uso de tokens: {exc}')
-        return resp
+            _log.warning(f'PATCH: no se pudo registrar uso de tokens: {exc!r}')
 
-    client.client.chat.completions.create = _create
+    inner_api = client.client
+    # graphiti llama a DISTINTOS metodos segun el cliente y si pide salida
+    # estructurada: OpenAI oficial usa `responses.parse()` (verificado leyendo
+    # openai_client.py), el generico usa `chat.completions.create()`. Envolver
+    # solo uno deja el contador en cero sin ningun error visible.
+    envueltos = []
+    for ruta, kind in (
+        ('responses.parse', 'responses.parse'),
+        ('responses.create', 'responses.create'),
+        ('chat.completions.parse', 'chat.parse'),
+        ('chat.completions.create', 'chat.create'),
+    ):
+        try:
+            partes = ruta.split('.')
+            obj = inner_api
+            for parte in partes[:-1]:
+                obj = getattr(obj, parte)
+            metodo = getattr(obj, partes[-1], None)
+            if metodo is None:
+                continue
+            setattr(obj, partes[-1], _mk(metodo, kind))
+            envueltos.append(ruta)
+        except Exception:
+            continue
+    _log.info(
+        f'PATCH: contabilidad de tokens -> {log_path} '
+        f'(cliente {type(inner_api).__name__}; envueltos: {", ".join(envueltos) or "ninguno"})'
+    )
     return client
 
 
