@@ -10,6 +10,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { GatewayConfig } from "./env.js";
 import type { Auth } from "./auth.js";
 import { proxyMcp } from "./proxy.js";
+import { landingPageHtml } from "./landing-page.js";
 import { loginPageHtml } from "./login-page.js";
 import type { TenantRegistry } from "./tenants.js";
 import { createProvisioner, type Provisioner } from "./provision.js";
@@ -114,7 +115,7 @@ export function buildApp(
   // --- Login page (single owner, Spanish) ---
   const registrationEnabled = () => config.registrationCode.length > 0;
   app.get("/login", (c) => c.html(loginPageHtml({ showRegisterLink: registrationEnabled() })));
-  app.get("/", (c) => c.redirect("/login"));
+  app.get("/", (c) => c.html(landingPageHtml(config.baseUrl)));
   app.get("/health", (c) => c.json({ ok: true }));
 
   // --- Registro self-service con código de invitación (/registro) ---
