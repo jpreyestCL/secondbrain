@@ -13,6 +13,7 @@ import type { GatewayConfig } from "./env.js";
 import type { Auth } from "./auth.js";
 import { proxyMcp } from "./proxy.js";
 import { landingPageHtml } from "./landing-page.js";
+import { sesionIniciadaHtml } from "./sesion-iniciada-page.js";
 import { loginPageHtml } from "./login-page.js";
 import type { TenantRegistry } from "./tenants.js";
 import { createProvisioner, type Provisioner } from "./provision.js";
@@ -767,8 +768,10 @@ export function buildApp(
         return c.redirect(`/api/auth/mcp/authorize${qs}`);
       }
       return c.html(
-        '<!doctype html><meta charset="utf-8"><p style="font-family:system-ui">' +
-          "Sesión iniciada. Ya puedes cerrar esta pestaña.</p>",
+        sesionIniciadaHtml({
+          email,
+          pendienteVerificacion: session.user.emailVerified === false,
+        }),
       );
     };
 
@@ -932,6 +935,19 @@ export function buildApp(
   // marcadores (<password del tenant>, <key>).
   // Se renderiza dentro del MISMO shell que /cuenta: con sesión la barra trae
   // el correo y "Cerrar sesión"; sin sesión, "Iniciar sesión".
+  // Página de "sesión iniciada" con estilo, compartida por el login por correo
+  // y por el retorno de Google cuando no hay flujo OAuth que reanudar.
+  app.get("/sesion-iniciada", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.redirect("/login", 302);
+    return c.html(
+      sesionIniciadaHtml({
+        email: session.user.email,
+        pendienteVerificacion: session.user.emailVerified === false,
+      }),
+    );
+  });
+
   app.get("/guia", async (c) => {
     const session = await requireSession(c);
     return c.html(

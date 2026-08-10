@@ -119,7 +119,8 @@ export function loginPageHtml(opts: LoginPageOptions = {}): string {
         // Reanuda el flujo OAuth original con los mismos parámetros.
         window.location.href = '/api/auth/mcp/authorize' + params;
       } else {
-        document.body.innerHTML = '<p style="font-family:system-ui">Sesión iniciada. Ya puedes cerrar esta pestaña.</p>';
+        // Misma pagina con estilo que usa /post-google, en vez de texto suelto.
+        window.location.href = '/sesion-iniciada';
       }
     } catch (err) {
       errEl.textContent = 'Error de red. Inténtalo de nuevo.';
