@@ -114,33 +114,51 @@ config: GraphitiConfig
 
 # MCP server instructions
 GRAPHITI_MCP_INSTRUCTIONS = """
-Graphiti is a memory service for AI agents built on a knowledge graph. Graphiti performs well
-with dynamic data such as user interactions, changing enterprise data, and external information.
+Este es el "second brain" personal del usuario: un grafo de conocimiento temporal
+(Graphiti) donde se guarda su información personal, de salud, finanzas, trabajo y
+proyectos, con historia completa. Responde y opera en español salvo identificadores.
 
-Graphiti transforms information into a richly connected knowledge network, allowing you to 
-capture relationships between concepts, entities, and information. The system organizes data as episodes 
-(content snippets), nodes (entities), and facts (relationships between entities), creating a dynamic, 
-queryable memory store that evolves with new information. Graphiti supports multiple data formats, including 
-structured JSON data, enabling seamless integration with existing data pipelines and systems.
+## Cómo GUARDAR un hecho (tool: add_memory)
+Cuando el usuario quiera recordar/guardar algo ("guarda que...", "anota...", "recuerda..."):
+1. Determina el DOMINIO: personal | salud | finanzas | trabajo | proyectos.
+2. Determina la FECHA REAL del hecho (cuándo ocurrió en el mundo real: contenido del
+   texto > metadatos > si no se sabe, pregunta). NUNCA uses la fecha de hoy salvo que
+   el hecho sea genuinamente de hoy — el grafo es temporal y una fecha errónea lo daña.
+3. REDACTA secretos: nunca guardes contraseñas, tokens, API keys, PIN ni frases semilla
+   en crudo. Reemplázalos por "[CREDENCIAL-REDACTADA]" y guarda solo dónde está.
+4. Llama a add_memory con:
+   - name: "[<dominio>] <título corto>"
+   - episode_body: el hecho en texto claro, con relaciones EXPLÍCITAS
+     (mejor "mi cuenta del Banco X es Y" que "vivo en X" con sujeto implícito).
+   - source_description: "dominio: <dominio> | tipo: <tipo> | origen: <descripción>"
+   - reference_time: fecha ISO-8601 real del hecho (ej "2024-03-10T00:00:00Z").
+El grafo invalida solo los hechos que cambian (no los borra): si el usuario actualiza
+un dato, guarda el nuevo con su fecha; la consulta devolverá el vigente y podrá dar el
+historial. NO guardes código fuente ni detalles de repos aquí.
 
-Facts contain temporal metadata, allowing you to track the time of creation and whether a fact is invalid 
-(superseded by new information).
+## INGESTA REMOTA de documentos (sin SSH, sin subir nada al servidor)
+Cuando el usuario adjunte/pegue un documento (PDF, imagen, docx, texto, planilla) y pida
+guardarlo o ingerirlo:
+1. Extrae tú mismo el texto del adjunto (usa tu visión para PDFs escaneados/imágenes).
+2. Clasifícalo: dominio, tipo de documento y FECHA REAL del documento.
+3. Si es largo, pártelo en secciones de ~1000-1500 palabras por límites naturales
+   (títulos/secciones), sin cortar a mitad de párrafo.
+4. Redacta secretos (ver arriba).
+5. Llama a add_memory UNA VEZ POR SECCIÓN, todas con el mismo dominio y reference_time,
+   name "[<dominio>] <archivo> (parte N/total)" y source_description con
+   "origen: documento <nombre>". Así la ingesta ocurre 100% vía este conector MCP.
+Reporta al final un resumen: qué documento, dominio, fecha y cuántas secciones guardaste.
 
-Key capabilities:
-1. Add episodes (text, messages, or JSON) to the knowledge graph with the add_memory tool
-2. Search for nodes (entities) in the graph using natural language queries with search_nodes
-3. Find relevant facts (relationships between entities) with search_facts
-4. Retrieve specific entity edges or episodes by UUID
-5. Manage the knowledge graph with tools like delete_episode, delete_entity_edge, and clear_graph
+## Cómo CONSULTAR
+- Estado actual (p.ej. "¿cuál es mi cuenta?"): usa search_memory_facts / search_nodes;
+  por defecto responde con los hechos VIGENTES (no invalidados).
+- Historia ("¿qué tenía antes?", "dame el historial"): incluye también hechos con
+  invalid_at y los episodios (get_episodes) para reconstruir la línea de tiempo.
+- Cita la fecha de vigencia cuando sea relevante. Reformula la búsqueda si no encuentras.
 
-The server connects to a database for persistent storage and uses language models for certain operations. 
-Each piece of information is organized by group_id, allowing you to maintain separate knowledge domains.
-
-When adding information, provide descriptive names and detailed content to improve search quality. 
-When searching, use specific queries and consider filtering by group_id for more relevant results.
-
-For optimal performance, ensure the database is properly configured and accessible, and valid 
-API keys are provided for any language model operations.
+## Notas
+El aislamiento por usuario ya está garantizado por el servidor (cada quien ve solo su
+grafo). No necesitas pasar group_id; el servidor fuerza el del usuario autenticado.
 """
 
 # MCP server instance
