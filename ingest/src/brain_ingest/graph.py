@@ -136,6 +136,37 @@ def _api_key_for(url: str | None, openai_key: str | None) -> str:
     return openai_key or LOCAL_API_KEY_PLACEHOLDER
 
 
+#: Segundos que se espera una respuesta del proveedor antes de abortar la
+#: llamada. Sin esto, una ingesta larga se cuelga indefinidamente: graphiti no
+#: fija timeout, el SDK de OpenAI aplica su default de 600 s por intento y una
+#: conexion que queda a medias (proveedor caido, red que se corta) deja el
+#: proceso esperando sin escribir nada al log. Ya paso dos veces con lotes de
+#: cientos de documentos. Ajustable con LLM_TIMEOUT_SECONDS.
+LLM_TIMEOUT_SECONDS = 120.0
+LLM_MAX_RETRIES = 3
+
+
+def _openai_client(config):
+    """AsyncOpenAI con timeout y reintentos explicitos.
+
+    graphiti construye su propio cliente sin timeout; aqui se le pasa uno
+    propio para que una llamada colgada falle rapido y el ledger pueda
+    reanudar, en vez de bloquear el lote completo.
+    """
+    from openai import AsyncOpenAI
+
+    try:
+        timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", LLM_TIMEOUT_SECONDS))
+    except ValueError:
+        timeout = LLM_TIMEOUT_SECONDS
+    return AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=timeout,
+        max_retries=LLM_MAX_RETRIES,
+    )
+
+
 def build_graphiti(tenant: str):
     """Construct a Graphiti instance for ``tenant`` from environment variables."""
     from graphiti_core import Graphiti
@@ -194,14 +225,19 @@ def build_graphiti(tenant: str):
         base_url=llm_url,
     )
     if llm_url and "api.openai.com" not in llm_url:
-        llm_client = OpenAIGenericClient(config=llm_config)
+        llm_client = OpenAIGenericClient(config=llm_config, client=_openai_client(llm_config))
     else:
         # Modelos "reasoning" (o1/o3/gpt-5) requieren los parámetros de
         # reasoning/verbosity; el resto debe recibirlos explícitamente en None.
+        _cli = _openai_client(llm_config)
         if model.startswith(("o1", "o3", "gpt-5")):
-            llm_client = OpenAIClient(config=llm_config, reasoning="minimal", verbosity="low")
+            llm_client = OpenAIClient(
+                config=llm_config, client=_cli, reasoning="minimal", verbosity="low"
+            )
         else:
-            llm_client = OpenAIClient(config=llm_config, reasoning=None, verbosity=None)
+            llm_client = OpenAIClient(
+                config=llm_config, client=_cli, reasoning=None, verbosity=None
+            )
 
     # Embedder: endpoint propio (mxbai-embed-large en Ollama = 1024 dims). Debe
     # coincidir con el del server o la búsqueda semántica se corrompe.
@@ -214,7 +250,8 @@ def build_graphiti(tenant: str):
     if _dims:
         # embedding_dim es frozen: debe ir en el constructor.
         _embed_kwargs["embedding_dim"] = int(_dims)
-    embedder = OpenAIEmbedder(config=OpenAIEmbedderConfig(**_embed_kwargs))
+    _embed_config = OpenAIEmbedderConfig(**_embed_kwargs)
+    embedder = OpenAIEmbedder(config=_embed_config, client=_openai_client(_embed_config))
 
     username, password = tenant_credentials(tenant)
     driver = FalkorDriver(

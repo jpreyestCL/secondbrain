@@ -281,6 +281,7 @@ def _clear_llm_env(monkeypatch):
         "MODEL_NAME",
         "OLLAMA_BASE_URL",
         "OLLAMA_LLM_MODEL",
+        "LLM_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -396,3 +397,38 @@ def test_no_llm_config_at_all_raises(monkeypatch):
     _clear_llm_env(monkeypatch)
     with pytest.raises(graph_mod.GraphConfigError):
         graph_mod.build_graphiti("jpreyest")
+
+
+def test_clientes_llevan_timeout_explicito(monkeypatch):
+    """Sin timeout, una llamada colgada bloquea el lote entero sin escribir log.
+
+    Paso dos veces durante la ingesta de Documents/Sociedades: el proceso
+    quedaba vivo, haciendo peticiones, pero sin completar un solo episodio
+    durante casi una hora. graphiti no fija timeout, asi que el cliente se
+    construye aqui.
+    """
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "sk-openai")
+    monkeypatch.setenv("EMBEDDER_API_KEY", "nvapi-embed")
+    monkeypatch.setenv("EMBEDDER_API_URL", "https://integrate.api.nvidia.com/v1")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "45")
+
+    captured = _capture_build(monkeypatch)
+
+    assert captured["llm"].client.timeout == 45.0
+    assert captured["embedder"].client.timeout == 45.0
+    assert captured["llm"].client.max_retries == 3
+    # y cada uno conserva SU clave y SU endpoint
+    assert captured["embedder"].client.api_key == "nvapi-embed"
+    assert captured["llm"].client.api_key == "sk-openai"
+
+
+def test_timeout_invalido_cae_al_valor_por_defecto(monkeypatch):
+    from brain_ingest.graph import LLM_TIMEOUT_SECONDS
+
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "no-es-un-numero")
+
+    captured = _capture_build(monkeypatch)
+    assert captured["llm"].client.timeout == LLM_TIMEOUT_SECONDS
