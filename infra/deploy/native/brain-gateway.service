@@ -4,6 +4,8 @@ After=network-online.target brain-mcp.service
 Wants=network-online.target
 
 [Service]
+Environment=XDG_RUNTIME_DIR=/run/user/999
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus
 UMask=0077
 User=secondbrain
 Group=secondbrain

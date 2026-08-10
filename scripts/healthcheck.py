@@ -621,10 +621,12 @@ def run(args) -> None:
     marker = f"HC-{uuid.uuid4().hex[:12].upper()}"
     now = datetime.now(timezone.utc)
     canary_name = f"healthcheck {marker}"
-    canary_body = (
-        f"El codigo canario del healthcheck automatico es {marker}. "
-        f"Fue generado el {now.date().isoformat()} por scripts/healthcheck.py."
-    )
+    # Cuerpo DELIBERADAMENTE minimo y sin entidades reconocibles (sin fechas,
+    # nombres, rutas ni organizaciones). Motivo: `delete_episode` borra el
+    # episodio pero NO las entidades que el LLM extrajo de el, y no existe una
+    # tool para borrar nodos. Con un texto rico, cada corrida dejaba basura
+    # permanente en el grafo del usuario (observado: HC-..., "scripts", "el 2026").
+    canary_body = f"ping {marker}"
 
     client = Client(args.url, timeout=args.http_timeout, verbose=args.verbose)
 

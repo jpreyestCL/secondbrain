@@ -16,7 +16,9 @@
 # IDEMPOTENTE: re-ejecutar con el mismo slug+puerto no duplica lineas ACL ni
 # regenera el password; solo re-verifica y reinicia si hace falta.
 #
-# Requiere root (escribe en /etc/systemd/system y en archivos de secondbrain).
+# NO requiere root: corre como el usuario del servicio (secondbrain). Usa
+# systemd de USUARIO (linger habilitado) y el firewall ya cubre el rango de
+# puertos, asi que el gateway puede aprovisionar sin privilegios.
 set -euo pipefail
 
 BRAIN_ROOT="${BRAIN_ROOT:-/opt/secondbrain-native}"
@@ -49,7 +51,10 @@ for rp in "${RESERVED_PORTS[@]}"; do
   [[ "${PORT}" == "${rp}" ]] && die "puerto ${PORT} reservado (falkordb/mcp base/gateway/ollama)"
 done
 
-[[ "${EUID}" -eq 0 ]] || die "hay que correr como root (escribe units systemd y archivos de ${SERVICE_USER})"
+# Debe correr como el usuario del servicio (o como root, para uso manual).
+if [[ "${EUID}" -ne 0 && "$(id -un)" != "${SERVICE_USER}" ]]; then
+  die "hay que correr como ${SERVICE_USER} (o root): systemd --user y los archivos son suyos"
+fi
 [[ -d "${BRAIN_ROOT}" ]] || die "no existe ${BRAIN_ROOT} (¿corriste install.sh?)"
 [[ -f "${ACL_FILE}" ]] || die "no existe ${ACL_FILE}"
 [[ -f "${SHARED_ENV}" ]] || die "no existe ${SHARED_ENV} (env compartido con LLM/embedder)"
@@ -162,7 +167,8 @@ GRAPHITI_GROUP_ID=${SLUG}
 # config.yaml propio: es el UNICO sitio de donde el server lee su puerto.
 CONFIG_PATH=${CONFFILE}
 EOF
-install -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 600 "${TMP_ENV}" "${ENVFILE}"
+cp "${TMP_ENV}" "${ENVFILE}"; chmod 600 "${ENVFILE}"
+[[ "${EUID}" -eq 0 ]] && chown "${SERVICE_USER}:${SERVICE_USER}" "${ENVFILE}" || true
 rm -f "${TMP_ENV}"
 
 # --- 4. config.yaml del tenant ------------------------------------------------
@@ -183,7 +189,8 @@ install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 700 "${CONFDIR}"
 TMP_CFG="$(mktemp)"
 sed -e "s/__MCP_PORT__/${PORT}/g" -e "s/__MCP_HOST__/127.0.0.1/g" "${TEMPLATE}" > "${TMP_CFG}"
 grep -q '__MCP_' "${TMP_CFG}" && die "quedaron placeholders sin sustituir en la plantilla ${TEMPLATE}"
-install -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 600 "${TMP_CFG}" "${CONFFILE}"
+cp "${TMP_CFG}" "${CONFFILE}"; chmod 600 "${CONFFILE}"
+[[ "${EUID}" -eq 0 ]] && chown "${SERVICE_USER}:${SERVICE_USER}" "${CONFFILE}" || true
 rm -f "${TMP_CFG}"
 
 # --- 5. Unit systemd (instancia del template) ---------------------------------
@@ -197,41 +204,37 @@ if [[ -f "${UNIT_SRC}" ]]; then
 fi
 [[ -f "${UNIT_DST}" ]] || die "falta el unit template ${UNIT_DST} (y no esta ${UNIT_SRC} para instalarlo)"
 
-info "systemctl daemon-reload && enable --now brain-mcp@${SLUG}"
-systemctl daemon-reload
-systemctl enable "brain-mcp@${SLUG}" >/dev/null
+# Servicios de USUARIO (systemctl --user): aprovisionar un tenant no requiere
+# root. El usuario secondbrain tiene "linger" habilitado, asi que sus units
+# corren aunque no haya sesion iniciada. Root solo hizo falta UNA vez, al
+# instalar (enable-linger + la regla de firewall por rango de puertos).
+info "systemctl --user daemon-reload && enable --now brain-mcp@${SLUG}"
+systemctl --user daemon-reload
+systemctl --user enable "brain-mcp@${SLUG}" >/dev/null
 # restart (no start) para que un re-run tome cambios de env/config.
-systemctl restart "brain-mcp@${SLUG}"
+systemctl --user restart "brain-mcp@${SLUG}"
 
-# --- 6. Firewall local: el puerto nuevo tambien restringido por uid -----------
-# Mantener sincronizada la copia instalada con la del repo: la version vieja
-# tenia el puerto 8021 hardcodeado y dejaria el puerto nuevo SIN restringir.
-if [[ -f "${SCRIPT_DIR}/firewall-local.sh" ]] && ! cmp -s "${SCRIPT_DIR}/firewall-local.sh" "${FIREWALL_SH}"; then
-  info "actualizando ${FIREWALL_SH} desde el repo"
-  install -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 700 "${SCRIPT_DIR}/firewall-local.sh" "${FIREWALL_SH}"
-fi
-if [[ -x "${FIREWALL_SH}" ]]; then
-  info "reaplicando firewall local (${FIREWALL_SH})"
-  "${FIREWALL_SH}" || echo "AVISO: firewall-local.sh fallo; revisa iptables" >&2
-else
-  echo "AVISO: no existe ${FIREWALL_SH}; el puerto ${PORT} NO queda restringido por uid" >&2
-fi
+# --- 6. Firewall local --------------------------------------------------------
+# NO se toca por tenant (eso exigiria root). Una unica regla instalada al
+# desplegar cubre todo el rango 9000-9999: solo secondbrain y root pueden
+# conectarse a esos puertos en loopback, asi que un tenant nuevo nace protegido.
+info "firewall: cubierto por la regla de rango 9000-9999 (no requiere root)"
 
 # --- 7. Health check ----------------------------------------------------------
 info "esperando health en 127.0.0.1:${PORT}/health ..."
 HEALTH_OK=0
 for _ in $(seq 1 60); do
   if curl -fsS -m 3 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then HEALTH_OK=1; break; fi
-  if ! systemctl is-active --quiet "brain-mcp@${SLUG}"; then break; fi
+  if ! systemctl --user is-active --quiet "brain-mcp@${SLUG}"; then break; fi
   sleep 2
 done
 
 if [[ "${HEALTH_OK}" != "1" ]]; then
   echo "ERROR: brain-mcp@${SLUG} no respondio /health en 127.0.0.1:${PORT}" >&2
-  echo "--- systemctl status ---" >&2
-  systemctl status "brain-mcp@${SLUG}" --no-pager -l >&2 || true
+  echo "--- systemctl --user status ---" >&2
+  systemctl --user status "brain-mcp@${SLUG}" --no-pager -l >&2 || true
   echo "--- journalctl (ultimas 60) ---" >&2
-  journalctl -u "brain-mcp@${SLUG}" -n 60 --no-pager >&2 || true
+  journalctl --user -u "brain-mcp@${SLUG}" -n 60 --no-pager >&2 || true
   exit 1
 fi
 

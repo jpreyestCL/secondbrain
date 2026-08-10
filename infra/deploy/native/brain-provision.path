@@ -1,0 +1,7 @@
+[Unit]
+Description=Vigila solicitudes de aprovisionamiento del gateway (spool/)
+[Path]
+PathChanged=/opt/secondbrain-native/spool
+Unit=brain-provision.service
+[Install]
+WantedBy=multi-user.target

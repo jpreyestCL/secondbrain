@@ -1,0 +1,5 @@
+[Unit]
+Description=Aprovisiona tenants solicitados por el gateway (lado con privilegios)
+[Service]
+Type=oneshot
+ExecStart=/opt/secondbrain-native/provision-worker.sh
