@@ -17,6 +17,55 @@ export function closeServer(server: ServerType): Promise<void> {
 
 const REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
 
+/** Extrae todos los <input type="hidden"> de una página del gateway. */
+export function hiddenFields(html: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const re = /<input[^>]*type="hidden"[^>]*>/g;
+  for (const tag of html.match(re) ?? []) {
+    const name = /name="([^"]+)"/.exec(tag)?.[1];
+    const value = /value="([^"]*)"/.exec(tag)?.[1] ?? "";
+    if (name) fields[name] = decodeEntities(value);
+  }
+  return fields;
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Aprueba la pantalla de consentimiento del gateway y devuelve la respuesta de
+ * /authorize que sigue (la que trae el `code`).
+ */
+export async function approveConsent(
+  baseUrl: string,
+  cookie: string,
+  html: string,
+  decision: "autorizar" | "cancelar" = "autorizar",
+): Promise<Response> {
+  const body = new URLSearchParams({ ...hiddenFields(html), decision });
+  const res = await fetch(`${baseUrl}/consentimiento`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      cookie,
+      origin: baseUrl,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  const location = res.headers.get("location") ?? "";
+  if (decision === "cancelar" || !location.startsWith("/api/auth/mcp/authorize")) {
+    return res;
+  }
+  return fetch(`${baseUrl}${location}`, { redirect: "manual", headers: { cookie } });
+}
+
 /**
  * Runs the full OAuth 2.1 flow against the gateway for an existing user:
  * dynamic client registration -> email sign-in -> authorize (PKCE S256)
@@ -63,10 +112,16 @@ export async function obtainAccessToken(
     code_challenge: challenge,
     code_challenge_method: "S256",
   });
-  const authz = await fetch(`${baseUrl}/api/auth/mcp/authorize?${query}`, {
+  let authz = await fetch(`${baseUrl}/api/auth/mcp/authorize?${query}`, {
     redirect: "manual",
     headers: { cookie },
   });
+  // El gateway interpone SU pantalla de consentimiento la primera vez que este
+  // usuario ve este client_id: se aprueba como lo haría la persona.
+  if (authz.status === 200) {
+    const html = await authz.text();
+    authz = await approveConsent(baseUrl, cookie, html);
+  }
   const location = authz.headers.get("location") ?? "";
   const code = location.startsWith("http") ? new URL(location).searchParams.get("code") : null;
   if (!code) throw new Error(`authorize did not return a code: ${authz.status} ${location}`);

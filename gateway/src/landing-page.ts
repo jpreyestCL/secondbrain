@@ -6,8 +6,12 @@
  * deslizador de tiempo sobre datos reales de ejemplo.
  */
 
+import { escapeHtml } from "./html.js";
+
 export function landingPageHtml(baseUrl: string): string {
-  const mcpUrl = baseUrl.replace(/\/$/, "") + "/mcp";
+  // baseUrl viene de la configuración, pero se escapa igual: ningún valor
+  // interpolado entra crudo en el HTML (defensa en profundidad).
+  const mcpUrl = escapeHtml(baseUrl.replace(/\/$/, "") + "/mcp");
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -26,6 +30,9 @@ export function landingPageHtml(baseUrl: string): string {
     --muted: #5a6b72;
     --vigente: #1f7a6b;
     --vigente-soft: #d8ebe6;
+    /* Texto sobre el acento y acento legible sobre fondos suaves (WCAG AA). */
+    --on-accent: #ffffff;
+    --accent-text: #155a4e;
     --historico: #a8836b;
     --historico-soft: #ece2da;
     --shadow: 0 1px 2px rgba(16,21,31,.06), 0 12px 32px -18px rgba(16,21,31,.35);
@@ -38,20 +45,23 @@ export function landingPageHtml(baseUrl: string): string {
     :root {
       --paper: #0c1119; --surface: #141b26; --surface-2: #1b2532; --line: #2a3644;
       --text: #e6ecf2; --muted: #93a3ae;
-      --vigente: #4fbfa6; --vigente-soft: #12312c; --historico: #c2a189; --historico-soft: #2a2119;
+      --vigente: #4fbfa6; --vigente-soft: #12312c;
+      --on-accent: #08201c; --accent-text: #4fbfa6; --historico: #c2a189; --historico-soft: #2a2119;
       --shadow: 0 1px 2px rgba(0,0,0,.5), 0 18px 40px -22px rgba(0,0,0,.8);
     }
   }
   :root[data-theme="dark"] {
     --paper: #0c1119; --surface: #141b26; --surface-2: #1b2532; --line: #2a3644;
     --text: #e6ecf2; --muted: #93a3ae;
-    --vigente: #4fbfa6; --vigente-soft: #12312c; --historico: #c2a189; --historico-soft: #2a2119;
+    --vigente: #4fbfa6; --vigente-soft: #12312c;
+      --on-accent: #08201c; --accent-text: #4fbfa6; --historico: #c2a189; --historico-soft: #2a2119;
     --shadow: 0 1px 2px rgba(0,0,0,.5), 0 18px 40px -22px rgba(0,0,0,.8);
   }
   :root[data-theme="light"] {
     --paper: #edf0f3; --surface: #ffffff; --surface-2: #e4e9ee; --line: #cfd8de;
     --text: #182130; --muted: #5a6b72;
-    --vigente: #1f7a6b; --vigente-soft: #d8ebe6; --historico: #a8836b; --historico-soft: #ece2da;
+    --vigente: #1f7a6b; --vigente-soft: #d8ebe6;
+    --on-accent: #ffffff; --accent-text: #155a4e; --historico: #a8836b; --historico-soft: #ece2da;
     --shadow: 0 1px 2px rgba(16,21,31,.06), 0 12px 32px -18px rgba(16,21,31,.35);
   }
 
@@ -94,7 +104,7 @@ export function landingPageHtml(baseUrl: string): string {
   .btn {
     display: inline-flex; align-items: center; gap: .5rem; text-decoration: none;
     padding: .68rem 1.15rem; border-radius: 3px; font-size: .95rem;
-    border: 1px solid var(--vigente); background: var(--vigente); color: #fff;
+    border: 1px solid var(--vigente); background: var(--vigente); color: var(--on-accent);
     transition: transform .12s ease, opacity .12s ease;
   }
   .btn:hover { opacity: .9; transform: translateY(-1px); }
@@ -124,7 +134,7 @@ export function landingPageHtml(baseUrl: string): string {
   }
   .answer .label {
     font-family: var(--mono); font-size: .68rem; letter-spacing: .14em;
-    text-transform: uppercase; color: var(--vigente); display: block; margin-bottom: .35rem;
+    text-transform: uppercase; color: var(--accent-text); display: block; margin-bottom: .35rem;
   }
   .answer .value { font-size: 1.06rem; }
   .answer .range { font-family: var(--mono); font-size: .76rem; color: var(--muted); margin-top: .45rem; }
@@ -208,6 +218,7 @@ export function landingPageHtml(baseUrl: string): string {
     <a href="#como">Cómo funciona</a>
     <a href="#usar">Qué le preguntas</a>
     <a href="#conectar">Conectar</a>
+    <a href="/cuenta">Tu cuenta</a>
     <a href="https://github.com/jpreyestCL/secondbrain">GitHub</a>
   </div>
 </div></nav>
@@ -234,16 +245,18 @@ export function landingPageHtml(baseUrl: string): string {
     </div>
     <div class="demo-body">
       <div class="year" id="yr">2026</div>
-      <div class="answer">
+      <div class="answer" aria-live="polite">
         <span class="label" id="alabel">Respuesta vigente</span>
         <div class="value" id="aval">Banco Santander · 789-012-345</div>
         <div class="range" id="arange">vigente desde 2026-08-01</div>
       </div>
       <div class="slider-wrap">
         <label class="eyebrow" for="sl">Línea de tiempo</label>
-        <input id="sl" type="range" min="2014" max="2026" value="2026" step="1"
-               aria-label="Año de la consulta" />
-        <div class="ticks"><span>2014</span><span>2020</span><span>2026</span></div>
+        <!-- Sin aria-label: el nombre accesible debe ser la etiqueta visible
+             ("Línea de tiempo", WCAG 2.5.3). min=2010 hace alcanzable el
+             tramo anterior al primer registro. -->
+        <input id="sl" type="range" min="2010" max="2026" value="2026" step="1" />
+        <div class="ticks"><span>2010</span><span>2018</span><span>2026</span></div>
       </div>
       <div class="history">
         <span class="eyebrow">Registro completo</span>
@@ -390,6 +403,7 @@ export function landingPageHtml(baseUrl: string): string {
 <footer><div class="wrap foot-row">
   <span>secondbrain · memoria temporal para Claude</span>
   <span>
+    <a href="/cuenta">Tu cuenta</a> ·
     <a href="https://github.com/jpreyestCL/secondbrain">Código en GitHub</a> ·
     construido sobre <a href="https://github.com/getzep/graphiti">Graphiti</a> y
     <a href="https://www.falkordb.com/">FalkorDB</a>

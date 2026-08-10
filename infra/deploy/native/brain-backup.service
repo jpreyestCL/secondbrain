@@ -1,0 +1,17 @@
+[Unit]
+Description=Second Brain backup (FalkorDB, deploy nativo)
+After=brain-falkordb.service
+
+[Service]
+# DEBE ser secondbrain: users.acl, data/ y backups/ son 600/700 de ese usuario.
+# (Antes corria como 'dev' y fallaba con 203/EXEC — permiso denegado.)
+User=secondbrain
+Group=secondbrain
+Type=oneshot
+UMask=0077
+ExecStart=/opt/secondbrain-native/backup.sh
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/secondbrain-native

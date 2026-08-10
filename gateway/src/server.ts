@@ -23,6 +23,14 @@ import {
   googleSinInvitacionHtml,
 } from "./registro-page.js";
 import { createRateLimiter, clientIpFrom } from "./rate-limit.js";
+import { consentPageHtml } from "./consent-page.js";
+import {
+  cuentaPageHtml,
+  type CuentaClientView,
+  type CuentaSessionView,
+} from "./cuenta-page.js";
+import { CSRF_FIELD, csrfToken, verifyCsrfToken, isSameOrigin } from "./csrf.js";
+import { exportGraph } from "./export.js";
 import {
   REGISTRO_COOKIE_NAME,
   REGISTRO_COOKIE_MAX_AGE,
@@ -37,6 +45,61 @@ function safeEquals(a: string, b: string): boolean {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Scopes que el plugin MCP acepta; fuera de esto deja decidir a Better Auth. */
+const KNOWN_SCOPES = ["openid", "profile", "email", "offline_access"];
+
+/** Parámetros de /authorize que se reenvían tal cual tras el consentimiento. */
+const AUTHORIZE_PARAMS = [
+  "response_type",
+  "client_id",
+  "redirect_uri",
+  "scope",
+  "state",
+  "code_challenge",
+  "code_challenge_method",
+  "nonce",
+  "resource",
+] as const;
+
+/** Vista mínima del adaptador de Better Auth que necesita el gateway. */
+interface MinimalAdapter {
+  findOne<T = Record<string, unknown>>(query: {
+    model: string;
+    where: Array<{ field: string; value: unknown }>;
+  }): Promise<T | null>;
+  findMany<T = Record<string, unknown>>(query: {
+    model: string;
+    where?: Array<{ field: string; value: unknown }>;
+  }): Promise<T[]>;
+  create<T = Record<string, unknown>>(query: {
+    model: string;
+    data: Record<string, unknown>;
+  }): Promise<T>;
+  update(query: {
+    model: string;
+    where: Array<{ field: string; value: unknown }>;
+    update: Record<string, unknown>;
+  }): Promise<unknown>;
+  deleteMany(query: {
+    model: string;
+    where: Array<{ field: string; value: unknown }>;
+  }): Promise<number | unknown>;
+}
+
+function originOfUri(raw: string): string {
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw;
+  }
+}
+
+function toIso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "number") return new Date(value).toISOString();
+  return String(value ?? "");
+}
 
 export function buildApp(
   auth: Auth,
@@ -182,6 +245,168 @@ export function buildApp(
       return rejectRedirect(c);
     }
     return next();
+  });
+
+  // --- SEGURIDAD: pantalla de consentimiento PROPIA ---------------------------
+  // Defensa en profundidad sobre la allowlist. El plugin MCP pide consentimiento
+  // solo si el CLIENTE manda `prompt=consent`, o sea: quien pide el token decide
+  // si el dueño ve algo. Aquí lo decide el gateway. Antes de dejar que Better
+  // Auth emita un `code`, si hay sesión y no existe consentimiento previo para
+  // (usuario, client_id) se muestra la pantalla y NO se llama a Better Auth, así
+  // que no se genera ningún código.
+  //
+  // La petición se deja pasar sin tocar cuando NO es un authorize válido (falta
+  // sesión, cliente inexistente, sin PKCE, scope raro...): esos casos los
+  // resuelve Better Auth con su propio error, y así este middleware nunca cambia
+  // el comportamiento de un flujo que de todos modos iba a fallar.
+  const adapterOf = async (): Promise<MinimalAdapter> =>
+    (await auth.$context).adapter as unknown as MinimalAdapter;
+
+  const consentGiven = async (userId: string, clientId: string): Promise<boolean> => {
+    const adapter = await adapterOf();
+    const row = await adapter.findOne<{ consentGiven?: unknown }>({
+      model: "oauthConsent",
+      where: [
+        { field: "userId", value: userId },
+        { field: "clientId", value: clientId },
+      ],
+    });
+    return Boolean(row?.consentGiven);
+  };
+
+  const authorizeUrl = (params: Record<string, string>) => {
+    const qs = new URLSearchParams(params);
+    return `/api/auth/mcp/authorize?${qs.toString()}`;
+  };
+
+  app.use("/api/auth/mcp/authorize", async (c, next) => {
+    if (c.req.method !== "GET") return next();
+    const q = new URL(c.req.url).searchParams;
+
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (!session?.user) return next(); // sin sesión: Better Auth manda a /login
+
+    const clientId = q.get("client_id");
+    const redirectUri = q.get("redirect_uri");
+    if (!clientId || !redirectUri) return next();
+    if (q.get("response_type") !== "code") return next();
+    // PKCE es obligatorio (requirePKCE); sin él Better Auth debe rechazar.
+    if (!q.get("code_challenge") || !q.get("code_challenge_method")) return next();
+    const scopes = (q.get("scope") ?? "openid").split(" ").filter(Boolean);
+    if (scopes.some((s) => !KNOWN_SCOPES.includes(s))) return next();
+
+    const adapter = await adapterOf();
+    const client = await adapter.findOne<{
+      name?: string;
+      redirectUrls?: string;
+      disabled?: unknown;
+    }>({
+      model: "oauthApplication",
+      where: [{ field: "clientId", value: clientId }],
+    });
+    if (!client || client.disabled) return next();
+    const registered = String(client.redirectUrls ?? "").split(",");
+    if (!registered.includes(redirectUri)) return next();
+
+    const params: Record<string, string> = {};
+    for (const key of AUTHORIZE_PARAMS) {
+      const value = q.get(key);
+      if (value !== null) params[key] = value;
+    }
+
+    if (await consentGiven(session.user.id, clientId)) {
+      // Ya autorizó a este cliente: no se le vuelve a preguntar. Si el cliente
+      // mandó prompt=consent, se reentra sin él para que Better Auth emita el
+      // código directamente (su rama de consentimiento requiere consentPage).
+      if (q.get("prompt")) return c.redirect(authorizeUrl(params), 302);
+      return next();
+    }
+
+    return c.html(
+      consentPageHtml({
+        clientName: String(client.name ?? clientId),
+        redirectOrigin: originOfUri(redirectUri),
+        userEmail: session.user.email,
+        scopes,
+        csrf: csrfToken(session.session.id, config.authSecret),
+        params,
+      }),
+    );
+  });
+
+  // Decisión del usuario en la pantalla de consentimiento.
+  app.post("/consentimiento", async (c) => {
+    if (!isSameOrigin(c.req.raw, config.baseUrl)) {
+      return c.text("Petición cross-origin rechazada.", 403);
+    }
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (!session?.user) return c.redirect("/login", 302);
+
+    const body = await c.req.parseBody();
+    if (!verifyCsrfToken(body[CSRF_FIELD], session.session.id, config.authSecret)) {
+      return c.text("Token CSRF inválido. Vuelve a intentarlo.", 403);
+    }
+
+    const params: Record<string, string> = {};
+    for (const key of AUTHORIZE_PARAMS) {
+      const value = body[`p_${key}`];
+      if (typeof value === "string" && value.length > 0) params[key] = value;
+    }
+    const clientId = params["client_id"];
+    const redirectUri = params["redirect_uri"];
+    if (!clientId || !redirectUri) return c.text("Solicitud incompleta.", 400);
+    // El redirect_uri vuelve del formulario: se revalida contra la allowlist y
+    // contra los URIs registrados del cliente antes de redirigir a ninguna parte.
+    if (!isAllowedRedirect(redirectUri)) return rejectRedirect(c);
+
+    const adapter = await adapterOf();
+    const client = await adapter.findOne<{ redirectUrls?: string; disabled?: unknown }>({
+      model: "oauthApplication",
+      where: [{ field: "clientId", value: clientId }],
+    });
+    if (!client || client.disabled) return c.text("Cliente OAuth desconocido.", 400);
+    if (!String(client.redirectUrls ?? "").split(",").includes(redirectUri)) {
+      return rejectRedirect(c);
+    }
+
+    if (String(body["decision"] ?? "") !== "autorizar") {
+      const denied = new URL(redirectUri);
+      denied.searchParams.set("error", "access_denied");
+      denied.searchParams.set("error_description", "El usuario denegó el acceso");
+      if (params["state"]) denied.searchParams.set("state", params["state"]);
+      return c.redirect(denied.toString(), 302);
+    }
+
+    const scopes = (params["scope"] ?? "openid").split(" ").filter(Boolean).join(" ");
+    const existing = await adapter.findOne<{ id: string }>({
+      model: "oauthConsent",
+      where: [
+        { field: "userId", value: session.user.id },
+        { field: "clientId", value: clientId },
+      ],
+    });
+    if (existing) {
+      await adapter.update({
+        model: "oauthConsent",
+        where: [{ field: "id", value: existing.id }],
+        update: { scopes, consentGiven: true, updatedAt: new Date() },
+      });
+    } else {
+      await adapter.create({
+        model: "oauthConsent",
+        data: {
+          clientId,
+          userId: session.user.id,
+          scopes,
+          consentGiven: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    }
+    // Con el consentimiento registrado, el mismo middleware deja pasar la
+    // petición y Better Auth emite el código.
+    return c.redirect(authorizeUrl(params), 302);
   });
 
   // --- Better Auth: login, OAuth authorize/token/register (DCR), sessions ---
@@ -350,6 +575,198 @@ export function buildApp(
       response.headers.append("set-cookie", setCookieHeader);
     }
     return response;
+  });
+
+  // --- Panel de cuenta (/cuenta) y exportación (/export) ----------------------
+  // Ambas rutas exigen sesión de navegador (no bearer): son superficie de
+  // usuario, no de la API MCP.
+  const requireSession = async (c: Context) => {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    return session?.user ? session : null;
+  };
+
+  /** Clientes OAuth que este usuario autorizó (consentimiento o token vivo). */
+  const clientsOf = async (userId: string): Promise<CuentaClientView[]> => {
+    const adapter = await adapterOf();
+    const consents = await adapter.findMany<{
+      clientId: string;
+      createdAt: unknown;
+    }>({ model: "oauthConsent", where: [{ field: "userId", value: userId }] });
+    const tokens = await adapter.findMany<{ clientId: string }>({
+      model: "oauthAccessToken",
+      where: [{ field: "userId", value: userId }],
+    });
+
+    const ids = new Set<string>([
+      ...consents.map((r) => r.clientId),
+      ...tokens.map((r) => r.clientId),
+    ]);
+    const views: CuentaClientView[] = [];
+    for (const clientId of ids) {
+      const app = await adapter.findOne<{ name?: string; redirectUrls?: string }>({
+        model: "oauthApplication",
+        where: [{ field: "clientId", value: clientId }],
+      });
+      const consent = consents.find((r) => r.clientId === clientId);
+      views.push({
+        clientId,
+        name: String(app?.name ?? clientId),
+        redirectOrigins: [
+          ...new Set(
+            String(app?.redirectUrls ?? "")
+              .split(",")
+              .filter(Boolean)
+              .map(originOfUri),
+          ),
+        ],
+        authorizedAt: consent ? toIso(consent.createdAt) : null,
+        activeTokens: tokens.filter((t) => t.clientId === clientId).length,
+      });
+    }
+    return views;
+  };
+
+  const renderCuenta = async (c: Context, notice: string | null) => {
+    const session = await requireSession(c);
+    if (!session) return c.redirect("/login", 302);
+    const adapter = await adapterOf();
+    const rows = await adapter.findMany<{
+      id: string;
+      createdAt: unknown;
+      updatedAt: unknown;
+      ipAddress: string | null;
+      userAgent: string | null;
+    }>({ model: "session", where: [{ field: "userId", value: session.user.id }] });
+    const sessions: CuentaSessionView[] = rows
+      .map((r) => ({
+        id: r.id,
+        createdAt: toIso(r.createdAt),
+        lastUsed: toIso(r.updatedAt),
+        ipAddress: r.ipAddress ?? null,
+        userAgent: r.userAgent ?? null,
+        current: r.id === session.session.id,
+      }))
+      .sort((a, b) => b.lastUsed.localeCompare(a.lastUsed));
+
+    return c.html(
+      cuentaPageHtml({
+        email: session.user.email,
+        upstream: tenants.resolveUpstream(session.user.id, session.user.email),
+        sessions,
+        clients: await clientsOf(session.user.id),
+        csrf: csrfToken(session.session.id, config.authSecret),
+        notice,
+      }),
+    );
+  };
+
+  const NOTICES: Record<string, string> = {
+    "cliente-revocado": "Aplicación revocada: se borraron su consentimiento y sus tokens.",
+    "sesiones-cerradas": "Se cerraron todas las demás sesiones.",
+  };
+
+  app.get("/cuenta", (c) => renderCuenta(c, NOTICES[c.req.query("ok") ?? ""] ?? null));
+
+  /** Guardia común de los POST del panel: same-origin + token CSRF + sesión. */
+  const guardedPost = async (c: Context) => {
+    if (!isSameOrigin(c.req.raw, config.baseUrl)) {
+      return { error: c.text("Petición cross-origin rechazada.", 403) } as const;
+    }
+    const session = await requireSession(c);
+    if (!session) return { error: c.redirect("/login", 302) } as const;
+    const body = await c.req.parseBody();
+    if (!verifyCsrfToken(body[CSRF_FIELD], session.session.id, config.authSecret)) {
+      return { error: c.text("Token CSRF inválido. Vuelve a intentarlo.", 403) } as const;
+    }
+    return { session, body } as const;
+  };
+
+  app.post("/cuenta/cerrar-sesiones", async (c) => {
+    const guard = await guardedPost(c);
+    if ("error" in guard) return guard.error;
+    const adapter = await adapterOf();
+    const rows = await adapter.findMany<{ id: string }>({
+      model: "session",
+      where: [{ field: "userId", value: guard.session.user.id }],
+    });
+    for (const row of rows) {
+      if (row.id === guard.session.session.id) continue;
+      await adapter.deleteMany({ model: "session", where: [{ field: "id", value: row.id }] });
+    }
+    return c.redirect("/cuenta?ok=sesiones-cerradas", 302);
+  });
+
+  app.post("/cuenta/revocar-cliente", async (c) => {
+    const guard = await guardedPost(c);
+    if ("error" in guard) return guard.error;
+    const clientId = String(guard.body["client_id"] ?? "");
+    if (!clientId) return c.text("Falta client_id.", 400);
+    const userId = guard.session.user.id;
+    const adapter = await adapterOf();
+    // Solo se tocan las filas de ESTE usuario.
+    await adapter.deleteMany({
+      model: "oauthConsent",
+      where: [
+        { field: "userId", value: userId },
+        { field: "clientId", value: clientId },
+      ],
+    });
+    await adapter.deleteMany({
+      model: "oauthAccessToken",
+      where: [
+        { field: "userId", value: userId },
+        { field: "clientId", value: clientId },
+      ],
+    });
+    // Los clientes se registran por DCR y son de un solo uso/usuario: si ya no
+    // le quedan consentimientos ni tokens a nadie, se borra también el registro.
+    const restConsents = await adapter.findMany({
+      model: "oauthConsent",
+      where: [{ field: "clientId", value: clientId }],
+    });
+    const restTokens = await adapter.findMany({
+      model: "oauthAccessToken",
+      where: [{ field: "clientId", value: clientId }],
+    });
+    if (restConsents.length === 0 && restTokens.length === 0) {
+      await adapter.deleteMany({
+        model: "oauthApplication",
+        where: [{ field: "clientId", value: clientId }],
+      });
+    }
+    console.log(`[cuenta] cliente OAuth revocado por ${guard.session.user.email}: ${clientId}`);
+    return c.redirect("/cuenta?ok=cliente-revocado", 302);
+  });
+
+  app.get("/export", async (c) => {
+    const session = await requireSession(c);
+    if (!session) {
+      // Navegador -> a iniciar sesión; cliente de API -> 401 explícito.
+      if ((c.req.header("accept") ?? "").includes("text/html")) {
+        return c.redirect("/login", 302);
+      }
+      return c.json({ error: "unauthorized", message: "Inicia sesión para exportar." }, 401);
+    }
+    const upstream = tenants.resolveUpstream(session.user.id, session.user.email);
+    if (!upstream) {
+      return c.json(
+        {
+          error: "sin_tenant",
+          message:
+            "Tu cuenta todavía no tiene un servidor de memoria asignado, así que no hay nada que exportar.",
+        },
+        409,
+      );
+    }
+    const data = await exportGraph(
+      upstream,
+      { id: session.user.id, email: session.user.email },
+      { maxEpisodes: config.exportMaxEpisodes, maxNodes: config.exportMaxNodes },
+    );
+    const stamp = new Date().toISOString().slice(0, 10);
+    c.header("Content-Disposition", `attachment; filename="secondbrain-${stamp}.json"`);
+    c.header("Cache-Control", "no-store");
+    return c.json(data);
   });
 
   // --- Protected MCP endpoint ---

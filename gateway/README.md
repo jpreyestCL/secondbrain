@@ -37,8 +37,11 @@ Claude (claude.ai / Desktop / móvil)
    mediante **registro dinámico de clientes** (`/api/auth/mcp/register`).
 4. Claude abre el navegador en `/api/auth/mcp/authorize` con **PKCE (S256,
    obligatorio)**. Si no hay sesión, el gateway redirige a la página de login
-   (`/login`, en español). Tras iniciar sesión se reanuda la autorización y se
-   emite el código.
+   (`/login`, en español). Tras iniciar sesión, el gateway muestra **su propia
+   pantalla de consentimiento** (`/consentimiento`) con qué aplicación pide
+   acceso y a qué; solo al pulsar «Autorizar» se emite el código. La decisión
+   se recuerda por (usuario, `client_id`), así que las reconexiones del mismo
+   cliente no vuelven a preguntar.
 5. Claude canjea el código en `/api/auth/mcp/token` y a partir de ahí llama a
    `/mcp` con `Authorization: Bearer …`.
 6. El gateway valida el token, resuelve el tenant del usuario en
@@ -58,6 +61,10 @@ Claude (claude.ai / Desktop / móvil)
 | `/registro/validar-codigo` | Valida el código y emite la cookie `registro_ok` (registro vía Google) |
 | `/post-google` | Post-callback de Google: hace cumplir el gate de invitación (ver «Habilitar Google») |
 | `/api/auth/callback/google` | Callback OAuth de Google (Better Auth); redirige a `/post-google` |
+| `/consentimiento` | Decide la pantalla de consentimiento propia (POST, CSRF) |
+| `/cuenta` | Panel de cuenta: sesiones, apps autorizadas, exportación (español) |
+| `/cuenta/cerrar-sesiones` · `/cuenta/revocar-cliente` | Acciones del panel (POST, same-origin + token CSRF) |
+| `/export` | Descarga JSON de toda tu memoria (requiere sesión) |
 | `/mcp` | Endpoint MCP protegido (proxy por tenant) |
 | `/health` | Chequeo simple |
 
@@ -82,6 +89,10 @@ Copia `.env.example` a `.env`:
 | `DCR_RATE_LIMIT` | `20` | Máximo de registros de cliente OAuth (`/api/auth/mcp/register`, DCR) por IP por minuto. |
 | `GOOGLE_CLIENT_ID` | — (vacío) | Client ID de Google OAuth. **Vacío ⇒ Google deshabilitado.** Ver «Habilitar Google». |
 | `GOOGLE_CLIENT_SECRET` | — (vacío) | Client secret de Google OAuth. Requiere también `GOOGLE_CLIENT_ID`. |
+| `SESSION_MAX_AGE_DAYS` | `2` | Duración de la cookie de sesión, en días (antes 7 fijos). |
+| `SESSION_UPDATE_AGE_MINUTES` | `60` | Cada cuántos minutos de uso se renueva la expiración de la sesión. `0` ⇒ en cada petición. |
+| `EXPORT_MAX_EPISODES` | `1000` | Tope de episodios que pide `/export` al MCP del tenant. |
+| `EXPORT_MAX_NODES` | `500` | Tope de entidades/hechos que pide `/export` al MCP del tenant. |
 
 ## Puesta en marcha
 
@@ -242,6 +253,53 @@ Reinicia el gateway (`npm run dev` o `npm run build && npm start`). El botón
 Si rotas `REGISTRATION_CODE`, las cookies `registro_ok` emitidas con el código
 anterior dejan de validar automáticamente (el HMAC deja de coincidir).
 
+## Panel de cuenta (`/cuenta`) y exportación (`/export`)
+
+`/cuenta` (requiere sesión de navegador, en español) muestra:
+
+- el correo de la cuenta y a qué servidor de memoria (upstream MCP) está enrutada;
+- las **sesiones activas** con su último uso, IP y navegador, y un botón
+  «cerrar todas las demás sesiones»;
+- las **aplicaciones OAuth autorizadas** (las que pasaron por la pantalla de
+  consentimiento o tienen tokens vivos), cada una con un botón «revocar».
+
+Revocar una app borra su consentimiento y sus tokens **de esa persona**; si no
+le queda consentimiento ni token a nadie, se borra también el registro del
+cliente (los clientes se crean por DCR, uno por conexión). La próxima vez que
+la app intente conectarse volverá a pedirse consentimiento.
+
+Los dos POST del panel (`/cuenta/cerrar-sesiones`, `/cuenta/revocar-cliente`)
+y el de `/consentimiento` exigen **same-origin** (cabecera `Origin`/`Referer`
+del propio gateway) **y** un token CSRF `HMAC(idDeSesión, AUTH_SECRET)`
+incrustado en el formulario. Sin cabecera `Origin` se rechaza.
+
+### `GET /export`
+
+Devuelve un JSON descargable con la memoria completa del usuario autenticado:
+
+```json
+{ "exportedAt": "...", "user": {...}, "upstream": "...",
+  "episodes": [...], "entities": [...], "facts": [...], "warnings": [] }
+```
+
+- `episodes`: el **texto original** de cada episodio (`get_episodes`).
+- `entities`: entidades del grafo (`search_nodes`).
+- `facts`: hechos con `valid_at` / `invalid_at`, incluidos los ya
+  invalidados (`search_memory_facts` con `only_current=false`).
+
+Todo se obtiene **a través del MCP del propio tenant**, nunca contra la base
+del grafo: el aislamiento es exactamente el mismo que aplica a Claude, así que
+un error aquí no puede alcanzar el grafo de otra persona. Sin sesión responde
+`401` (o redirige a `/login` si el `Accept` es HTML); si la cuenta aún no
+tiene tenant asignado responde `409`.
+
+Limitación conocida: `search_nodes` y `search_memory_facts` son búsquedas
+híbridas **top-N**, no un volcado; con la consulta amplia y los topes de
+`EXPORT_MAX_NODES` cubren de sobra un grafo personal, pero la fuente completa
+e íntegra son los episodios (todo hecho se derivó de uno, y se exportan todos).
+Si necesitas un volcado literal del grafo, hazlo desde el contenedor Graphiti
+del tenant con las herramientas de FalkorDB.
+
 ## Exponer públicamente
 
 claude.ai necesita alcanzar el gateway por HTTPS. Recomendado: **cloudflared**.
@@ -304,6 +362,19 @@ tailscale funnel 8787
 - `AUTH_SECRET`, `data/` (SQLite con hashes y tokens) y `tenants.json` no se
   versionan (ver `.gitignore`). Haz backup de `data/` y `tenants.json`.
 - Contraseñas: mínimo 10 caracteres (usa una larga y única).
+- **Pantalla de consentimiento propia**: el plugin MCP de Better Auth decide
+  pedir consentimiento mirando `prompt=consent`, es decir, lo decide el
+  cliente. El gateway interpone la suya en `/api/auth/mcp/authorize`: con
+  sesión iniciada y sin consentimiento previo para ese `client_id` **no se
+  llama a Better Auth**, así que no se genera ningún código; «Cancelar»
+  devuelve al cliente con `error=access_denied`. Es defensa en profundidad
+  sobre la allowlist de `redirect_uri`, no un reemplazo.
+- **Sesiones cortas con rotación**: la cookie dura `SESSION_MAX_AGE_DAYS`
+  (2 días por defecto, antes 7) y se renueva con el uso cada
+  `SESSION_UPDATE_AGE_MINUTES`. Cada persona puede cerrar sus otras sesiones
+  desde `/cuenta`.
+- Los formularios autenticados llevan protección CSRF (same-origin + token
+  HMAC ligado a la sesión).
 
 ## Tests
 
@@ -324,3 +395,14 @@ presente y proveedor cableado con credenciales, y el invariante del gate de
 invitación (usuario de Google sin cookie `registro_ok` válida ⇒ no se aprovisiona
 y se cierra la sesión; con cookie válida ⇒ se aprovisiona y mapea), sin llamadas
 de red reales a Google.
+
+También cubren la pantalla de consentimiento (el primer `authorize` la muestra
+y **no** emite código ni deja verificaciones en la base; autorizar sí lo emite;
+el segundo intento del mismo cliente no vuelve a preguntar; cancelar devuelve
+`access_denied`; cross-origin y token CSRF inválido ⇒ 403), la configuración de
+sesión (`SESSION_MAX_AGE_DAYS`/`SESSION_UPDATE_AGE_MINUTES`), `/export`
+(401/redirect sin sesión, JSON con `episodes`/`entities`/`facts` contra un MCP
+upstream simulado, 409 sin tenant), el panel `/cuenta` (render, revocar cliente
+⇒ desaparece de la base, cerrar sesiones ⇒ queda solo la actual, POST
+cross-origin y CSRF ⇒ 403) y la landing (contraste WCAG, `aria-live`, nombre
+accesible del deslizador, rama alcanzable y escape de `BASE_URL`).

@@ -114,52 +114,33 @@ config: GraphitiConfig
 
 # MCP server instructions
 GRAPHITI_MCP_INSTRUCTIONS = """
-Este es el "second brain" personal del usuario: un grafo de conocimiento temporal
-(Graphiti) donde se guarda su información personal, de salud, finanzas, trabajo y
-proyectos, con historia completa. Responde y opera en español salvo identificadores.
+Graphiti is a memory service for AI agents built on a knowledge graph. Graphiti performs well
+with dynamic data such as user interactions, changing enterprise data, and external information.
 
-## Cómo GUARDAR un hecho (tool: add_memory)
-Cuando el usuario quiera recordar/guardar algo ("guarda que...", "anota...", "recuerda..."):
-1. Determina el DOMINIO: personal | salud | finanzas | trabajo | proyectos.
-2. Determina la FECHA REAL del hecho (cuándo ocurrió en el mundo real: contenido del
-   texto > metadatos > si no se sabe, pregunta). NUNCA uses la fecha de hoy salvo que
-   el hecho sea genuinamente de hoy — el grafo es temporal y una fecha errónea lo daña.
-3. REDACTA secretos: nunca guardes contraseñas, tokens, API keys, PIN ni frases semilla
-   en crudo. Reemplázalos por "[CREDENCIAL-REDACTADA]" y guarda solo dónde está.
-4. Llama a add_memory con:
-   - name: "[<dominio>] <título corto>"
-   - episode_body: el hecho en texto claro, con relaciones EXPLÍCITAS
-     (mejor "mi cuenta del Banco X es Y" que "vivo en X" con sujeto implícito).
-   - source_description: "dominio: <dominio> | tipo: <tipo> | origen: <descripción>"
-   - reference_time: fecha ISO-8601 real del hecho (ej "2024-03-10T00:00:00Z").
-El grafo invalida solo los hechos que cambian (no los borra): si el usuario actualiza
-un dato, guarda el nuevo con su fecha; la consulta devolverá el vigente y podrá dar el
-historial. NO guardes código fuente ni detalles de repos aquí.
+Graphiti transforms information into a richly connected knowledge network, allowing you to 
+capture relationships between concepts, entities, and information. The system organizes data as episodes 
+(content snippets), nodes (entities), and facts (relationships between entities), creating a dynamic, 
+queryable memory store that evolves with new information. Graphiti supports multiple data formats, including 
+structured JSON data, enabling seamless integration with existing data pipelines and systems.
 
-## INGESTA REMOTA de documentos (sin SSH, sin subir nada al servidor)
-Cuando el usuario adjunte/pegue un documento (PDF, imagen, docx, texto, planilla) y pida
-guardarlo o ingerirlo:
-1. Extrae tú mismo el texto del adjunto (usa tu visión para PDFs escaneados/imágenes).
-2. Clasifícalo: dominio, tipo de documento y FECHA REAL del documento.
-3. Si es largo, pártelo en secciones de ~1000-1500 palabras por límites naturales
-   (títulos/secciones), sin cortar a mitad de párrafo.
-4. Redacta secretos (ver arriba).
-5. Llama a add_memory UNA VEZ POR SECCIÓN, todas con el mismo dominio y reference_time,
-   name "[<dominio>] <archivo> (parte N/total)" y source_description con
-   "origen: documento <nombre>". Así la ingesta ocurre 100% vía este conector MCP.
-Reporta al final un resumen: qué documento, dominio, fecha y cuántas secciones guardaste.
+Facts contain temporal metadata, allowing you to track the time of creation and whether a fact is invalid 
+(superseded by new information).
 
-## Cómo CONSULTAR
-- Estado actual (p.ej. "¿cuál es mi cuenta?"): usa search_memory_facts, que por
-  defecto (only_current=True) devuelve SOLO hechos vigentes.
-- Historia ("¿qué tenía antes?", "dame el historial"): llama search_memory_facts con
-  only_current=False para incluir los hechos invalidados, y/o get_episodes; cada hecho
-  trae valid_at / invalid_at para reconstruir la línea de tiempo.
-- Cita la fecha de vigencia cuando sea relevante. Reformula la búsqueda si no encuentras.
+Key capabilities:
+1. Add episodes (text, messages, or JSON) to the knowledge graph with the add_memory tool
+2. Search for nodes (entities) in the graph using natural language queries with search_nodes
+3. Find relevant facts (relationships between entities) with search_facts
+4. Retrieve specific entity edges or episodes by UUID
+5. Manage the knowledge graph with tools like delete_episode, delete_entity_edge, and clear_graph
 
-## Notas
-El aislamiento por usuario ya está garantizado por el servidor (cada quien ve solo su
-grafo). No necesitas pasar group_id; el servidor fuerza el del usuario autenticado.
+The server connects to a database for persistent storage and uses language models for certain operations. 
+Each piece of information is organized by group_id, allowing you to maintain separate knowledge domains.
+
+When adding information, provide descriptive names and detailed content to improve search quality. 
+When searching, use specific queries and consider filtering by group_id for more relevant results.
+
+For optimal performance, ensure the database is properly configured and accessible, and valid 
+API keys are provided for any language model operations.
 """
 
 # MCP server instance
@@ -234,13 +215,9 @@ class GraphitiService:
                     # For FalkorDB, create a FalkorDriver instance directly
                     from graphiti_core.driver.falkordb_driver import FalkorDriver
 
-                    # PATCH (secondbrain): pasar tambien username para que las
-                    # credenciales ACL por tenant (redis://tenant_<n>:<pass>@...)
-                    # lleguen al cliente FalkorDB.
                     falkor_driver = FalkorDriver(
                         host=db_config['host'],
                         port=db_config['port'],
-                        username=db_config.get('username'),
                         password=db_config['password'],
                         database=db_config['database'],
                     )
@@ -341,67 +318,6 @@ class GraphitiService:
         return self.client
 
 
-# PATCH (secondbrain): redaccion server-side de credenciales. Patrones alineados
-# con ingest/src/brain_ingest/redact.py.
-import re as _re
-
-_REDACTED = '[CREDENCIAL-REDACTADA]'
-_SECRET_PATTERNS = [
-    _re.compile(r'([A-Za-z0-9_.\-]*(?:password|passwd|pwd|contrase[nñ]a|clave|secret|token|api[_-]?key)[A-Za-z0-9_.\-]*\s*[:=]\s*)(\S+)', _re.I),
-    _re.compile(r'\b([A-Za-z][A-Za-z0-9+.\-]*://[^/\s:@]*:)([^@\s]+)(@)'),
-    _re.compile(r'\b(sk-[A-Za-z0-9]{16,}|nvapi-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16})\b'),
-    _re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----', _re.S),
-]
-
-
-def _redact_secrets(text: str):
-    """Devuelve (texto_redactado, cantidad_de_secretos)."""
-    if not text:
-        return text, 0
-    count = 0
-    out = text
-    for i, pat in enumerate(_SECRET_PATTERNS):
-        if i == 0:
-            out, n = pat.subn(lambda m: m.group(1) + _REDACTED, out)
-        elif i == 1:
-            out, n = pat.subn(lambda m: m.group(1) + _REDACTED + m.group(3), out)
-        else:
-            out, n = pat.subn(_REDACTED, out)
-        count += n
-    return out, count
-
-
-# PATCH (secondbrain): aislamiento multi-tenant.
-# Esta instancia MCP sirve a UN solo tenant (config.graphiti.group_id). El nombre
-# del grafo en FalkorDB es el group_id, por lo que aceptar group_ids arbitrarios
-# del cliente permitiria leer/escribir el grafo de otro tenant. Se fuerza SIEMPRE
-# el group_id del tenant; el "dominio" (personal, salud, ...) viaja como metadata
-# en source_description, no como particion.
-def _tenant_group_id() -> str:
-    return config.graphiti.group_id
-
-
-def _force_tenant_group_ids(group_ids, logger=logger):
-    tenant = _tenant_group_id()
-    if group_ids and any(g != tenant for g in group_ids):
-        logger.warning(
-            f'PATCH: group_ids {group_ids} ignorados; esta instancia solo opera sobre "{tenant}"'
-        )
-    return [tenant]
-
-
-def _owned_by_tenant(obj) -> bool:
-    """¿El objeto pertenece al grafo de este tenant?
-
-    Defensa en profundidad para las tools que operan por UUID: hoy la ACL de
-    FalkorDB y el driver atado al grafo del tenant ya impiden alcanzar objetos
-    ajenos, pero esa es la UNICA barrera. Si mañana se comparte un grafo o se
-    relaja la ACL, esto evita que un UUID ajeno sea legible o borrable.
-    """
-    gid = getattr(obj, 'group_id', None)
-    return gid is None or gid == _tenant_group_id()
-
-
 @mcp.tool()
 async def add_memory(
     name: str,
@@ -410,7 +326,6 @@ async def add_memory(
     source: str = 'text',
     source_description: str = '',
     uuid: str | None = None,
-    reference_time: str | None = None,
 ) -> SuccessResponse | ErrorResponse:
     """Add an episode to memory. This is the primary way to add information to the graph.
 
@@ -419,10 +334,6 @@ async def add_memory(
 
     Args:
         name (str): Name of the episode
-        reference_time (str, optional): ISO-8601 datetime of when the fact/document actually
-                                        occurred in the real world (e.g. '2024-03-10T12:00:00Z').
-                                        Defaults to now. ALWAYS pass this for historical data so
-                                        the bi-temporal model reflects real validity intervals.
         episode_body (str): The content of the episode to persist to memory. When source='json', this must be a
                            properly escaped JSON string, not a raw Python dictionary. The JSON data will be
                            automatically processed to extract entities and relationships.
@@ -460,12 +371,8 @@ async def add_memory(
         return ErrorResponse(error='Services not initialized')
 
     try:
-        # PATCH (secondbrain): forzar el group_id del tenant.
-        effective_group_id = _tenant_group_id()
-        if group_id and group_id != effective_group_id:
-            logger.warning(
-                f'PATCH: group_id "{group_id}" ignorado; se usa "{effective_group_id}"'
-            )
+        # Use the provided group_id or fall back to the default from config
+        effective_group_id = group_id or config.graphiti.group_id
 
         # Try to parse the source as an EpisodeType enum, with fallback to text
         episode_type = EpisodeType.text  # Default
@@ -477,48 +384,6 @@ async def add_memory(
                 logger.warning(f"Unknown source type '{source}', using 'text' as default")
                 episode_type = EpisodeType.text
 
-        # PATCH (secondbrain): parsear reference_time ISO-8601 si viene.
-        parsed_reference_time = None
-        if reference_time:
-            from datetime import datetime as _dt
-            from datetime import timezone as _tz
-
-            try:
-                parsed_reference_time = _dt.fromisoformat(reference_time.replace('Z', '+00:00'))
-            except ValueError:
-                return ErrorResponse(
-                    error=f"Invalid reference_time '{reference_time}': must be ISO-8601"
-                )
-            # Un datetime naive (sin tzinfo) revienta despues en la cola al
-            # compararse con datetimes aware (TypeError -> episodio perdido en
-            # silencio). Asumir UTC si no viene offset.
-            if parsed_reference_time.tzinfo is None:
-                parsed_reference_time = parsed_reference_time.replace(tzinfo=_tz.utc)
-            # Rango sano: una fecha absurda (año 24 o 2190) contamina el modelo
-            # bi-temporal de forma permanente (los episodios solo se borran).
-            from datetime import timedelta as _td
-
-            _now = _dt.now(_tz.utc)
-            if not (
-                _dt(1900, 1, 1, tzinfo=_tz.utc) <= parsed_reference_time <= _now + _td(days=366)
-            ):
-                return ErrorResponse(
-                    error=(
-                        f"reference_time '{reference_time}' fuera de rango "
-                        '(se admite entre 1900 y un año en el futuro)'
-                    )
-                )
-
-        # PATCH (secondbrain): redactar credenciales ANTES de encolar el episodio.
-        # El prompt le pide a Claude que redacte, pero eso es best-effort; esto es
-        # la garantia real de que un secreto no queda escrito en el grafo.
-        episode_body, _n_secrets = _redact_secrets(episode_body)
-        if _n_secrets:
-            logger.warning(
-                f'PATCH: {_n_secrets} credencial(es) redactada(s) en el episodio "{name}"'
-            )
-            source_description = (source_description or '') + ' | credenciales redactadas'
-
         # Submit to queue service for async processing
         await queue_service.add_episode(
             group_id=effective_group_id,
@@ -528,7 +393,6 @@ async def add_memory(
             episode_type=episode_type,
             entity_types=graphiti_service.entity_types,
             uuid=uuid or None,  # Ensure None is passed if uuid is None
-            reference_time=parsed_reference_time,
         )
 
         return SuccessResponse(
@@ -563,8 +427,14 @@ async def search_nodes(
     try:
         client = await graphiti_service.get_client()
 
-        # PATCH (secondbrain): esta instancia solo ve el grafo de su tenant.
-        effective_group_ids = _force_tenant_group_ids(group_ids)
+        # Use the provided group_ids or fall back to the default from config if none provided
+        effective_group_ids = (
+            group_ids
+            if group_ids is not None
+            else [config.graphiti.group_id]
+            if config.graphiti.group_id
+            else []
+        )
 
         # Create search filters
         search_filters = SearchFilters(
@@ -620,7 +490,6 @@ async def search_memory_facts(
     group_ids: list[str] | None = None,
     max_facts: int = 10,
     center_node_uuid: str | None = None,
-    only_current: bool = True,
 ) -> FactSearchResponse | ErrorResponse:
     """Search the graph memory for relevant facts.
 
@@ -629,10 +498,6 @@ async def search_memory_facts(
         group_ids: Optional list of group IDs to filter results
         max_facts: Maximum number of facts to return (default: 10)
         center_node_uuid: Optional UUID of a node to center the search around
-        only_current: If True (default) only facts that are still valid are returned
-                      (invalid_at IS NULL). Set to False to include superseded facts
-                      when the user asks for history — each fact carries valid_at /
-                      invalid_at so you can build the timeline.
     """
     global graphiti_service
 
@@ -646,30 +511,20 @@ async def search_memory_facts(
 
         client = await graphiti_service.get_client()
 
-        # PATCH (secondbrain): esta instancia solo ve el grafo de su tenant.
-        effective_group_ids = _force_tenant_group_ids(group_ids)
-
-        # PATCH (secondbrain): por defecto devolver SOLO hechos vigentes. Sin este
-        # filtro, un hecho superseded (p.ej. la cuenta bancaria anterior) vuelve
-        # mezclado con el vigente y el cliente puede responder el dato obsoleto.
-        search_kwargs = {}
-        if only_current:
-            from graphiti_core.search.search_filters import (
-                ComparisonOperator,
-                DateFilter,
-                SearchFilters,
-            )
-
-            search_kwargs['search_filter'] = SearchFilters(
-                invalid_at=[[DateFilter(comparison_operator=ComparisonOperator.is_null)]]
-            )
+        # Use the provided group_ids or fall back to the default from config if none provided
+        effective_group_ids = (
+            group_ids
+            if group_ids is not None
+            else [config.graphiti.group_id]
+            if config.graphiti.group_id
+            else []
+        )
 
         relevant_edges = await client.search(
             group_ids=effective_group_ids,
             query=query,
             num_results=max_facts,
             center_node_uuid=center_node_uuid,
-            **search_kwargs,
         )
 
         if not relevant_edges:
@@ -700,9 +555,6 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
 
         # Get the entity edge by UUID
         entity_edge = await EntityEdge.get_by_uuid(client.driver, uuid)
-        # PATCH (secondbrain): no permitir operar sobre objetos de otro tenant.
-        if not _owned_by_tenant(entity_edge):
-            return ErrorResponse(error=f'Entity edge {uuid} no pertenece a este grafo')
         # Delete the edge using its delete method
         await entity_edge.delete(client.driver)
         return SuccessResponse(message=f'Entity edge with UUID {uuid} deleted successfully')
@@ -729,9 +581,6 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
 
         # Get the episodic node by UUID
         episodic_node = await EpisodicNode.get_by_uuid(client.driver, uuid)
-        # PATCH (secondbrain): no permitir operar sobre objetos de otro tenant.
-        if not _owned_by_tenant(episodic_node):
-            return ErrorResponse(error=f'Episode {uuid} no pertenece a este grafo')
         # Delete the node using its delete method
         await episodic_node.delete(client.driver)
         return SuccessResponse(message=f'Episode with UUID {uuid} deleted successfully')
@@ -758,9 +607,6 @@ async def get_entity_edge(uuid: str) -> dict[str, Any] | ErrorResponse:
 
         # Get the entity edge directly using the EntityEdge class method
         entity_edge = await EntityEdge.get_by_uuid(client.driver, uuid)
-        # PATCH (secondbrain): no exponer objetos de otro tenant.
-        if not _owned_by_tenant(entity_edge):
-            return ErrorResponse(error=f'Entity edge {uuid} no pertenece a este grafo')
 
         # Use the format_fact_result function to serialize the edge
         # Return the Python dict directly - MCP will handle serialization
@@ -790,8 +636,14 @@ async def get_episodes(
     try:
         client = await graphiti_service.get_client()
 
-        # PATCH (secondbrain): esta instancia solo ve el grafo de su tenant.
-        effective_group_ids = _force_tenant_group_ids(group_ids)
+        # Use the provided group_ids or fall back to the default from config if none provided
+        effective_group_ids = (
+            group_ids
+            if group_ids is not None
+            else [config.graphiti.group_id]
+            if config.graphiti.group_id
+            else []
+        )
 
         # Get episodes from the driver directly
         from graphiti_core.nodes import EpisodicNode
@@ -848,8 +700,10 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
     try:
         client = await graphiti_service.get_client()
 
-        # PATCH (secondbrain): solo se puede limpiar el grafo del propio tenant.
-        effective_group_ids = _force_tenant_group_ids(group_ids)
+        # Use the provided group_ids or fall back to the default from config if none provided
+        effective_group_ids = (
+            group_ids or [config.graphiti.group_id] if config.graphiti.group_id else []
+        )
 
         if not effective_group_ids:
             return ErrorResponse(error='No group IDs specified for clearing')

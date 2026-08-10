@@ -1,0 +1,9 @@
+[Unit]
+Description=Second Brain backup diario 03:30 (deploy nativo)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

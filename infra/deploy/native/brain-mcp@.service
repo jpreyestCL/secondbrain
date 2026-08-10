@@ -1,0 +1,48 @@
+[Unit]
+# Unit TEMPLATE: una sola definicion sirve para todos los tenants.
+#   systemctl enable --now brain-mcp@maria   -> instancia %i = "maria"
+# Lo instancia infra/deploy/native/provision-tenant-native.sh.
+Description=Second Brain Graphiti MCP (tenant %i)
+After=network-online.target brain-falkordb.service
+Wants=network-online.target
+Requires=brain-falkordb.service
+
+[Service]
+UMask=0077
+User=secondbrain
+Group=secondbrain
+Type=simple
+WorkingDirectory=/opt/secondbrain-native/mcp
+# Orden importante: primero el env compartido (LLM/embedder/API keys), despues
+# el del tenant, que PISA FALKORDB_URI / FALKORDB_DATABASE / GRAPHITI_GROUP_ID
+# y sobre todo CONFIG_PATH (el config.yaml propio que fija el puerto).
+EnvironmentFile=/opt/secondbrain-native/mcp.env
+EnvironmentFile=/opt/secondbrain-native/tenants/%i.env
+Environment=HOME=/opt/secondbrain-native
+Environment=UV_CACHE_DIR=/opt/secondbrain-native/.cache/uv
+Environment=XDG_CACHE_HOME=/opt/secondbrain-native/.cache
+# OJO: NO basta con exportar CONFIG_PATH. graphiti_mcp_server.py define
+# --config con default=<mcp>/config/config.yaml y hace
+#   if args.config: os.environ['CONFIG_PATH'] = str(args.config)
+# es decir, el default de argparse PISA la variable de entorno y el server
+# levantaria en el puerto del config compartido (8021) en vez del del tenant.
+# Por eso hay que pasar --config explicitamente.
+ExecStart=/usr/local/bin/uv run --offline main.py --config ${CONFIG_PATH}
+Restart=always
+RestartSec=5
+MemoryMax=500M
+OOMScoreAdjust=400
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/secondbrain-native
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

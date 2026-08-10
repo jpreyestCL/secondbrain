@@ -55,6 +55,14 @@ export function createAuth(config: GatewayConfig, _opts: CreateAuthOptions = {})
       requireEmailVerification: false,
       minPasswordLength: 10,
     },
+    // Sesiones cortas CON rotación: la cookie vive sessionMaxAgeDays (default 2
+    // días, antes 7 fijos) y cada sessionUpdateAgeMinutes de uso se renueva la
+    // expiración. Así una cookie robada caduca pronto sin obligar a reloguearse
+    // a quien usa el gateway a diario.
+    session: {
+      expiresIn: Math.round(config.sessionMaxAgeDays * 24 * 60 * 60),
+      updateAge: Math.round(config.sessionUpdateAgeMinutes * 60),
+    },
     advanced: {
       // Behind cloudflared/tailscale the public origin is https even though
       // the local listener is http.

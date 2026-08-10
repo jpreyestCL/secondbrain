@@ -1,0 +1,88 @@
+# PLANTILLA de config.yaml por tenant (deploy nativo).
+# provision-tenant-native.sh la instancia en
+#   /opt/secondbrain-native/tenants/<slug>/config.yaml
+# sustituyendo __MCP_HOST__ y __MCP_PORT__, y el unit brain-mcp@<slug> la
+# selecciona pasando `main.py --config <ruta>`.
+# El puerto NO se puede pasar por entorno: el server solo lo lee del YAML
+# (src/config/schema.py resuelve CONFIG_PATH), y ademas el default de argparse
+# de graphiti_mcp_server.py PISA la env var CONFIG_PATH. De ahi que haya un
+# config.yaml por tenant y que el unit use --config.
+#
+# Config del Graphiti MCP server.
+# Derivado de mcp_server/config/config-docker-falkordb.yaml del repo getzep/graphiti
+# (version graphiti 0.28.2 / imagen 1.0.2). La sintaxis ${VAR:default} la resuelve
+# el loader de configuracion del propio server contra las variables de entorno.
+
+server:
+  transport: "http"          # streamable HTTP; endpoint MCP en /mcp/
+  host: "__MCP_HOST__"
+  port: __MCP_PORT__
+
+llm:
+  provider: ${LLM_PROVIDER:openai}
+  model: ${MODEL_NAME:gpt-5.5}
+  max_tokens: 4096
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      # Apuntar a Ollama u otro endpoint compatible con OpenAI:
+      #   OPENAI_API_URL=http://host.docker.internal:11434/v1
+      api_url: ${OPENAI_API_URL:https://api.openai.com/v1}
+      organization_id: ${OPENAI_ORGANIZATION_ID:}
+
+    anthropic:
+      api_key: ${ANTHROPIC_API_KEY}
+      api_url: ${ANTHROPIC_API_URL:https://api.anthropic.com}
+      max_retries: 3
+
+embedder:
+  provider: ${EMBEDDER_PROVIDER:openai}
+  model: ${EMBEDDER_MODEL:text-embedding-3-small}
+  dimensions: ${EMBEDDER_DIMENSIONS:1536}
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      # URL propia del embedder: permite LLM=DeepSeek (sin embeddings) +
+      # embeddings en Ollama u OpenAI. Si no se define, api.openai.com.
+      api_url: ${EMBEDDER_API_URL:https://api.openai.com/v1}
+      organization_id: ${OPENAI_ORGANIZATION_ID:}
+
+    voyage:
+      api_key: ${VOYAGE_API_KEY}
+      api_url: ${VOYAGE_API_URL:https://api.voyageai.com/v1}
+      model: "voyage-3"
+
+database:
+  provider: "falkordb"
+
+  providers:
+    falkordb:
+      uri: ${FALKORDB_URI:redis://falkordb:6379}
+      password: ${FALKORDB_PASSWORD:}
+      database: ${FALKORDB_DATABASE:default_db}
+
+graphiti:
+  group_id: ${GRAPHITI_GROUP_ID:main}
+  episode_id_prefix: ${EPISODE_ID_PREFIX:}
+  user_id: ${USER_ID:mcp_user}
+  entity_types:
+    - name: "Preference"
+      description: "User preferences, choices, opinions, or selections (PRIORITIZE over most other types except User/Assistant)"
+    - name: "Requirement"
+      description: "Specific needs, features, or functionality that must be fulfilled"
+    - name: "Procedure"
+      description: "Standard operating procedures and sequential instructions"
+    - name: "Location"
+      description: "Physical or virtual places where activities occur"
+    - name: "Event"
+      description: "Time-bound activities, occurrences, or experiences"
+    - name: "Organization"
+      description: "Companies, institutions, groups, or formal entities"
+    - name: "Document"
+      description: "Information content in various forms (books, articles, reports, etc.)"
+    - name: "Topic"
+      description: "Subject of conversation, interest, or knowledge domain (use as last resort)"
+    - name: "Object"
+      description: "Physical items, tools, devices, or possessions (use as last resort)"

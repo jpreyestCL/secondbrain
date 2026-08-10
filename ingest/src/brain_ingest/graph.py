@@ -29,7 +29,9 @@ Connection environment / credentials:
   ``tenant_<tenant>`` (the ACL naming convention in ``infra/tenants/``).
 * Embedder/LLM: ``OPENAI_API_KEY`` (OpenAI) or ``OLLAMA_BASE_URL`` (local
   Ollama; models via ``OLLAMA_LLM_MODEL`` / ``OLLAMA_EMBED_MODEL``).
-  An LLM client is only configured when one of these is present.
+  At least one of these must be present. The LLM client is ALWAYS built
+  explicitly (never left to graphiti's default) so that ``MODEL_NAME`` is
+  honoured, and the real API key is only withheld from local endpoints.
 """
 
 from __future__ import annotations
@@ -100,6 +102,40 @@ def tenant_credentials(tenant: str) -> tuple[str | None, str | None]:
     return user, password
 
 
+#: Placeholder key for local OpenAI-compatible servers (Ollama, vLLM, LM Studio)
+#: which require a non-empty Authorization header but ignore its value.
+LOCAL_API_KEY_PLACEHOLDER = "ollama"
+
+
+#: Hostnames considered "local" — a real API key is never sent to these.
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal", "ollama"}
+
+
+def _is_local_endpoint(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return host in _LOCAL_HOSTS or host.endswith(".local")
+
+
+def _api_key_for(url: str | None, openai_key: str | None) -> str:
+    """Pick the API key to send to ``url``.
+
+    The real ``OPENAI_API_KEY`` is used whenever the endpoint is the official
+    OpenAI API, some other remote OpenAI-compatible provider (DeepSeek, Groq,
+    ...), *or* unset — an unset ``base_url`` means the SDK default, which IS
+    api.openai.com. Only a *local* endpoint (Ollama, vLLM, LM Studio) gets the
+    inert ``"ollama"`` placeholder, so a real key is never leaked to it.
+
+    Bug this fixes: the previous expression sent the literal string ``"ollama"``
+    whenever ``url`` was ``None``, so a user who configured only
+    ``OPENAI_API_KEY`` got a 401 from api.openai.com on every embedding call.
+    """
+    if url is not None and _is_local_endpoint(url):
+        return LOCAL_API_KEY_PLACEHOLDER
+    return openai_key or LOCAL_API_KEY_PLACEHOLDER
+
+
 def build_graphiti(tenant: str):
     """Construct a Graphiti instance for ``tenant`` from environment variables."""
     from graphiti_core import Graphiti
@@ -129,24 +165,40 @@ def build_graphiti(tenant: str):
 
     from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
     from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.llm_client.openai_client import OpenAIClient
     from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
-    # LLM: OpenAIGenericClient cuando el endpoint NO es api.openai.com (DeepSeek,
-    # Ollama, vLLM); el cliente OpenAI estándar solo para la API oficial.
+    model = (
+        os.environ.get("MODEL_NAME")
+        or os.environ.get("OLLAMA_LLM_MODEL")
+        or "gpt-4o-mini"
+    )
+
+    # LLM: OpenAIGenericClient cuando el endpoint es OpenAI-compatible pero NO
+    # oficial (DeepSeek, Ollama, vLLM); el cliente OpenAI estándar para la API
+    # oficial o cuando no hay base_url. En AMBOS casos construimos el cliente
+    # explícitamente: dejar llm_client=None hacía que graphiti creara su propio
+    # cliente por defecto e IGNORARA MODEL_NAME silenciosamente.
+    llm_config = LLMConfig(
+        api_key=_api_key_for(llm_url, openai_key),
+        model=model,
+        small_model=model,
+        base_url=llm_url,
+    )
     if llm_url and "api.openai.com" not in llm_url:
-        llm_client = OpenAIGenericClient(
-            config=LLMConfig(
-                api_key=openai_key or "ollama",
-                model=os.environ.get("MODEL_NAME")
-                or os.environ.get("OLLAMA_LLM_MODEL", "gpt-4o-mini"),
-                base_url=llm_url,
-            )
-        )
+        llm_client = OpenAIGenericClient(config=llm_config)
+    else:
+        # Modelos "reasoning" (o1/o3/gpt-5) requieren los parámetros de
+        # reasoning/verbosity; el resto debe recibirlos explícitamente en None.
+        if model.startswith(("o1", "o3", "gpt-5")):
+            llm_client = OpenAIClient(config=llm_config, reasoning="minimal", verbosity="low")
+        else:
+            llm_client = OpenAIClient(config=llm_config, reasoning=None, verbosity=None)
 
     # Embedder: endpoint propio (mxbai-embed-large en Ollama = 1024 dims). Debe
     # coincidir con el del server o la búsqueda semántica se corrompe.
     _embed_kwargs = dict(
-        api_key=(openai_key if embed_url and "api.openai.com" in embed_url else "ollama"),
+        api_key=_api_key_for(embed_url, openai_key),
         embedding_model=os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small"),
         base_url=embed_url,
     )

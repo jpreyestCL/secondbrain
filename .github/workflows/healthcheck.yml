@@ -1,0 +1,65 @@
+name: Healthcheck
+
+# End-to-end probe against the deployed instance: OAuth (login -> DCR -> PKCE ->
+# token) -> MCP initialize -> add_memory canary -> poll -> search_memory_facts ->
+# delete_episode cleanup.
+#
+# INERT UNTIL CONFIGURED: without the BRAIN_URL / BRAIN_EMAIL / BRAIN_PASSWORD
+# repository secrets the job exits successfully with a "not configured" notice.
+# Once the secrets exist it runs for real and fails loudly.
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours (UTC)
+  workflow_dispatch:
+    inputs:
+      timeout:
+        description: "Seconds to wait for the canary to be processed"
+        required: false
+        default: "180"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: healthcheck
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: end-to-end probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check secrets are configured
+        id: cfg
+        env:
+          BRAIN_URL: ${{ secrets.BRAIN_URL }}
+          BRAIN_EMAIL: ${{ secrets.BRAIN_EMAIL }}
+          BRAIN_PASSWORD: ${{ secrets.BRAIN_PASSWORD }}
+        run: |
+          if [ -z "$BRAIN_URL" ] || [ -z "$BRAIN_EMAIL" ] || [ -z "$BRAIN_PASSWORD" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Healthcheck inert::Set the BRAIN_URL, BRAIN_EMAIL and BRAIN_PASSWORD repository secrets to enable this probe (see scripts/README.md)."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run healthcheck
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          BRAIN_URL: ${{ secrets.BRAIN_URL }}
+          BRAIN_EMAIL: ${{ secrets.BRAIN_EMAIL }}
+          BRAIN_PASSWORD: ${{ secrets.BRAIN_PASSWORD }}
+          BRAIN_TIMEOUT: ${{ github.event.inputs.timeout || '180' }}
+        run: python scripts/healthcheck.py --verbose
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error title=Second brain healthcheck FAILED::The end-to-end OAuth + MCP round trip against BRAIN_URL did not complete. See the job log above."

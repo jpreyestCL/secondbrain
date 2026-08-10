@@ -1,0 +1,2 @@
+user default on >CAMBIAR_POR_openssl_rand_hex_24 ~* &* +@all
+user tenant_ejemplo on >CAMBIAR_POR_openssl_rand_hex_24 ~ejemplo +@all -@admin -@dangerous +info +client|setinfo -scan -graph.list

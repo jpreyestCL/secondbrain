@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    name: ingest (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: ingest/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: uv sync
+        run: uv sync --frozen
+
+      - name: pytest
+        run: uv run pytest -q
+
+  gateway:
+    name: gateway (build + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: gateway/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: npm run build
+        run: npm run build
+
+      - name: npm test
+        run: npm test
+
+  audit:
+    name: dependency audit (non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: ingest/uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: gateway/package-lock.json
+
+      # pip-audit consumes a requirements file, so export the uv lockfile first.
+      # Non-blocking for now: findings are visible in the job log / summary but
+      # do not fail the build. Flip continue-on-error to false once the current
+      # advisories are triaged.
+      - name: pip-audit (ingest lockfile)
+        id: pip_audit
+        continue-on-error: true
+        working-directory: ingest
+        run: |
+          uv export --frozen --no-emit-project --no-dev --format requirements-txt \
+            --output-file /tmp/ingest-requirements.txt
+          # --no-deps/--disable-pip: the export is already a fully resolved,
+          # pinned set, so pip-audit must not try to re-resolve (which would
+          # build a throwaway venv).
+          uvx pip-audit --no-deps --disable-pip --progress-spinner off \
+            --requirement /tmp/ingest-requirements.txt 2>&1 | tee /tmp/pip-audit.txt
+
+      - name: npm audit (gateway)
+        id: npm_audit
+        continue-on-error: true
+        working-directory: gateway
+        run: npm audit --audit-level=high | tee /tmp/npm-audit.txt
+
+      - name: Audit summary
+        if: always()
+        run: |
+          {
+            echo "## Dependency audit (non-blocking)"
+            echo ""
+            echo "| audit | outcome |"
+            echo "| --- | --- |"
+            echo "| pip-audit (ingest) | ${{ steps.pip_audit.outcome }} |"
+            echo "| npm audit (gateway) | ${{ steps.npm_audit.outcome }} |"
+            echo ""
+            echo "<details><summary>pip-audit output</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/pip-audit.txt 2>/dev/null || echo "(no output)"
+            echo '```'
+            echo "</details>"
+            echo ""
+            echo "<details><summary>npm audit output</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/npm-audit.txt 2>/dev/null || echo "(no output)"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

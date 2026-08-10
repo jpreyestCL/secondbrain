@@ -54,6 +54,34 @@ export interface GatewayConfig {
   googleClientId: string;
   /** Google OAuth client secret. Ver googleClientId. */
   googleClientSecret: string;
+  /**
+   * Vida de la cookie de sesión, en días (SESSION_MAX_AGE_DAYS, default 2).
+   * Antes eran 7 días fijos: una cookie robada valía una semana. Con rotación
+   * (sessionUpdateAgeMinutes) la actividad la extiende, así que un valor corto
+   * no molesta a quien usa el gateway a diario.
+   */
+  sessionMaxAgeDays: number;
+  /**
+   * Cada cuántos minutos de actividad se refresca (rota) la expiración de la
+   * sesión. SESSION_UPDATE_AGE_MINUTES, default 60. 0 => en cada petición.
+   */
+  sessionUpdateAgeMinutes: number;
+  /** Máximo de episodios que /export pide al MCP del tenant. */
+  exportMaxEpisodes: number;
+  /** Máximo de entidades/hechos que /export pide al MCP del tenant. */
+  exportMaxNodes: number;
+}
+
+/** Número > 0 desde el entorno; cualquier basura cae al default. */
+function positive(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Número >= 0 desde el entorno; cualquier basura cae al default. */
+function nonNegative(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -87,6 +115,10 @@ export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
       .filter(Boolean),
     googleClientId: (process.env.GOOGLE_CLIENT_ID ?? "").trim(),
     googleClientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+    sessionMaxAgeDays: positive(process.env.SESSION_MAX_AGE_DAYS, 2),
+    sessionUpdateAgeMinutes: nonNegative(process.env.SESSION_UPDATE_AGE_MINUTES, 60),
+    exportMaxEpisodes: positive(process.env.EXPORT_MAX_EPISODES, 1000),
+    exportMaxNodes: positive(process.env.EXPORT_MAX_NODES, 500),
     ...overrides,
   };
 }
