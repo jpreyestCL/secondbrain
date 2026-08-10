@@ -1,0 +1,19 @@
+# Graphiti MCP server nativo (uv) para el tenant jpreyest, en 127.0.0.1:8021.
+[Unit]
+Description=Second Brain Graphiti MCP (tenant jpreyest, port 8021)
+After=network-online.target brain-falkordb.service
+Wants=network-online.target
+Requires=brain-falkordb.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/secondbrain-native/mcp
+EnvironmentFile=/opt/secondbrain-native/mcp.env
+ExecStart=/root/.local/bin/uv run main.py
+Restart=always
+RestartSec=5
+MemoryMax=500M
+OOMScoreAdjust=400
+
+[Install]
+WantedBy=multi-user.target

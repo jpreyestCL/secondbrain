@@ -1,0 +1,18 @@
+# Gateway OAuth nativo (Node) en 127.0.0.1:8787.
+[Unit]
+Description=Second Brain OAuth gateway (mybrain.rlz.cl)
+After=network-online.target brain-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/secondbrain-native/gateway
+EnvironmentFile=/opt/secondbrain-native/gateway/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=3
+Environment=BRAIN_REPO_ROOT=/opt/secondbrain-native
+MemoryMax=250M
+
+[Install]
+WantedBy=multi-user.target

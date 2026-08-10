@@ -1,0 +1,18 @@
+# FalkorDB nativo (redis 8.6 propio + modulo falkordb-x64.so) en 6380.
+# NO toca el redis del sistema (7.0.15, puerto 6379, usado por otras apps).
+[Unit]
+Description=Second Brain FalkorDB (redis8+graph module, port 6380)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/secondbrain-native/bin/redis-server /opt/secondbrain-native/falkordb.conf
+Restart=always
+RestartSec=3
+# Limite de memoria: proteger las apps de produccion del server
+MemoryMax=700M
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target
