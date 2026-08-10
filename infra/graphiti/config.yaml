@@ -10,15 +10,18 @@ server:
 
 llm:
   provider: ${LLM_PROVIDER:openai}
-  model: ${MODEL_NAME:gpt-5.5}
+  # Modelo de CHAT. Variable propia (LLM_MODEL) para poder alternar de proveedor
+  # sin tocar la config de NVIDIA que vive en MODEL_NAME/OPENAI_*.
+  model: ${LLM_MODEL}
   max_tokens: 4096
 
   providers:
     openai:
-      api_key: ${OPENAI_API_KEY}
-      # Apuntar a Ollama u otro endpoint compatible con OpenAI:
-      #   OPENAI_API_URL=http://host.docker.internal:11434/v1
-      api_url: ${OPENAI_API_URL:https://api.openai.com/v1}
+      # Credenciales del CHAT, independientes de las del embedder. Esto permite
+      # tener, a la vez: chat en OpenAI (gpt-4o-mini) y embeddings en NVIDIA
+      # (nv-embed-v1, 4096 dims), que es lo que exige un grafo ya indexado.
+      api_key: ${LLM_API_KEY}
+      api_url: ${LLM_API_URL:https://api.openai.com/v1}
       organization_id: ${OPENAI_ORGANIZATION_ID:}
 
     anthropic:
