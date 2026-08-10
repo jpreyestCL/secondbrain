@@ -119,20 +119,22 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
       </tr>`,
   ).join("\n");
 
-  const body = `  <section>
+  const body = `  <section class="head">
+    <p class="eyebrow">Manual del archivo</p>
     <h1>Guía de uso</h1>
-    <p class="muted">Cómo guardar, consultar e ingerir información en tu second brain.
+    <p class="lede">Cómo guardar, consultar e ingerir información en tu second brain.
       Todo lo de esta página está verificado contra el servidor real.</p>
-    <nav class="toc">
-      <a href="#conversar">1. Conversar con el cerebro</a>
-      <a href="#herramientas">2. Las 9 herramientas MCP</a>
-      <a href="#masiva">3. Ingesta masiva de una carpeta</a>
-      <a href="#accesos">4. Exportar y cerrar accesos</a>
+    <nav class="toc" aria-label="Índice de la guía">
+      <a href="#conversar">01 · Conversar con el cerebro</a>
+      <a href="#herramientas">02 · Las 9 herramientas MCP</a>
+      <a href="#masiva">03 · Ingesta masiva de una carpeta</a>
+      <a href="#accesos">04 · Exportar y cerrar accesos</a>
     </nav>
   </section>
 
   <section id="conversar">
-    <h2>1. Conversar con el cerebro</h2>
+    <p class="secnum">01</p>
+    <h2>Conversar con el cerebro</h2>
     <p class="muted">Es el camino de todos los días y no necesita terminal: basta con
       tener el conector MCP agregado en Claude.</p>
 
@@ -167,7 +169,8 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
   </section>
 
   <section id="herramientas">
-    <h2>2. Las 9 herramientas MCP</h2>
+    <p class="secnum">02</p>
+    <h2>Las 9 herramientas MCP</h2>
     <p class="muted">No necesitas llamarlas a mano: Claude las usa por ti. Están aquí para
       que sepas exactamente qué puede hacer el conector con tu memoria.</p>
     <div class="scroll"><table>
@@ -194,14 +197,15 @@ ${toolRows}
   </section>
 
   <section id="masiva">
-    <h2>3. Ingesta masiva de una carpeta (CLI <code>brain</code>)</h2>
+    <p class="secnum">03</p>
+    <h2>Ingesta masiva de una carpeta (CLI <code>brain</code>)</h2>
     <p class="muted">Para cuando tienes cientos de documentos en el disco y adjuntarlos de
       a uno en el chat no tiene sentido. Requiere terminal.</p>
 
     <h3>El pipeline</h3>
     <p class="muted">Los pasos van en orden y cada uno deja su resultado en el ledger, así
       que puedes cortar y retomar donde ibas.</p>
-    <pre><code>${escapeHtml(PIPELINE_BLOCK)}</code></pre>
+    <div class="block"><pre><code>${escapeHtml(PIPELINE_BLOCK)}</code></pre></div>
 
     <h3>Comandos</h3>
     <div class="scroll"><table>
@@ -225,9 +229,9 @@ ${cliRows}
     <h3>Ingerir contra este servidor</h3>
     <p class="muted">El CLI habla directo con FalkorDB, así que necesitas un túnel SSH y las
       variables de entorno apuntando a él:</p>
-    <pre><code>${escapeHtml(ENV_BLOCK)}</code></pre>
+    <div class="block"><pre><code>${escapeHtml(ENV_BLOCK)}</code></pre></div>
 
-    <p class="warn">⚠️ El modelo de embeddings y sus dimensiones DEBEN coincidir con los del
+    <p class="warn">El modelo de embeddings y sus dimensiones DEBEN coincidir con los del
       servidor (<code>nvidia/nv-embed-v1</code>, <code>4096</code>). Si ingieres con otro
       modelo u otra dimensión, la búsqueda semántica del grafo se corrompe.</p>
 
@@ -236,7 +240,8 @@ ${cliRows}
   </section>
 
   <section id="accesos">
-    <h2>4. Exportar y cerrar accesos</h2>
+    <p class="secnum">04</p>
+    <h2>Exportar y cerrar accesos</h2>
     <p class="muted">Tu memoria es tuya y sale entera cuando quieras: un JSON con los
       episodios (texto original), las entidades y los hechos con su vigencia.</p>
     <p><a class="btn" href="/export">Descargar mi memoria (JSON)</a></p>

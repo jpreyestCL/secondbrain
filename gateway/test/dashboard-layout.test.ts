@@ -110,10 +110,37 @@ describe("shell del dashboard", () => {
   });
 
   it("la barra no desborda en móvil (envuelve y tiene su media query)", () => {
-    expect(CUENTA).toContain(".topbar-inner { width: min(94vw, 48rem)");
+    expect(CUENTA).toContain(".topbar-inner { width: min(94vw, 62rem)");
     expect(CUENTA).toMatch(/\.topbar-inner \{[^}]*flex-wrap: wrap/);
     expect(CUENTA).toMatch(/\.nav \{[^}]*flex-wrap: wrap/);
     expect(CUENTA).toContain("@media (max-width: 34rem)");
+  });
+
+  it("las dos páginas comparten también el mismo script (una sola fuente)", () => {
+    const guia = guiaPageHtml();
+    // El shell emite dos <script>: el que fija el tema antes de pintar (en el
+    // <head>) y el de comportamiento (al final del <body>).
+    for (const html of [CUENTA, guia]) {
+      expect(html.match(/<script>/g)?.length).toBe(2);
+      expect(html).toContain('localStorage.setItem("sb-theme", next)');
+      expect(html).toContain('aria-label="Cambiar entre tema claro y oscuro"');
+    }
+    const behaviour = (html: string) => html.split("<script>").pop() ?? "";
+    expect(behaviour(guia)).toBe(behaviour(CUENTA));
+  });
+
+  it("no carga nada de un tercero: sin fuentes, scripts ni imágenes remotas", () => {
+    for (const html of [CUENTA, guiaPageHtml()]) {
+      expect(html).not.toContain("@import");
+      expect(html).not.toMatch(/url\(\s*["']?https?:/);
+      expect(html).not.toMatch(/<script[^>]+src=/);
+    }
+  });
+
+  it("el contenido visible al cargar no espera al observador y respeta reduced-motion", () => {
+    expect(CUENTA).toContain("box.top < window.innerHeight && box.bottom > 0");
+    expect(CUENTA).toContain(".js section { opacity: 0;");
+    expect(CUENTA).toMatch(/prefers-reduced-motion: reduce[\s\S]*\.js section \{ opacity: 1/);
   });
 
   it("/guia es pública y se sirve dentro del shell sin sesión", async () => {
