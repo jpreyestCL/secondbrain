@@ -35,10 +35,23 @@ The ``created`` date in the front-matter is what later becomes Graphiti's
 ``reference_time`` -- see rule #1 in CLAUDE.md -- so it must be the note's real
 creation date, never today.
 
-Standard library only. Usage:
+ATTACHMENTS. Notes whose real content is a photo, a scan or a table used to
+export as (almost) empty: the body only holds the title plus U+FFFC object
+placeholders. ``notes-attachments.py`` recovers them -- it resolves every
+attachment to its file, copies it to ``<out>/adjuntos/<note_id>/``, OCRs images
+and PDFs with Apple Vision (``ocrmac``) and decodes Apple tables to Markdown.
+The recovered text is appended to the note under
+``## Texto reconocido de adjuntos`` / ``## Tablas de la nota`` and the copies
+are listed in the ``attachments`` front-matter key. OCR is cached by file hash
+in ``<out>/.adjuntos-cache.json``, so re-running is idempotent and resumable.
+
+Standard library only (the OCR runs in a subprocess using the ``ingest`` venv).
+Usage:
 
     scripts/notes-export.py --out /tmp/notas-export
     scripts/notes-export.py --out /tmp/notas-export --since 2024-01-01
+    scripts/notes-export.py --out /tmp/notas-export --no-ocr
+    scripts/notes-export.py --only-note 48B29DD3-E390-48EE-B67C-AA7FD625353F
     scripts/notes-export.py --dry-run
 """
 
@@ -47,13 +60,29 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import gzip
+import importlib.util
 import os
 import re
 import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import unicodedata
+
+
+def _load_attachments_module():
+    """Import the sibling ``notes-attachments.py`` (a dash is not importable)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notes-attachments.py")
+    if not os.path.exists(path):
+        return None
+    spec = importlib.util.spec_from_file_location("notes_attachments", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+attachments_mod = _load_attachments_module()
 
 DEFAULT_DB = os.path.expanduser(
     "~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
@@ -324,19 +353,57 @@ def front_matter(meta):
     lines = ["---"]
     for key in ("title", "created", "modified", "folder", "source", "note_id"):
         lines.append("%s: %s" % (key, yaml_quote(meta.get(key))))
+    # Attachments are always emitted (even empty) so downstream tools can rely
+    # on the key existing. Flow style keeps the front-matter one line per key.
+    files = meta.get("attachments") or []
+    lines.append("attachments: [%s]" % ", ".join(yaml_quote(f) for f in files))
+    lines.append("attachments_text_chars: %d" % int(meta.get("attachments_text_chars") or 0))
     lines.append("---")
     return "\n".join(lines)
 
 
 def export(args):
+    use_attachments = attachments_mod is not None and not args.no_attachments
     conn, tmpdir = open_notes_db(args.db, copy=not args.no_copy)
+    attachments_by_note = {}
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(QUERY).fetchall()
+        if args.only_note:
+            rows = [
+                r for r in rows
+                if r["uuid"] == args.only_note or str(r["pk"]) == str(args.only_note)
+            ]
+            if not rows:
+                raise SystemExit("--only-note: no hay nota con id %r" % args.only_note)
+        if use_attachments:
+            wanted = set(r["pk"] for r in rows)
+            attachments_by_note = {
+                pk: items
+                for pk, items in attachments_mod.load(conn).items()
+                if pk in wanted
+            }
     finally:
         conn.close()
         if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    stats = attachments_mod.Stats() if use_attachments else None
+    cache = None
+    runner = None
+    ocr_seconds = 0.0
+    if use_attachments and not args.dry_run:
+        cache = attachments_mod.Cache(os.path.join(args.out, attachments_mod.CACHE_NAME))
+        if not args.no_ocr:
+            python = attachments_mod.find_ocr_python()
+            if python is None:
+                print(
+                    "aviso: no encuentro un python con 'ocrmac'; se exporta sin OCR "
+                    "(usa --no-ocr para silenciar este aviso)",
+                    file=sys.stderr,
+                )
+            else:
+                runner = attachments_mod.OcrRunner(python, args.ocr_languages.split(","))
 
     since = None
     if args.since:
@@ -354,6 +421,7 @@ def export(args):
     failed = []
     skipped_since = 0
     used_names = set()
+    kept_note_ids = set()
     dates = []
     index = 0
 
@@ -373,7 +441,29 @@ def export(args):
                 failed.append((row["pk"], row["title"], str(exc)))
             continue
 
-        if not body.strip():
+        extra = ""
+        att_files = []
+        note_attachments = attachments_by_note.get(row["pk"]) or []
+        if use_attachments and note_attachments and not args.dry_run:
+            started = time.time()
+            extra, att_files = attachments_mod.process_note(
+                note_attachments,
+                row["uuid"] or ("pk-%s" % row["pk"]),
+                args.out,
+                cache,
+                runner,
+                stats,
+                copy=not args.no_copy_attachments,
+            )
+            ocr_seconds += time.time() - started
+            cache.save()
+
+        # A note whose only content is a photo has an empty body but real text
+        # once the attachment is recovered: it must NOT be skipped as empty.
+        # Even when OCR finds nothing (a photo of a place, a drawing), the note
+        # is kept as long as it has files: the image itself is the content and
+        # it is already sitting in <out>/adjuntos/<note_id>/.
+        if not body.strip() and not extra.strip() and not att_files:
             skipped_empty += 1
             if not args.keep_empty:
                 continue
@@ -387,6 +477,7 @@ def export(args):
             name = "%s-%d" % (base, n)
             n += 1
         used_names.add(name)
+        kept_note_ids.add(row["uuid"] or ("pk-%s" % row["pk"]))
 
         meta = {
             "title": title,
@@ -395,8 +486,11 @@ def export(args):
             "folder": row["folder"] or "",
             "source": "apple-notes",
             "note_id": row["uuid"] or ("pk-%s" % row["pk"]),
+            "attachments": att_files,
+            "attachments_text_chars": len(extra.strip()),
         }
-        content = front_matter(meta) + "\n\n" + body + "\n"
+        parts = [p for p in (body.strip(), extra.strip()) if p]
+        content = front_matter(meta) + "\n\n" + "\n\n".join(parts) + "\n"
 
         if created:
             dates.append(created)
@@ -411,11 +505,37 @@ def export(args):
         if args.limit and written >= args.limit:
             break
 
+    if runner is not None:
+        runner.close()
+    if cache is not None:
+        cache.save()
+
+    # File names are `NNNN-slug.md` numbered by creation date, so adding or
+    # removing a note shifts every later name. Without this sweep a re-run
+    # would leave the previous numbering behind and the triage would read the
+    # same note twice. Only a full, unfiltered run may delete.
+    stale = 0
+    full_run = not (args.dry_run or args.limit or args.since or args.only_note)
+    if full_run and not args.dry_run:
+        for name in os.listdir(args.out):
+            if name.endswith(".md") and name[:-3] not in used_names:
+                os.remove(os.path.join(args.out, name))
+                stale += 1
+        att_root = os.path.join(args.out, attachments_mod.ATTACH_SUBDIR) \
+            if use_attachments else None
+        if att_root and os.path.isdir(att_root):
+            for name in os.listdir(att_root):
+                if name not in kept_note_ids:
+                    shutil.rmtree(os.path.join(att_root, name), ignore_errors=True)
+                    stale += 1
+
     print("notes in db (not deleted): %d" % len(rows))
     if skipped_since:
         print("skipped by --since:       %d" % skipped_since)
     print("exported:                 %d%s" % (written, " (dry-run)" if args.dry_run else ""))
     print("empty body:               %d" % skipped_empty)
+    if stale:
+        print("stale files removed:      %d" % stale)
     print("password-protected:       %d" % skipped_locked)
     if failed:
         print("decode failures:          %d" % len(failed))
@@ -423,6 +543,31 @@ def export(args):
             print("   pk=%s %r: %s" % (pk, title, err))
     if dates:
         print("date range:               %s .. %s" % (min(dates).date(), max(dates).date()))
+    if stats is not None and stats.total:
+        print("")
+        print("adjuntos")
+        print("  notas con adjuntos:     %d" % stats.notes_with_attachments)
+        print("  adjuntos totales:       %d" % stats.total)
+        print("  resueltos a archivo:    %d" % stats.resolved)
+        print("  contenedores (galeria): %d" % stats.containers)
+        print("  sin resolver:           %d" % stats.unresolved)
+        for reason, count in sorted(stats.unresolved_reasons.items(), key=lambda kv: -kv[1]):
+            print("     %s: %d" % (reason, count))
+        print("  copiados:               %d" % stats.copied)
+        print("  tablas -> markdown:     %d ok / %d sin contenido"
+              % (stats.tables_ok, stats.tables_failed))
+        print("  OCR ejecutado:          %d" % stats.ocr_run)
+        print("  OCR desde cache:        %d" % stats.ocr_cached)
+        print("  OCR sin texto:          %d" % stats.ocr_empty)
+        print("  texto de Apple (fallback): %d" % stats.apple_fallback)
+        print("  tiempo de adjuntos:     %.1f s" % ocr_seconds)
+        if runner is not None and runner.failures:
+            print("  fallos de OCR:          %d" % len(runner.failures))
+            for path, err in runner.failures[:5]:
+                print("     %s: %s" % (os.path.basename(path), err))
+        types = ", ".join("%s=%d" % kv for kv in
+                          sorted(stats.by_uti.items(), key=lambda kv: -kv[1]))
+        print("  por tipo:               %s" % types)
     if not args.dry_run:
         print("output:                   %s" % os.path.abspath(args.out))
     return 0
@@ -442,6 +587,29 @@ def main(argv=None):
     )
     parser.add_argument(
         "--keep-empty", action="store_true", help="also export notes with an empty body"
+    )
+    parser.add_argument(
+        "--only-note", help="export only this note (ZIDENTIFIER uuid or Z_PK)"
+    )
+    parser.add_argument(
+        "--no-attachments",
+        action="store_true",
+        help="do not touch attachments at all (old behaviour)",
+    )
+    parser.add_argument(
+        "--no-ocr",
+        action="store_true",
+        help="copy attachments and decode tables, but do not run OCR",
+    )
+    parser.add_argument(
+        "--no-copy-attachments",
+        action="store_true",
+        help="OCR attachments but do not copy the originals into <out>/adjuntos/",
+    )
+    parser.add_argument(
+        "--ocr-languages",
+        default="es-ES,en-US",
+        help="Vision language hints, comma separated (default: es-ES,en-US)",
     )
     parser.add_argument(
         "--no-copy",

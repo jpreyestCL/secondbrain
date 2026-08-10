@@ -65,6 +65,36 @@ def split_front_matter(text):
     return "", text
 
 
+_ATTACH_LINE = re.compile(r'^attachments: \[(.*)\]$', re.M)
+_FLOW_ITEM = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def absolutize_attachments(front, src):
+    """Rewrite ``attachments:`` to absolute paths.
+
+    The exporter writes them relative to the export directory
+    (``adjuntos/<note_id>/foo.jpg``). The note is copied elsewhere but the
+    originals stay in the export, so the copy must point back at them or the
+    reference dangles. The 255 MB of originals are never duplicated, and they
+    never land inside ``--out`` (that folder goes to ``brain scan``).
+    """
+    match = _ATTACH_LINE.search(front)
+    if not match:
+        return front
+    base = os.path.dirname(os.path.abspath(src))
+    items = [
+        m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        for m in _FLOW_ITEM.finditer(match.group(1))
+    ]
+    absolute = [
+        p if os.path.isabs(p) else os.path.normpath(os.path.join(base, p))
+        for p in items
+    ]
+    return front[: match.start()] + (
+        "attachments: [%s]" % ", ".join(yaml_quote(p) for p in absolute)
+    ) + front[match.end() :]
+
+
 def sensitivity_for(row, body):
     flags = list(DOMAIN_SENSITIVITY.get(row.get("dominio") or "", []))
     blob = (row.get("title") or "") + "\n" + body
@@ -119,6 +149,7 @@ def apply(args):
         with open(src, "r", encoding="utf-8") as fh:
             text = fh.read()
         front, body = split_front_matter(text)
+        front = absolutize_attachments(front, src)
         date = doc_date_for(row)
         flags = sensitivity_for(row, body)
         extra = [

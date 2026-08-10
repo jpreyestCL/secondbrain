@@ -10,6 +10,10 @@ Two layers:
              ``vacio``, ``casi_vacio``, ``solo_url``, ``solo_numeros``,
              ``duplicado_exacto`` (content hash; the oldest copy survives).
              Every note gets an explicit reason.
+             A note whose content came from an attachment (front-matter
+             ``attachments_text_chars`` > 0: OCR of a photo/scan or a decoded
+             Apple table) is NEVER ``vacio``/``casi_vacio`` -- that text is the
+             note. Every note also carries a ``tiene_adjuntos`` signal.
 
   Layer 1 -- LLM triage in BATCHES (default 40 notes per call, title + first
              400 chars each) against an OpenAI-compatible endpoint using
@@ -80,6 +84,20 @@ def parse_markdown(path):
     return meta, body.strip()
 
 
+_FLOW_ITEM = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def parse_flow_list(value):
+    """``["a", "b"]`` (as written by notes-export.py) -> ['a', 'b']."""
+    value = (value or "").strip()
+    if not value.startswith("["):
+        return []
+    return [
+        m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        for m in _FLOW_ITEM.finditer(value)
+    ]
+
+
 def load_notes(indir):
     notes = []
     for name in sorted(os.listdir(indir)):
@@ -87,6 +105,10 @@ def load_notes(indir):
             continue
         path = os.path.join(indir, name)
         meta, body = parse_markdown(path)
+        try:
+            att_chars = int(meta.get("attachments_text_chars") or 0)
+        except ValueError:
+            att_chars = 0
         notes.append(
             {
                 "file": name,
@@ -95,6 +117,8 @@ def load_notes(indir):
                 "created": meta.get("created", ""),
                 "modified": meta.get("modified", ""),
                 "note_id": meta.get("note_id", ""),
+                "attachments": parse_flow_list(meta.get("attachments")),
+                "attachments_text_chars": att_chars,
                 "body": body,
             }
         )
@@ -124,13 +148,22 @@ def layer0(notes, min_chars=15):
         content = body if (title and first == title) else (title + "\n" + body).strip()
         flat = normalized(content)
 
-        if not flat:
+        # An image-only note (a passport scan, an ID card, an Apple table) has
+        # no typed text: everything it says was recovered by notes-export.py
+        # from its attachments. That text counts as content, so the emptiness
+        # tests below must not fire for it.
+        has_attachment_text = (note.get("attachments_text_chars") or 0) > 0
+        # Tables live in the DB, not on disk, so they contribute text without
+        # any copied file: the note still "has attachments".
+        note["tiene_adjuntos"] = bool(note.get("attachments")) or has_attachment_text
+
+        if not flat and not has_attachment_text:
             note["layer0"] = "vacio"
-        elif len(flat) < min_chars:
+        elif len(flat) < min_chars and not has_attachment_text:
             note["layer0"] = "casi_vacio"
-        elif all(URL_RE.match(tok) for tok in flat.split()):
+        elif flat and all(URL_RE.match(tok) for tok in flat.split()):
             note["layer0"] = "solo_url"
-        elif not LETTER_RE.search(flat):
+        elif flat and not LETTER_RE.search(flat):
             note["layer0"] = "solo_numeros"
         else:
             note["layer0"] = None
@@ -214,6 +247,11 @@ RESPONSE_SCHEMA = {
 # the triage excerpt is POSTed to a third-party endpoint, so it is scrubbed
 # first. Only notes that talk about credentials are touched, so real data like
 # "banco santander 157260 78137000-2" survives intact.
+# This runs on the WHOLE body, which now includes the OCR of the attachments,
+# so a password photographed in a screenshot is redacted the same way a typed
+# one is. Identity numbers (RUT, passport, serial) are NOT credentials: they
+# stay in the note and, unless the note also mentions clave/token/etc., they
+# are not redacted either.
 CREDENTIAL_CONTEXT = re.compile(
     r"(clave|contrase[nñ]a|password|passwd|\bpin\b|token|api[_ -]?key|secret|"
     r"credencial)",
@@ -228,11 +266,21 @@ def redact_excerpt(title, body):
     return SECRET_TOKEN.sub("[REDACTADO]", body)
 
 
+# In an image-only note the first 400 chars are the excerpt's whole budget, so
+# the per-file `### 31D682B4-....jpg` headings are dropped: they are UUIDs, they
+# say nothing, and they would push the actual OCR text out of the window. The
+# `## Texto reconocido de adjuntos` heading stays -- the model should know the
+# text came from an OCR and may have recognition errors.
+ATTACH_FILE_HEADING = re.compile(r"^### .*$", re.M)
+
+
 def excerpt(note, max_chars=400):
     body = note["body"]
     first, _, rest = body.partition("\n")
     if note["title"] and first.strip() == note["title"].strip():
         body = rest.strip()
+    if note.get("attachments_text_chars"):
+        body = ATTACH_FILE_HEADING.sub("", body)
     body = re.sub(r"\n{2,}", "\n", body)
     body = redact_excerpt(note["title"] or "", body)
     if len(body) > max_chars:
@@ -437,6 +485,9 @@ def build_result(notes, llm):
             "note_id": note["note_id"],
             "chars": len(note["body"]),
             "hash": note["hash"],
+            "tiene_adjuntos": bool(note.get("tiene_adjuntos")),
+            "adjuntos": note.get("attachments") or [],
+            "adjuntos_chars": note.get("attachments_text_chars") or 0,
         }
         if note["layer0"] is not None:
             row["layer"] = 0
@@ -479,6 +530,20 @@ def write_markdown(rows, path, sample=40):
             lines.append("| %s | %d |" % (key, len(groups[key])))
     lines.append("")
 
+    with_att = [r for r in rows if r.get("tiene_adjuntos")]
+    if with_att:
+        recovered = [r for r in with_att if r.get("adjuntos_chars")]
+        lines += [
+            "## Adjuntos",
+            "",
+            "| señal | notas |",
+            "|---|---:|",
+            "| tiene_adjuntos | %d |" % len(with_att),
+            "| con texto recuperado (OCR / tabla) | %d |" % len(recovered),
+            "| adjuntos copiados | %d |" % sum(len(r.get("adjuntos") or []) for r in rows),
+            "",
+        ]
+
     reasons = {}
     for row in rows:
         if row["layer"] == 0:
@@ -510,15 +575,16 @@ def write_markdown(rows, path, sample=40):
                                        "" if len(shown) == len(items)
                                        else " — muestra de %d" % len(shown)))
         lines.append("")
-        lines.append("| archivo | fecha | titulo | dominio | doc_date | razon |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| archivo | fecha | titulo | adj | dominio | doc_date | razon |")
+        lines.append("|---|---|---|---|---|---|---|")
         for row in shown:
             lines.append(
-                "| `%s` | %s | %s | %s | %s | %s |"
+                "| `%s` | %s | %s | %s | %s | %s | %s |"
                 % (
                     row["file"],
                     (row["created"] or "")[:10],
                     (row["title"] or "").replace("|", "/")[:60],
+                    ("%d" % len(row.get("adjuntos") or [])) if row.get("tiene_adjuntos") else "",
                     row.get("dominio") or "",
                     row.get("doc_date") or "",
                     (row.get("razon") or "").replace("|", "/"),
@@ -571,7 +637,10 @@ def main(argv=None):
     for note in notes:
         counts[note["layer0"] or "pendiente_llm"] = \
             counts.get(note["layer0"] or "pendiente_llm", 0) + 1
+    with_att = sum(1 for n in notes if n.get("tiene_adjuntos"))
+    with_text = sum(1 for n in notes if (n.get("attachments_text_chars") or 0) > 0)
     print("notas leidas: %d" % len(notes))
+    print("con adjuntos: %d (con texto recuperado: %d)" % (with_att, with_text))
     print("layer 0:")
     for reason, count in sorted(counts.items(), key=lambda kv: -kv[1]):
         print("  %-20s %d" % (reason, count))

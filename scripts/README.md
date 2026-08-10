@@ -3,6 +3,11 @@
 Utilidades operativas del second brain. Sin dependencias: todo corre con la
 librería estándar de Python 3.12+ (o con `uv run`).
 
+Única excepción: el OCR de los adjuntos de Apple Notes usa `ocrmac` (Apple
+Vision). No es una dependencia de estos scripts — el exportador busca un
+intérprete que ya lo tenga (el venv de `ingest/`) y lo lanza como subproceso;
+si no lo encuentra, avisa y exporta igual, sin OCR.
+
 ## `healthcheck.py` — sonda end-to-end
 
 Hace un **round trip real** contra una instancia desplegada. No mockea nada: si
@@ -264,23 +269,30 @@ opción recomendada** para instancias con datos personales.
 
 # Importar Apple Notes al second brain
 
-844 notas de Apple Notes → grafo, separando señal de ruido y **sin perder la
-fecha real de cada nota** (regla #1 de `CLAUDE.md`: la fecha del hecho manda,
-nunca la de ingesta).
+871 notas de Apple Notes (844 con texto + 27 que eran solo una foto) → grafo,
+separando señal de ruido y **sin perder la fecha real de cada nota** (regla #1
+de `CLAUDE.md`: la fecha del hecho manda, nunca la de ingesta).
 
 Tres scripts, cada uno con una responsabilidad:
 
 | Script | Qué hace | Destruye algo? |
 |---|---|---|
-| `notes-export.py` | `NoteStore.sqlite` → un `.md` por nota con front-matter | no (abre una copia; jamás escribe en la DB de Notes) |
+| `notes-export.py` | `NoteStore.sqlite` → un `.md` por nota con front-matter, **más los adjuntos** (copia + OCR + tablas) | no (abre una copia; jamás escribe en la DB de Notes; los adjuntos se leen in situ) |
+| `notes-attachments.py` | módulo que usa el exportador: resuelve adjuntos → archivo, OCR (Apple Vision) y tablas de Apple → Markdown | no (solo lectura del contenedor de Notes) |
 | `notes-triage.py` | etiqueta cada nota `guardar` / `descartar` / `dudoso` | no (solo escribe `triage.json` + `triage.md`) |
 | `notes-apply.py` | copia **solo** las `guardar` a una carpeta lista para `brain scan` y rellena el manifest de `brain classify` | no (copia; el export completo se queda intacto) |
 
 ## Flujo completo
 
 ```bash
-# 1. Exportar (lectura pura de la base de Notes)
+# 1. Exportar (lectura pura de la base de Notes).
+#    Incluye adjuntos: copia los originales a /tmp/notas-export/adjuntos/<note_id>/,
+#    les pasa OCR y decodifica las tablas de Apple. La primera corrida tarda
+#    ~20 min (una pasada de Vision por imagen); las siguientes son instantáneas
+#    gracias a la cache por hash.
 scripts/notes-export.py --out /tmp/notas-export
+# ...sin OCR (rápido: solo copia adjuntos y decodifica tablas):
+scripts/notes-export.py --out /tmp/notas-export --no-ocr
 
 # 2. Layer 0: filtro determinista y gratis
 scripts/notes-triage.py --in /tmp/notas-export --work /tmp/notas-triage
@@ -337,7 +349,10 @@ El `created` del front-matter es lo que después será el `reference_time` de
 Graphiti.
 
 Salida: `NNNN-slug.md`, numeración por fecha de creación ascendente, sin
-colisiones. Front-matter:
+colisiones. Como el número depende de cuántas notas hay, una corrida **completa**
+(sin `--limit` / `--since` / `--only-note`) borra al final los `.md` y las
+carpetas de `adjuntos/` que sobraron de la numeración anterior, e informa
+cuántos: si no, el triage leería la misma nota dos veces. Front-matter:
 
 ```yaml
 ---
@@ -347,6 +362,8 @@ modified: "2017-03-20T20:39:43.411926"
 folder: "Notes"
 source: "apple-notes"
 note_id: "430DF38C-69F1-424B-BAB0-D178C915D56A"
+attachments: ["adjuntos/430DF38C-.../IMG_5152.png"]
+attachments_text_chars: 412
 ---
 ```
 
@@ -355,17 +372,127 @@ note_id: "430DF38C-69F1-424B-BAB0-D178C915D56A"
 | `--out` | `/tmp/notas-export` | directorio de salida |
 | `--db` | ruta estándar de Notes | otra `NoteStore.sqlite` |
 | `--limit` | `0` | corta después de N notas |
+| `--only-note` | — | exporta **solo** esa nota (UUID `ZIDENTIFIER` o `Z_PK`) |
 | `--since` | — | solo notas creadas desde `YYYY-MM-DD` |
 | `--dry-run` | — | no escribe nada; imprime estadísticas y 3 muestras |
 | `--plain` | — | no reconstruye viñetas/títulos en Markdown |
-| `--keep-empty` | — | exporta también las notas de cuerpo vacío |
+| `--keep-empty` | — | exporta también las notas sin cuerpo, sin adjuntos y sin texto recuperado |
 | `--no-copy` | — | lee la DB viva con `immutable=1` en vez de copiarla |
+| `--no-attachments` | — | ignora los adjuntos por completo (comportamiento antiguo) |
+| `--no-ocr` | — | copia adjuntos y decodifica tablas, pero no ejecuta Vision (usa el `ZOCRSUMMARY` que Apple ya tenía guardado) |
+| `--no-copy-attachments` | — | hace OCR pero no copia los originales |
+| `--ocr-languages` | `es-ES,en-US` | pistas de idioma para Apple Vision |
 
-**Limitación conocida**: los adjuntos (fotos, PDFs, escaneos) **no** se
-exportan; Apple los referencia con el carácter `￼`, que se elimina. Las notas
-cuyo contenido real era una foto quedan casi vacías y caen en `casi_vacio`
-(p. ej. `#pasaporte`, `RUT JP scan ->`). Las notas protegidas con contraseña
-están cifradas (no son gzip) y se saltan con aviso.
+Notas protegidas con contraseña: están cifradas (no son gzip) y se saltan con
+aviso.
+
+## Adjuntos: `notes-attachments.py`
+
+Antes, los adjuntos se perdían: Apple los referencia en el cuerpo con el
+carácter `￼`, que se eliminaba, así que las notas cuyo contenido real era una
+foto salían vacías y el triage las tiraba como `casi_vacio` (`#pasaporte`,
+`RUT JP scan ->`, `#niños #rut`). Ahora se recuperan.
+
+**Esquema (verificado en esta máquina).** No existe ninguna tabla
+`ZICATTACHMENT`; todo vive en `ZICCLOUDSYNCINGOBJECT`:
+
+* fila de adjunto = `ZTYPEUTI` no nulo + `ZNOTE` → `Z_PK` de la nota;
+* `ZMEDIA` → fila de *media* (`Z_ENT` 10) con `ZIDENTIFIER` (nombre de
+  directorio) y `ZFILENAME`;
+* el archivo **no** está en `Media/<ZIDENTIFIER>/<ZFILENAME>`: Apple mete un
+  directorio de generación en medio
+  (`Media/<ZIDENTIFIER>/<N>_<UUID>/<ZFILENAME>`). Por eso el resolvedor
+  recorre el directorio de media en vez de armar la ruta a mano —
+  así resuelven **584/584**.
+
+Adjuntos sin fila de media:
+
+| UTI | de dónde sale |
+|---|---|
+| `com.apple.notes.gallery` | **contenedor**: sus hijos son filas `public.jpeg` normales que ya apuntan a la nota. Se salta el contenedor, no se pierde nada |
+| `com.apple.paper.doc.scan` | `FallbackPDFs/<id>/<ZFALLBACKPDFGENERATION>/FallbackPDF.pdf` |
+| `com.apple.paper` | `FallbackImages/<id>/<ZFALLBACKIMAGEGENERATION>/FallbackImage.png` |
+| `com.apple.drawing.2` | `FallbackImages/<id>.jpg` |
+| `com.apple.notes.table` | protobuf CRDT comprimido en `ZMERGEABLEDATA1` (ver abajo) |
+
+Último recurso para cualquier adjunto que no resuelva: `Previews/<id>-*`
+(están reescalados hacia abajo, por eso solo se usan si falta el original).
+
+**OCR.** Apple Vision vía `ocrmac`, con pistas `es-ES,en-US`. Como `ocrmac` no
+es stdlib, el script busca un intérprete que pueda importarlo (el venv de
+`ingest/`) y lanza *este mismo archivo* como subproceso worker que habla JSONL.
+Los PDFs se rasterizan página a página con PDFKit a 2× y se pasan por Vision
+(los 6 `FallbackPDF.pdf` son escaneos sin capa de texto).
+Los resultados se cachean en `<out>/.adjuntos-cache.json` **por SHA-256 del
+archivo**: volver a correr el exportador es idempotente y reanudable, y nunca
+repite un OCR ya hecho.
+
+La base tiene además el OCR propio de Apple en `ZOCRSUMMARY`, pero guarda
+*todos* los candidatos separados por tabuladores (`REAL\n\talt1\n\talt2`); se
+limpia y se usa solo como respaldo cuando el archivo no aparece o Vision no
+devuelve nada.
+
+**Tablas de Apple.** `ZMERGEABLEDATA1` es `gzip(MergableDataProto)`, un CRDT.
+Se decodifica a Markdown: el `custom_map` de tipo `com.apple.notes.ICTable` da
+`crRows` / `crColumns` (OrderedSets) y `cellColumns` (diccionario columna →
+diccionario fila → celda). El orden sale en dos saltos: los replicas del
+`Array` dan los UUID de los nodos del CRTree en orden de pantalla, y
+`Ordering.contents` mapea cada nodo al objeto UUID que se usa como clave en
+`cellColumns`. Funciona en las 21 tablas de esta base (las columnas sobrantes
+vacías que Apple deja al final se recortan). El orden de columnas es el que
+declara el CRDT; en tablas editadas muchas veces puede no ser exactamente el
+que se ve en pantalla.
+
+**Números reales de esta base** (844 → **871** notas exportadas; las 27 nuevas
+son notas cuyo cuerpo estaba vacío porque *eran* una foto):
+
+| | |
+|---|---:|
+| notas con adjuntos | 84 |
+| adjuntos totales | 664 |
+| resueltos a un archivo | 629 |
+| contenedores `gallery` (se saltan a propósito) | 31 |
+| sin resolver | 4 |
+| tablas → Markdown | 18 ok, 3 vacías de verdad |
+| OCR ejecutado | 597 imágenes/PDFs, 388,6 s en total, 0 fallos |
+| OCR sin texto (fotos sin letras) | 46 |
+| notas nuevas con texto recuperado | 18 |
+| notas que salen de `casi_vacio` | 8 |
+| notas que llegan a Layer 1 | 804 → **827** |
+| segunda corrida (todo cacheado) | 1,5 s |
+
+Los 4 sin resolver son filas de adjunto sin `ZMEDIA`, con `ZFILESIZE = 0` y sin
+generación de fallback: nunca se materializaron en este Mac, no hay nada que
+recuperar.
+
+**Salida por nota.** Los originales se copian a
+`<out>/adjuntos/<note_id>/<archivo>` y se listan en el front-matter
+(`attachments`), y el texto recuperado se anexa al cuerpo:
+
+```markdown
+## Tablas de la nota
+
+### Tabla 1
+
+| Rige Desde | Rige Hasta | Prima |
+|---|---|---|
+| 13/09/2024 | 31/03/2025 | 21,000 |
+
+## Texto reconocido de adjuntos
+
+### 31D682B4-D995-410F-A840-D5D0186FAD00.jpg
+
+REPUBLICA DE CHILE
+SERVICIO DE REGISTRO CIVIL E IDENTIFICACIÓN
+...
+```
+
+Los encabezados dejan claro que ese texto **salió de un OCR**, no de algo que
+se escribió a mano: puede tener errores de reconocimiento.
+
+`notes-apply.py` reescribe `attachments` a rutas absolutas al copiar la nota,
+para que la referencia siga apuntando a los originales del export (no se
+duplican 255 MB ni se meten imágenes en la carpeta que va a `brain scan`).
 
 ## `notes-triage.py`
 
@@ -373,6 +500,13 @@ están cifradas (no son gzip) y se saltan con aviso.
 `vacio`, `casi_vacio` (< `--min-chars`, default 15), `solo_url`,
 `solo_numeros`, `duplicado_exacto` (hash del contenido normalizado; sobrevive
 la copia más antigua).
+
+**Adjuntos.** Si el front-matter trae `attachments_text_chars > 0`, ese texto
+(OCR de una foto o una tabla decodificada) **es** el contenido de la nota: esa
+nota nunca se marca `vacio` ni `casi_vacio`. Además cada fila de `triage.json`
+lleva `tiene_adjuntos` (bool), `adjuntos` (lista de rutas) y `adjuntos_chars`,
+y `triage.md` muestra una sección de adjuntos y una columna `adj` con cuántos
+tiene cada nota.
 
 Detalle importante: los tests corren sobre **título + cuerpo juntos**. Apple
 guarda el título como primera línea del cuerpo, pero no siempre; si se mira
@@ -397,7 +531,11 @@ caracteres), endpoint compatible con OpenAI y salida estructurada
   se envía a la API se limpia antes — si la nota habla de claves/tokens, los
   tokens alfanuméricos se reemplazan por `[REDACTADO]` (regla #2 de
   `CLAUDE.md`). Los `.md` locales quedan tal cual; `redact.py` de `ingest/`
-  los limpia otra vez antes del grafo.
+  los limpia otra vez antes del grafo. La limpieza corre sobre **todo** el
+  cuerpo, que ahora incluye el OCR de los adjuntos: una clave fotografiada en
+  un pantallazo se tapa igual que una escrita. Los números de identidad (RUT,
+  pasaporte, serie) **no** son credenciales: se quedan en la nota, que para
+  eso se recuperaron.
 
 | Flag | Default | Qué hace |
 |---|---|---|
@@ -421,8 +559,9 @@ apunta a NVIDIA NIM (`https://integrate.api.nvidia.com/v1`,
 Salida:
 
 * `triage.json` — una fila por nota con `decision`, `razon`, `dominio`,
-  `doc_date`, `layer`, `path`, `hash`. **Este es el archivo que se edita a
-  mano** tras la revisión.
+  `doc_date`, `layer`, `path`, `hash`, `tiene_adjuntos`, `adjuntos` y
+  `adjuntos_chars`. **Este es el archivo que se edita a mano** tras la
+  revisión.
 * `triage.md` — resumen legible: totales, tabla de motivos de Layer 0, **todos**
   los `dudoso` y una muestra de 40 de `descartar` y `guardar`.
 
