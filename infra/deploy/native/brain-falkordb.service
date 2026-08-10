@@ -6,6 +6,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=dev
+Group=dev
 Type=simple
 ExecStart=/opt/secondbrain-native/bin/redis-server /opt/secondbrain-native/falkordb.conf
 Restart=always

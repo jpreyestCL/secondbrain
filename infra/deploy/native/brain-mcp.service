@@ -6,10 +6,12 @@ Wants=network-online.target
 Requires=brain-falkordb.service
 
 [Service]
+User=dev
+Group=dev
 Type=simple
 WorkingDirectory=/opt/secondbrain-native/mcp
 EnvironmentFile=/opt/secondbrain-native/mcp.env
-ExecStart=/root/.local/bin/uv run main.py
+ExecStart=/usr/local/bin/uv run main.py
 Restart=always
 RestartSec=5
 MemoryMax=500M

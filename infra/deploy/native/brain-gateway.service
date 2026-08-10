@@ -5,6 +5,8 @@ After=network-online.target brain-mcp.service
 Wants=network-online.target
 
 [Service]
+User=dev
+Group=dev
 Type=simple
 WorkingDirectory=/opt/secondbrain-native/gateway
 EnvironmentFile=/opt/secondbrain-native/gateway/.env
