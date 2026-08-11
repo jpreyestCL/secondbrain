@@ -13,6 +13,7 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 | `archive/<dominio>/` | Originales ya ingestados, organizados por dominio |
 | `backups/` | Respaldos de FalkorDB |
 | `SCHEMA.md` | Ontología: dominios (metadata), entidades, aristas, reglas de fecha y sensibilidad |
+| `scripts/` | Utilidades fuera del pipeline: `healthcheck.py` (E2E OAuth→guardar→buscar), `llm-cost.py` (gasto real desde `llm-usage.jsonl`), `fichas-excluidos.py` (fichas de lo que se decide NO ingerir), `notes-*.py` (export/triage de Apple Notes) |
 | `.claude/skills/` | `/guardar`, `/ingest`, `/consultar` |
 | `docs/decisiones.md` | Registro ADR de decisiones |
 
@@ -25,6 +26,8 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 5. **El ledger se actualiza solo vía el CLI `brain`, nunca a mano.** No editar el ledger ni ingestar documentos saltándose el pipeline (`scan` → ... → `ingest-graph`); el ledger es lo que evita duplicados.
 6. **`group_id` es SIEMPRE el tenant, jamás el dominio.** El driver de FalkorDB usa el `group_id` como nombre del grafo (un grafo por tenant); el servidor MCP lo fuerza. El dominio (según SCHEMA.md) viaja como metadata: en el `source_description` estructurado (`dominio: <dominio> | tipo: <doc_type> | origen: <descripcion>`) y como prefijo `[<dominio>]` en el nombre del episodio. Los hechos que cambian se invalidan (`invalid_at`), jamás se borran.
 7. Datos médicos y financieros sí se ingestan, pero con flag de sensibilidad (`sensitivity=medical|financial`).
+8. **Antes de ingerir, verificar CONTRA QUÉ GRAFO se está escribiendo.** `127.0.0.1:6379` en el Mac es el FalkorDB del Docker **local**, no el del servidor; el del servidor está en su `:6380` y solo se alcanza por túnel SSH explícito. Comprobar con `docker ps` y `lsof -nP -iTCP:6379 -sTCP:LISTEN` antes de lanzar un lote: dos grafos divergentes es el error más caro, porque no falla nada, simplemente los datos aparecen donde nadie los consulta.
+9. **No ingerir datos tabulares crudos ni borradores.** Una planilla contable se parte en decenas de miles de episodios que ahogan el grafo con asientos sueltos sin aportar un hecho consultable; un borrador de contrato contradice a su versión firmada y el grafo no tiene cómo saber cuál manda. Para ambos: marcarlos `skipped` en el ledger con el motivo y generar una **ficha** (`scripts/fichas-excluidos.py`) que describa qué es el archivo y apunte a su ruta. La ficha sí entra al grafo.
 
 ## Advertencias operacionales
 
@@ -34,7 +37,43 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
   "Successfully processed". La vía durable para lotes es la CLI `brain` (ledger reanudable).
 - La extracción usa qwen2.5:7b-instruct local (~1 min/episodio). NO usar modelos razonadores (qwen3) — 20x más lentos. NO usar DeepSeek — no soporta json_schema.
   Para acelerar: `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` en `.env`, o un modelo
-  no-razonador en `MODEL_NAME`.
+  no-razonador en `MODEL_NAME`. Chat y embeddings se configuran por separado
+  (`LLM_API_KEY`/`LLM_API_URL`/`LLM_MODEL` vs `EMBEDDER_API_KEY`/`EMBEDDER_API_URL`):
+  la combinación en uso es gpt-4o-mini para extraer + NVIDIA `nv-embed-v1` (4096 dims)
+  para embeddings, y **cambiar el proveedor o la dimensión de los embeddings corrompe
+  la búsqueda del grafo existente**.
+- **Nunca matar el CLI con `kill -9`.** Cada proceso muerto a la fuerza deja consultas
+  encoladas en FalkorDB; al acumularse aparece `Max pending queries exceeded` y desde
+  ahí **toda** consulta al grafo se cuelga, incluida la creación de índices al arrancar,
+  así que el síntoma es "el ingest no hace nada y no escribe log". Se recupera
+  reiniciando el contenedor (`docker restart brain-falkordb`); los datos persisten.
+  Para detenerlo, `SIGTERM` (el ledger reanuda desde el último chunk).
+- **Graphiti construye sus clientes HTTP sin timeout.** Hay que pasarle uno propio a los
+  **tres**: LLM, embedder y cross-encoder. Dejar `cross_encoder=None` no significa "sin
+  reranker": crea el suyo contra `api.openai.com`, sin timeout, y una conexión a medias
+  deja el lote colgado indefinidamente (pasó: 13 h, 3 s de CPU y cero episodios).
+  Se ajusta con `LLM_TIMEOUT_SECONDS` (120 s por defecto).
+- **Para estimar costo, contar chunks con `json.load`, no líneas.** Los archivos de
+  `~/.brain/<tenant>/chunks/` son arrays JSON indentados: cada chunk ocupa ~8 líneas, así
+  que `wc -l` infla la cuenta ~10x. Un error así llevó a estimar USD 296 donde eran 36.
+  Referencia real: gpt-4o-mini ≈ **USD 0,004 por chunk**, ~15 s por episodio.
+- Un `.xls` a menudo **no es Excel**: los exports de banca y contabilidad son tablas HTML
+  renombradas. El extractor despacha por la firma del archivo, no por la extensión.
+
+## Servidor (mybrain.rlz.cl, `root@178.62.201.63`)
+
+Despliegue nativo (sin Docker) en `/opt/secondbrain-native/`, bajo el usuario `secondbrain`
+— **no** `dev`, que está compartido con otros proyectos.
+
+- **FalkorDB escucha en `:6380`.** El `:6379` de esa máquina es **otro Redis de otra
+  aplicación**: consultarlo da respuestas que parecen válidas (`INFO` responde) pero son
+  de otro sistema, y `GRAPH.LIST` falla con "unknown command". Diagnosticar contra el
+  puerto equivocado ya llevó a conclusiones falsas sobre pérdida de datos.
+- Credenciales del tenant `jpreyest` en `/opt/secondbrain-native/mcp.env` (unidad legacy
+  `brain-mcp.service`); los tenants nuevos viven en `tenants/<nombre>/` con la unidad
+  plantilla `brain-mcp@`. Ambos esquemas conviven.
+- La máquina está compartida y con carga alta (`polytrade` consume CPU de forma
+  sostenida): un lote grande contra el grafo del servidor compite con eso.
 
 ## Flujos habituales
 
