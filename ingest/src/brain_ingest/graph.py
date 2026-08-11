@@ -253,6 +253,17 @@ def build_graphiti(tenant: str):
     _embed_config = OpenAIEmbedderConfig(**_embed_kwargs)
     embedder = OpenAIEmbedder(config=_embed_config, client=_openai_client(_embed_config))
 
+    # Cross-encoder (reranker). Dejarlo en None NO significa "no usar reranker":
+    # graphiti construye entonces uno propio contra api.openai.com, con su
+    # cliente por defecto y SIN timeout. Eso dejo la ingesta colgada 13 h con un
+    # socket en CLOSE_WAIT y cero episodios, porque el timeout que se le pone al
+    # LLM y al embedder no alcanza a ese tercer cliente.
+    from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+
+    cross_encoder = OpenAIRerankerClient(
+        config=llm_config, client=_openai_client(llm_config)
+    )
+
     username, password = tenant_credentials(tenant)
     driver = FalkorDriver(
         host=os.environ.get("FALKORDB_HOST", "localhost"),

@@ -257,6 +257,7 @@ def _capture_build(monkeypatch):
         def __init__(self, graph_driver=None, llm_client=None, embedder=None, cross_encoder=None):
             captured["llm"] = llm_client
             captured["embedder"] = embedder
+            captured["cross_encoder"] = cross_encoder
 
     monkeypatch.setattr(graphiti_core, "Graphiti", FakeGraphiti, raising=False)
     monkeypatch.setattr(fdrv, "FalkorDriver", lambda **kw: object(), raising=False)
@@ -432,3 +433,20 @@ def test_timeout_invalido_cae_al_valor_por_defecto(monkeypatch):
 
     captured = _capture_build(monkeypatch)
     assert captured["llm"].client.timeout == LLM_TIMEOUT_SECONDS
+
+
+def test_cross_encoder_tambien_lleva_timeout(monkeypatch):
+    """cross_encoder=None no significa 'sin reranker': graphiti crea uno propio.
+
+    Ese tercer cliente se construia contra api.openai.com sin timeout, y dejo
+    una ingesta colgada 13 h con un socket en CLOSE_WAIT y cero episodios: el
+    timeout puesto al LLM y al embedder no lo cubria.
+    """
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "sk-openai")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
+
+    captured = _capture_build(monkeypatch)
+
+    assert captured["cross_encoder"] is not None, "no dejar que graphiti cree el suyo"
+    assert captured["cross_encoder"].client.timeout == 30.0
