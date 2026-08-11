@@ -99,11 +99,14 @@ brain --tenant <slug> chunk
 brain --tenant <slug> ingest-graph`;
 
 export interface GuiaPageOptions {
+  /** URL pública del gateway; se usa para mostrar la dirección del conector. */
+  baseUrl?: string;
   /** Sesión del navegador, o null si se está viendo sin iniciar sesión. */
   session?: DashboardSessionView | null;
 }
 
 export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
+  const mcpUrl = (opts.baseUrl ?? "https://mybrain.rlz.cl").replace(/\/$/, "") + "/mcp";
   const toolRows = TOOLS.map(
     (t) => `      <tr>
         <td><code>${escapeHtml(t.name)}</code></td>
@@ -127,14 +130,69 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
   </section>
 
   <nav class="toc" aria-label="Índice de la guía">
-    <a href="#conversar">01 · Conversar con el cerebro</a>
-    <a href="#herramientas">02 · Las 9 herramientas MCP</a>
-    <a href="#masiva">03 · Ingesta masiva de una carpeta</a>
-    <a href="#accesos">04 · Exportar y cerrar accesos</a>
+    <a href="#conectar">01 · Conectar tu Claude</a>
+    <a href="#conversar">02 · Conversar con el cerebro</a>
+    <a href="#herramientas">03 · Las 9 herramientas MCP</a>
+    <a href="#masiva">04 · Ingesta masiva de una carpeta</a>
+    <a href="#accesos">05 · Exportar y cerrar accesos</a>
   </nav>
 
-  <section id="conversar">
+  <section id="conectar">
     <p class="secnum">01</p>
+    <h2>Conectar tu Claude</h2>
+    <p>Se hace una sola vez. Después tu memoria está disponible en cualquier
+      conversación, en web, escritorio y teléfono.</p>
+    <ol>
+      <li>Abre <strong>claude.ai</strong> (o Claude Desktop) y ve a
+        <strong>Ajustes → Conectores</strong>.</li>
+      <li>Elige <strong>Agregar conector personalizado</strong>.</li>
+      <li>Pega esta dirección:
+        <div class="block"><pre><code>${escapeHtml(mcpUrl)}</code></pre></div></li>
+      <li>Se abrirá una ventana para <strong>iniciar sesión</strong>: con tu correo y
+        contraseña, o con <strong>Continuar con Google</strong>.</li>
+      <li>Verás una pantalla de <strong>autorización</strong> que indica qué permiso
+        estás dando (leer y escribir toda tu memoria). Pulsa <strong>Autorizar</strong>.
+        Solo se pregunta la primera vez para cada conector.</li>
+      <li>Listo. Compruébalo escribiéndole a Claude:
+        <em>«¿qué tienes guardado sobre mí?»</em></li>
+    </ol>
+
+    <h3>Si algo falla</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Lo que ves</th><th>Qué significa y qué hacer</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>invalid_client</code></td>
+          <td>El conector guarda un identificador que ya no existe en el servidor
+            (por ejemplo, si se limpiaron los accesos). <strong>Elimina el conector
+            en claude.ai y vuelve a agregarlo</strong>: se registra de nuevo solo.</td>
+        </tr>
+        <tr>
+          <td><code>account_not_linked</code></td>
+          <td>Intentaste entrar con Google usando un correo que ya tenía cuenta con
+            contraseña, y ese correo aún no está verificado. Revisa tu bandeja y
+            confirma el correo; si no te llegó, reenvíalo desde
+            <a href="/cuenta">tu cuenta</a>.</td>
+        </tr>
+        <tr>
+          <td>Te devuelve al login una y otra vez</td>
+          <td>La sesión caducó (duran 2 días). Vuelve a iniciar sesión; el conector
+            sigue registrado.</td>
+        </tr>
+        <tr>
+          <td><code>403</code> al usar una herramienta</td>
+          <td>Tu cuenta existe pero no tiene memoria asignada. Escríbele al
+            administrador: hay que aprovisionar tu espacio.</td>
+        </tr>
+      </tbody>
+    </table></div>
+
+    <p class="muted">Para revocar el acceso de un conector en cualquier momento, entra a
+      <a href="/cuenta">tu cuenta</a> y pulsa <em>Revocar</em> junto a la aplicación.</p>
+  </section>
+
+  <section id="conversar">
+    <p class="secnum">02</p>
     <h2>Conversar con el cerebro</h2>
     <p class="muted">Es el camino de todos los días y no necesita terminal: basta con
       tener el conector MCP agregado en Claude.</p>
@@ -170,7 +228,7 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
   </section>
 
   <section id="herramientas">
-    <p class="secnum">02</p>
+    <p class="secnum">03</p>
     <h2>Las 9 herramientas MCP</h2>
     <p class="muted">No necesitas llamarlas a mano: Claude las usa por ti. Están aquí para
       que sepas exactamente qué puede hacer el conector con tu memoria.</p>
@@ -198,7 +256,7 @@ ${toolRows}
   </section>
 
   <section id="masiva">
-    <p class="secnum">03</p>
+    <p class="secnum">04</p>
     <h2>Ingesta masiva de una carpeta (CLI <code>brain</code>)</h2>
     <p class="muted">Para cuando tienes cientos de documentos en el disco y adjuntarlos de
       a uno en el chat no tiene sentido. Requiere terminal.</p>
@@ -241,7 +299,7 @@ ${cliRows}
   </section>
 
   <section id="accesos">
-    <p class="secnum">04</p>
+    <p class="secnum">05</p>
     <h2>Exportar y cerrar accesos</h2>
     <p class="muted">Tu memoria es tuya y sale entera cuando quieras: un JSON con los
       episodios (texto original), las entidades y los hechos con su vigencia.</p>

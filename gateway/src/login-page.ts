@@ -73,7 +73,8 @@ ${THEME_BOOT}
   <label for="password">Contraseña</label>
   <input id="password" name="password" type="password" autocomplete="current-password" required>
   <p id="error"></p>
-  <button type="submit">Entrar</button>${registerLink}
+  <button type="submit">Entrar</button>
+  <p class="alt"><a href="/olvide-password">¿Olvidaste tu contraseña?</a></p>${registerLink}
   <p class="alt"><a href="/">← Volver al inicio</a></p>
 </form>
 <script>
@@ -105,7 +106,8 @@ ${THEME_BOOT}
         // Reanuda el flujo OAuth original con los mismos parámetros.
         window.location.href = '/api/auth/mcp/authorize' + params;
       } else {
-        document.body.innerHTML = '<p style="font-family:system-ui">Sesión iniciada. Ya puedes cerrar esta pestaña.</p>';
+        // Sin flujo OAuth que reanudar: entrar directo al panel.
+        window.location.href = '/cuenta';
       }
     } catch (err) {
       errEl.textContent = 'Error de red. Inténtalo de nuevo.';

@@ -208,8 +208,10 @@ printf 'TENANT_NAME=%s\\nMCP_PORT=%s\\n' "$1" "$2" > "${tenantsDir}/$1.env"
       headers: { cookie: `${sessionCookie}; ${regCookie}` },
       redirect: "manual",
     });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Sesión iniciada");
+    // Tras aprovisionar se entra DIRECTO al panel (antes habia una pantalla
+    // intermedia de "sesion iniciada").
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.get("location")).toBe("/cuenta");
 
     // El aprovisionamiento se ejecutó y el mapeo quedó escrito.
     expect(fs.readFileSync(stubLog, "utf8")).toContain(`coninvitacion ${upstreamPort}`);

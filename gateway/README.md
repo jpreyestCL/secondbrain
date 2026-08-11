@@ -61,6 +61,11 @@ Claude (claude.ai / Desktop / móvil)
 | `/registro/validar-codigo` | Solo en modo `invite`: valida el código y emite la cookie `registro_ok` (registro vía Google) |
 | `/post-google` | Post-callback de Google: hace cumplir `REGISTRATION_MODE` y el tope `MAX_TENANTS` |
 | `/api/auth/callback/google` | Callback OAuth de Google (Better Auth); redirige a `/post-google` |
+| `/verificado` | Aterrizaje del enlace de verificación de correo (español, shell del dashboard) |
+| `/reenviar-verificacion` | Reenvía la verificación sin sesión (POST, respuesta neutra, rate limit) |
+| `/cuenta/reenviar-verificacion` | Reenvía la verificación desde el panel (POST, same-origin + CSRF) |
+| `/olvide-password` | Pide el enlace de recuperación de contraseña (GET formulario · POST envío) |
+| `/restablecer-password` | Elige una contraseña nueva con el token del correo (GET formulario · POST guardar) |
 | `/consentimiento` | Decide la pantalla de consentimiento propia (POST, CSRF) |
 | `/cuenta` | Panel de cuenta: sesiones, apps autorizadas, exportación (español) |
 | `/guia` | Guía de uso. **Pública**, dentro del mismo shell del dashboard |
@@ -94,6 +99,12 @@ Copia `.env.example` a `.env`:
 | `GOOGLE_CLIENT_SECRET` | — (vacío) | Client secret de Google OAuth. Requiere también `GOOGLE_CLIENT_ID`. |
 | `SESSION_MAX_AGE_DAYS` | `2` | Duración de la cookie de sesión, en días (antes 7 fijos). |
 | `SESSION_UPDATE_AGE_MINUTES` | `60` | Cada cuántos minutos de uso se renueva la expiración de la sesión. `0` ⇒ en cada petición. |
+| `RESEND_API_KEY` | — (vacío) | Clave de [Resend](https://resend.com/api-keys). **Vacía ⇒ correo deshabilitado** (sin verificación ni recuperación); el registro sigue funcionando y avisa. |
+| `MAIL_FROM` | `Second Brain <onboarding@resend.dev>` | Remitente. El dominio debe estar **verificado** en Resend. |
+| `MAIL_DEBUG` | `0` | `1` ⇒ los correos se escriben en el log y **no** se envían (dev/tests). |
+| `EMAIL_VERIFICATION_EXPIRES_IN` | `86400` (24 h) | Vigencia del enlace de verificación, en segundos. |
+| `PASSWORD_RESET_EXPIRES_IN` | `3600` (1 h) | Vigencia del enlace de recuperación, en segundos. |
+| `MAIL_RATE_LIMIT` | `5` | Correos disparados por IP por minuto (recuperación + reenvío de verificación). |
 | `EXPORT_MAX_EPISODES` | `1000` | Tope de episodios que pide `/export` al MCP del tenant. |
 | `EXPORT_MAX_NODES` | `500` | Tope de entidades/hechos que pide `/export` al MCP del tenant. |
 
@@ -288,6 +299,105 @@ Reinicia el gateway (`npm run dev` o `npm run build && npm start`). El botón
 Si rotas `REGISTRATION_CODE`, las cookies `registro_ok` emitidas con el código
 anterior dejan de validar automáticamente (el HMAC deja de coincidir).
 
+## Correo: verificación de la dirección y recuperación de contraseña
+
+El correo lo manda **Resend** con un cliente propio de ~150 líneas sobre `fetch`
+(`src/mailer.ts`): la API de Resend es un `POST` JSON a
+`https://api.resend.com/emails`, así que añadir el SDK solo sumaba una
+dependencia y superficie de ataque. El payload es exactamente:
+
+```jsonc
+// POST https://api.resend.com/emails
+// Authorization: Bearer $RESEND_API_KEY
+{
+  "from": "Second Brain <hola@rlz.cl>",   // MAIL_FROM
+  "to": ["persona@ejemplo.cl"],           // SIEMPRE arreglo
+  "subject": "Confirma tu correo en mybrain.rlz.cl",
+  "html": "…",
+  "text": "…"
+}
+```
+
+La clave vive en `gateway/.env` (que está en `.gitignore`). Si la tienes en el
+archivo `../.resend-key` del repo, pásala así sin dejarla en el historial del
+shell:
+
+```bash
+printf 'RESEND_API_KEY=%s\n' "$(cat ../.resend-key)" >> gateway/.env
+```
+
+Los dos correos van en **español**, con parte HTML y parte de texto plano, y
+dicen por qué llegan («recibes este correo porque alguien creó una cuenta en
+mybrain.rlz.cl con esta dirección») y qué hacer si no fuiste tú (ignorarlo).
+
+### Flujos
+
+- **Verificación**: el alta (`/registro` y `/api/auth/sign-up/*`) dispara el
+  correo. El enlace va a `/api/auth/verify-email` y aterriza en `/verificado`,
+  que confirma que la cuenta está lista y enlaza a `/cuenta` y `/guia`. Enlace
+  caducado o inválido ⇒ página que lo explica y ofrece pedir otro.
+- **Estado en `/cuenta`**: «verificado ✅» o «pendiente ⚠️» con un botón
+  **reenviar verificación**.
+- **Recuperación**: `/olvide-password` → correo → `/restablecer-password?token=…`
+  → contraseña nueva. El token vale **una vez** y una hora, y al cambiarla se
+  **cierran las demás sesiones** (`revokeSessionsOnPasswordReset`). Antes de
+  esto, quien olvidaba su contraseña no tenía ninguna salida.
+- Todas las respuestas públicas son **neutras**: nunca dicen si una dirección
+  tiene cuenta (si no, el formulario sería un enumerador de usuarios).
+
+### Degradación cuando el correo falla o está apagado
+
+Es el caso normal mientras el dominio siga pendiente de DNS en Resend. Sin
+`RESEND_API_KEY`, o si Resend devuelve un error, el registro **no se rompe**:
+
+1. se crea la cuenta y se aprovisiona el tenant (eso **nunca** se deshace por un
+   fallo de correo);
+2. la página de éxito dice «Cuenta creada · **verificación pendiente**» y trae un
+   botón **reenviar correo**;
+3. el motivo real queda en el log del servidor (`[mail] FALLÓ…`), no en pantalla.
+
+Por eso `requireEmailVerification` está en `false`: si exigiera verificación
+para iniciar sesión, una caída del correo dejaría fuera hasta a la gente ya
+aprovisionada.
+
+### `requireLocalEmailVerified` debe quedarse en su default (`true`)
+
+Better Auth se niega a enlazar una cuenta social con una cuenta local cuyo
+correo no esté verificado (`node_modules/better-auth/dist/oauth2/link-account.mjs`).
+Esa es la razón de fondo de todo lo anterior: con la verificación funcionando,
+«Continuar con Google» funciona para todo el mundo sin tocar nada.
+
+**No bajes `account.accountLinking.requireLocalEmailVerified` a `false`.** Con
+`REGISTRATION_MODE=open` eso habilita un **secuestro de cuenta**: quien quiera
+registra con contraseña el correo de otra persona (sin verificarlo, porque ya no
+haría falta), y cuando esa persona entra con Google, Google la deja caer *dentro
+de la cuenta del atacante* — que sigue conociendo la contraseña. El default
+seguro es `true`; lo que hay que arreglar es el correo, no la política.
+
+### Verificar el dominio en Resend (DNS)
+
+Mientras `rlz.cl` esté en estado *pending*, enviar desde `@rlz.cl` falla y
+`onboarding@resend.dev` solo puede escribirle a la dirección dueña de la cuenta
+de Resend. Para verificarlo, en Resend → *Domains* → `rlz.cl` se muestran los
+registros exactos a copiar en el DNS; son de estas tres clases:
+
+| Tipo | Nombre (host) | Valor | Para qué |
+|---|---|---|---|
+| `MX` | `send.rlz.cl` | `feedback-smtp.<región>.amazonses.com` (prioridad `10`) | Rebotes y quejas (Return-Path). |
+| `TXT` | `send.rlz.cl` | `v=spf1 include:amazonses.com ~all` | SPF: autoriza a Resend a enviar por tu dominio. |
+| `TXT` | `resend._domainkey.rlz.cl` | `p=MIGfMA0GCSq…` (clave pública que da Resend) | DKIM: firma los mensajes. |
+
+Recomendado además (no lo exige Resend, sí los buzones grandes):
+
+| Tipo | Nombre | Valor |
+|---|---|---|
+| `TXT` | `_dmarc.rlz.cl` | `v=DMARC1; p=none; rua=mailto:dmarc@rlz.cl` |
+
+Copia los valores **de la consola de Resend**, no de esta tabla: la región del
+`MX` y la clave DKIM son específicas de cada cuenta. Tras añadirlos, pulsa
+*Verify* (la propagación suele tardar minutos, a veces horas). Con el dominio
+verificado, pon `MAIL_FROM=Second Brain <hola@rlz.cl>` y reinicia el gateway.
+
 ## Panel de cuenta (`/cuenta`) y exportación (`/export`)
 
 `/cuenta` (requiere sesión de navegador, en español) muestra:
@@ -469,3 +579,22 @@ upstream simulado, 409 sin tenant), el panel `/cuenta` (render, revocar cliente
 ⇒ desaparece de la base, cerrar sesiones ⇒ queda solo la actual, POST
 cross-origin y CSRF ⇒ 403) y la landing (contraste WCAG, `aria-live`, nombre
 accesible del deslizador, rama alcanzable y escape de `BASE_URL`).
+
+El correo tiene tres suites, **ninguna toca la red** (`globalThis.fetch` se
+sustituye por un doble y los flujos usan un mailer de mentira):
+
+- `mailer.test.ts`: el payload exacto que se le manda a Resend, el remitente por
+  defecto, `MAIL_DEBUG=1` ⇒ cero llamadas de red, sin `RESEND_API_KEY` ⇒
+  `MailError{code:"mail_disabled"}`, y los 4xx/5xx/fallos de red convertidos en
+  `MailError` con el mensaje de la API.
+- `verificacion.test.ts`: el alta manda el correo (con motivo y enlace al
+  gateway), el enlace pone `emailVerified=1` y muestra la página de cuenta
+  lista, token inválido y token **caducado** se distinguen, el reenvío funciona
+  y está limitado por IP, `/cuenta` muestra pendiente ⇄ verificado, y —lo
+  importante— con Resend fallando o **sin `RESEND_API_KEY`** el registro sigue
+  creando cuenta + tenant y muestra la página de «verificación pendiente» en vez
+  de un 500.
+- `password-reset.test.ts`: camino feliz completo (pedir → correo → token →
+  contraseña nueva → entrar con ella; la vieja da 401), token de un solo uso,
+  enlaces rotos, validaciones del formulario, respuesta neutra ante direcciones
+  desconocidas y rate limit por IP.

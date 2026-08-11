@@ -35,7 +35,8 @@ export const AUTH_STYLE = `
     --paper: #f1eee8; --surface: #fbf9f5; --line: #d7d1c6; --line-soft: #e4dfd5;
     --text: #16201f; --muted: #5d6763;
     --accent: #1d7364; --accent-soft: #d8ebe6; --accent-text: #155a4e; --on-accent: #ffffff;
-    --danger: #9c3b30;
+    --danger: #9c3b30; --danger-soft: #f2ddd9;
+    --ok: #2f6d3f; --ok-soft: #dcebdd;
     --aviso: #8a5a1f; --aviso-soft: #f3e6d2;
     --display: "Iowan Old Style", "Hoefler Text", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
     --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -46,7 +47,8 @@ export const AUTH_STYLE = `
       --paper: #0a0f0f; --surface: #111817; --line: #26312e; --line-soft: #1e2725;
       --text: #e7ece9; --muted: #93a29c;
       --accent: #4fbfa6; --accent-soft: #12312c; --accent-text: #4fbfa6; --on-accent: #08201c;
-      --danger: #e08476;
+      --danger: #e08476; --danger-soft: #2e1a17;
+      --ok: #6fbe80; --ok-soft: #16281a;
       --aviso: #d8a765; --aviso-soft: #2b2114;
     }
   }
@@ -55,7 +57,8 @@ export const AUTH_STYLE = `
     --paper: #0a0f0f; --surface: #111817; --line: #26312e; --line-soft: #1e2725;
     --text: #e7ece9; --muted: #93a29c;
     --accent: #4fbfa6; --accent-soft: #12312c; --accent-text: #4fbfa6; --on-accent: #08201c;
-    --danger: #e08476;
+    --danger: #e08476; --danger-soft: #2e1a17;
+    --ok: #6fbe80; --ok-soft: #16281a;
     --aviso: #d8a765; --aviso-soft: #2b2114;
   }
   :root[data-theme="light"] {
@@ -63,7 +66,8 @@ export const AUTH_STYLE = `
     --paper: #f1eee8; --surface: #fbf9f5; --line: #d7d1c6; --line-soft: #e4dfd5;
     --text: #16201f; --muted: #5d6763;
     --accent: #1d7364; --accent-soft: #d8ebe6; --accent-text: #155a4e; --on-accent: #ffffff;
-    --danger: #9c3b30;
+    --danger: #9c3b30; --danger-soft: #f2ddd9;
+    --ok: #2f6d3f; --ok-soft: #dcebdd;
     --aviso: #8a5a1f; --aviso-soft: #f3e6d2;
   }
 
@@ -119,6 +123,13 @@ export const AUTH_STYLE = `
     background: var(--aviso-soft); padding: .7rem .8rem; border-radius: 3px;
   }
   .scopes { margin: 0; font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  /* Avisos de las páginas de correo (verificación pendiente, restablecer
+     contraseña): marco completo y tinte, nunca una franja lateral. */
+  .notice { padding: .7rem .85rem; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent); border-radius: 3px; font-size: .9rem; line-height: 1.5; }
+  .notice.ok { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+  .notice.bad { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+  /* Un formulario embebido en una tarjeta no vuelve a dibujar la tarjeta. */
+  form.inline { background: transparent; border: 0; padding: 0; width: auto; }
   code { font-family: var(--mono); font-size: .85em; word-break: break-all; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;

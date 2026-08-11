@@ -33,7 +33,13 @@ async function main(): Promise<void> {
     body: { email, password, name: email.split("@")[0] ?? email },
   });
 
-  console.log(`Usuario creado: ${result.user.email} (id: ${result.user.id})`);
+  // Alta manual desde la consola del servidor: el administrador ya sabe de
+  // quién es la dirección, así que la cuenta nace verificada. Sin esto, esa
+  // persona no podría enlazar su Google (Better Auth lo rechaza mientras el
+  // correo local esté sin verificar) hasta pasar por el correo.
+  db.prepare('UPDATE "user" SET emailVerified = 1 WHERE id = ?').run(result.user.id);
+
+  console.log(`Usuario creado: ${result.user.email} (id: ${result.user.id}, correo verificado)`);
   console.log("");
   console.log("IMPORTANTE: este usuario aún NO tiene tenant asignado y recibirá");
   console.log("403 en /mcp. Para habilitarlo, levanta SU propia instancia de");

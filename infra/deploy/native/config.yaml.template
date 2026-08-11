@@ -1,14 +1,8 @@
-# PLANTILLA de config.yaml por tenant (deploy nativo).
-# provision-tenant-native.sh la instancia en
-#   /opt/secondbrain-native/tenants/<slug>/config.yaml
-# sustituyendo __MCP_HOST__ y __MCP_PORT__, y el unit brain-mcp@<slug> la
-# selecciona pasando `main.py --config <ruta>`.
-# El puerto NO se puede pasar por entorno: el server solo lo lee del YAML
-# (src/config/schema.py resuelve CONFIG_PATH), y ademas el default de argparse
-# de graphiti_mcp_server.py PISA la env var CONFIG_PATH. De ahi que haya un
-# config.yaml por tenant y que el unit use --config.
-#
-# Config del Graphiti MCP server.
+# PLANTILLA — no editar el original a mano.
+# provision-tenant-native.sh la copia por tenant sustituyendo
+# __MCP_HOST__ y __MCP_PORT__. Se genera desde infra/graphiti/config.yaml,
+# asi que cualquier cambio de variables (LLM_*, EMBEDDER_*) llega aqui.
+# Config del Graphiti MCP server (montado en /app/mcp/config/config.yaml).
 # Derivado de mcp_server/config/config-docker-falkordb.yaml del repo getzep/graphiti
 # (version graphiti 0.28.2 / imagen 1.0.2). La sintaxis ${VAR:default} la resuelve
 # el loader de configuracion del propio server contra las variables de entorno.
@@ -20,15 +14,18 @@ server:
 
 llm:
   provider: ${LLM_PROVIDER:openai}
-  model: ${MODEL_NAME:gpt-5.5}
+  # Modelo de CHAT. Variable propia (LLM_MODEL) para poder alternar de proveedor
+  # sin tocar la config de NVIDIA que vive en MODEL_NAME/OPENAI_*.
+  model: ${LLM_MODEL}
   max_tokens: 4096
 
   providers:
     openai:
-      api_key: ${OPENAI_API_KEY}
-      # Apuntar a Ollama u otro endpoint compatible con OpenAI:
-      #   OPENAI_API_URL=http://host.docker.internal:11434/v1
-      api_url: ${OPENAI_API_URL:https://api.openai.com/v1}
+      # Credenciales del CHAT, independientes de las del embedder. Esto permite
+      # tener, a la vez: chat en OpenAI (gpt-4o-mini) y embeddings en NVIDIA
+      # (nv-embed-v1, 4096 dims), que es lo que exige un grafo ya indexado.
+      api_key: ${LLM_API_KEY}
+      api_url: ${LLM_API_URL:https://api.openai.com/v1}
       organization_id: ${OPENAI_ORGANIZATION_ID:}
 
     anthropic:
@@ -43,7 +40,13 @@ embedder:
 
   providers:
     openai:
-      api_key: ${OPENAI_API_KEY}
+      # Clave PROPIA del embedder (OBLIGATORIA si se define): permite chat en un
+      # proveedor (p.ej. OpenAI gpt-4o-mini) y embeddings en otro (NVIDIA
+      # nv-embed-v1, 4096 dims). El loader NO soporta ${VAR:${OTRA}} anidado, asi
+      # que hay que fijarla explicitamente en mcp.env.
+      # OJO: cambiar el proveedor/dimension de embeddings de un grafo existente
+      # CORROMPE la busqueda semantica.
+      api_key: ${EMBEDDER_API_KEY}
       # URL propia del embedder: permite LLM=DeepSeek (sin embeddings) +
       # embeddings en Ollama u OpenAI. Si no se define, api.openai.com.
       api_url: ${EMBEDDER_API_URL:https://api.openai.com/v1}

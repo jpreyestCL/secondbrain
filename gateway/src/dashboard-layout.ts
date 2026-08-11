@@ -183,6 +183,13 @@ const STYLE = `
   @media (min-width: 40rem) { .plate > div { grid-template-columns: 11rem 1fr; align-items: baseline; } }
   .plate dt, .plate .k { font-family: var(--mono); font-size: .66rem; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
   .plate dd, .plate .v { margin: 0; font-family: var(--mono); font-size: .88rem; overflow-wrap: anywhere; }
+  /* Estado de verificación del correo: color y forma, nunca solo un emoji. */
+  .ok, .pend { display: inline-flex; align-items: center; gap: .4rem; }
+  .ok::before, .pend::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
+  .ok { color: var(--accent-text); }
+  .ok::before { background: var(--accent); }
+  .pend { color: color-mix(in srgb, var(--histo) 70%, var(--text)); }
+  .pend::before { background: var(--histo); }
   .live { display: inline-flex; align-items: center; gap: .45rem; }
   .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); animation: pulse 2.6s ease-out infinite; }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }

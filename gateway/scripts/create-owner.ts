@@ -41,7 +41,14 @@ async function main(): Promise<void> {
     body: { email, password, name: "Owner" },
   });
 
-  console.log(`Dueño creado: ${result.user.email} (id: ${result.user.id})`);
+  // La cuenta la crea el administrador desde la consola del servidor, con
+  // acceso probado a esa dirección: se marca verificada sin pasar por el correo.
+  // Si no, "Continuar con Google" fallaría con `account_not_linked` (Better Auth
+  // exige el correo local verificado para enlazar) y habría que parchear la
+  // base a mano, que es justo lo que se quiere evitar.
+  db.prepare('UPDATE "user" SET emailVerified = 1 WHERE id = ?').run(result.user.id);
+
+  console.log(`Dueño creado: ${result.user.email} (id: ${result.user.id}, correo verificado)`);
   console.log(`Base de datos: ${config.dbPath}`);
 
   // Mapea al dueño a su upstream Graphiti (GRAPHITI_MCP_URL) en tenants.json.

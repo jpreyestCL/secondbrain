@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_MAIL_FROM } from "./mailer.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Works both from src/ (tsx) and dist/ (compiled): gateway root is one level up.
@@ -94,6 +95,30 @@ export interface GatewayConfig {
    * sesión. SESSION_UPDATE_AGE_MINUTES, default 60. 0 => en cada petición.
    */
   sessionUpdateAgeMinutes: number;
+  /**
+   * Clave de API de Resend. VACÍA => el correo queda DESHABILITADO: no se
+   * envían verificaciones ni recuperaciones de contraseña, pero el gateway
+   * sigue funcionando y el registro muestra "verificación pendiente" en vez de
+   * romperse. Ver src/mailer.ts.
+   */
+  resendApiKey: string;
+  /**
+   * Remitente de los correos (`Nombre <correo@dominio>`). El dominio tiene que
+   * estar VERIFICADO en Resend; mientras no lo esté, `onboarding@resend.dev`
+   * solo puede escribirle a la dirección dueña de la cuenta de Resend.
+   */
+  mailFrom: string;
+  /**
+   * MAIL_DEBUG=1: los correos se escriben en el log en vez de enviarse. Es el
+   * modo de los tests y del desarrollo local.
+   */
+  mailDebug: boolean;
+  /** Vigencia del enlace de verificación de correo, en segundos (default 24 h). */
+  emailVerificationExpiresIn: number;
+  /** Vigencia del enlace de recuperación de contraseña, en segundos (default 1 h). */
+  passwordResetExpiresIn: number;
+  /** Máximo de correos (verificación/recuperación) por IP por minuto. */
+  mailRateLimit: number;
   /** Máximo de episodios que /export pide al MCP del tenant. */
   exportMaxEpisodes: number;
   /** Máximo de entidades/hechos que /export pide al MCP del tenant. */
@@ -153,6 +178,17 @@ export function loadConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
     googleClientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
     sessionMaxAgeDays: positive(process.env.SESSION_MAX_AGE_DAYS, 2),
     sessionUpdateAgeMinutes: nonNegative(process.env.SESSION_UPDATE_AGE_MINUTES, 60),
+    resendApiKey: (process.env.RESEND_API_KEY ?? "").trim(),
+    mailFrom: (process.env.MAIL_FROM ?? DEFAULT_MAIL_FROM).trim(),
+    mailDebug: ["1", "true", "yes"].includes(
+      (process.env.MAIL_DEBUG ?? "").trim().toLowerCase(),
+    ),
+    emailVerificationExpiresIn: positive(
+      process.env.EMAIL_VERIFICATION_EXPIRES_IN,
+      24 * 60 * 60,
+    ),
+    passwordResetExpiresIn: positive(process.env.PASSWORD_RESET_EXPIRES_IN, 60 * 60),
+    mailRateLimit: positive(process.env.MAIL_RATE_LIMIT, 5),
     exportMaxEpisodes: positive(process.env.EXPORT_MAX_EPISODES, 1000),
     exportMaxNodes: positive(process.env.EXPORT_MAX_NODES, 500),
     ...overrides,

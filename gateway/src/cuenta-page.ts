@@ -31,6 +31,13 @@ export interface CuentaClientView {
 
 export interface CuentaPageOptions {
   email: string;
+  /**
+   * ¿El correo está verificado? Importa más de lo que parece: mientras esté
+   * pendiente, Better Auth NO enlaza la cuenta de Google con esta (ver
+   * `requireLocalEmailVerified` en oauth2/link-account), así que "Continuar con
+   * Google" falla con `account_not_linked`.
+   */
+  emailVerified: boolean;
   /** Upstream MCP del tenant, o null si aún no tiene uno asignado. */
   upstream: string | null;
   sessions: CuentaSessionView[];
@@ -120,17 +127,32 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
     ? `<span class="live">${escapeHtml(opts.upstream)}</span>`
     : "sin servidor asignado todavía";
 
+  const verificacion = opts.emailVerified
+    ? `<span class="ok">verificado</span>`
+    : `<span class="pend">pendiente</span>`;
+
+  const reenviar = opts.emailVerified
+    ? ""
+    : `
+    <p class="warn">Tu correo todavía no está verificado. Hasta que lo confirmes no
+      podrás iniciar sesión con Google usando esta misma cuenta.</p>
+    <form method="post" action="/cuenta/reenviar-verificacion">
+      <input type="hidden" name="${CSRF_FIELD}" value="${escapeHtml(opts.csrf)}">
+      <button type="submit">Reenviar verificación</button>
+    </form>`;
+
   const body = `  <section class="head">
     <p class="eyebrow">Panel personal</p>
     <h1>Tu cuenta</h1>${notice}
     <div class="plate">
       <div><span class="k">Correo</span><span class="v">${escapeHtml(opts.email)}</span></div>
+      <div><span class="k">Verificación</span><span class="v">${verificacion}</span></div>
       <div><span class="k">Tu memoria</span><span class="v">${upstream}</span></div>
     </div>
     <div class="figures">
       <div class="fig"><b>${opts.sessions.length}</b><span>sesiones abiertas</span></div>
       <div class="fig"><b>${opts.clients.length}</b><span>apps autorizadas</span></div>
-    </div>
+    </div>${reenviar}
     <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>
 

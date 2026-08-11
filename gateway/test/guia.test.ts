@@ -137,4 +137,22 @@ describe("guía de uso", () => {
     const landing = await (await fetch(`${baseUrl}/`)).text();
     expect(landing).toContain('href="/guia"');
   });
+
+  it("explica como conectar el conector MCP y sus errores comunes", async () => {
+    const res = await fetch(`${baseUrl}/guia`);
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    // pasos de conexion
+    expect(html).toContain("Conectar tu Claude");
+    expect(html).toMatch(/Ajustes\s*→\s*Conectores/);
+    expect(html).toContain("Agregar conector personalizado");
+    expect(html).toContain("/mcp");
+    expect(html).toContain("Autorizar");
+    // diagnostico de los fallos que vimos en produccion
+    expect(html).toContain("invalid_client");
+    expect(html).toContain("account_not_linked");
+    // indice enlaza la seccion
+    expect(html).toContain('href="#conectar"');
+    expect(html).toContain('id="conectar"');
+  });
 });
