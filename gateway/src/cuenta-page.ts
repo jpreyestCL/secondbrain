@@ -53,6 +53,31 @@ function fmtDate(value: string): string {
   return d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
+/**
+ * Nombre legible del navegador y el sistema a partir del User-Agent, para que
+ * la tabla de sesiones se pueda leer de un vistazo. La cadena completa sigue
+ * mostrándose debajo: es la que sirve para reconocer un acceso raro.
+ */
+function deviceLabel(ua: string | null): string {
+  if (!ua) return "Desconocido";
+  const browser =
+    /Edg\//.test(ua) ? "Edge"
+    : /OPR\/|Opera/.test(ua) ? "Opera"
+    : /Firefox\//.test(ua) ? "Firefox"
+    : /Chrome\//.test(ua) ? "Chrome"
+    : /Safari\//.test(ua) ? "Safari"
+    : /curl|python|node|Go-http/i.test(ua) ? "Cliente de consola"
+    : "Navegador";
+  const os =
+    /iPhone|iPad|iOS/.test(ua) ? "iOS"
+    : /Android/.test(ua) ? "Android"
+    : /Mac OS X|Macintosh/.test(ua) ? "macOS"
+    : /Windows/.test(ua) ? "Windows"
+    : /Linux/.test(ua) ? "Linux"
+    : "";
+  return os ? `${browser} · ${os}` : browser;
+}
+
 export function cuentaPageHtml(opts: CuentaPageOptions): string {
   const notice = opts.notice
     ? `\n    <p class="notice">${escapeHtml(opts.notice)}</p>`
@@ -61,10 +86,10 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
   const sessionRows = opts.sessions
     .map(
       (s) => `      <tr>
-        <td>${fmtDate(s.lastUsed)}${s.current ? ' <span class="tag">esta sesión</span>' : ""}</td>
-        <td>${fmtDate(s.createdAt)}</td>
-        <td>${escapeHtml(s.ipAddress ?? "—")}</td>
-        <td class="ua">${escapeHtml(s.userAgent ?? "—")}</td>
+        <td class="when">${fmtDate(s.lastUsed)}${s.current ? ' <span class="tag">esta sesión</span>' : ""}</td>
+        <td class="when">${fmtDate(s.createdAt)}</td>
+        <td class="when">${escapeHtml(s.ipAddress ?? "—")}</td>
+        <td class="ua">${escapeHtml(deviceLabel(s.userAgent))}<small>${escapeHtml(s.userAgent ?? "—")}</small></td>
       </tr>`,
     )
     .join("\n");
@@ -98,9 +123,13 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
         .join("\n")
     : `    <p class="muted">Todavía no has autorizado ninguna aplicación.</p>`;
 
+  const upstream = opts.upstream
+    ? `<span class="live">${escapeHtml(opts.upstream)}</span>`
+    : "sin servidor asignado todavía";
+
   const verificacion = opts.emailVerified
-    ? `      <dt>Verificación</dt><dd>verificado ✅</dd>`
-    : `      <dt>Verificación</dt><dd>pendiente ⚠️</dd>`;
+    ? `<span class="ok">verificado</span>`
+    : `<span class="pend">pendiente</span>`;
 
   const reenviar = opts.emailVerified
     ? ""
@@ -112,17 +141,23 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
       <button type="submit">Reenviar verificación</button>
     </form>`;
 
-  const body = `  <section>
+  const body = `  <section class="head">
+    <p class="eyebrow">Panel personal</p>
     <h1>Tu cuenta</h1>${notice}
-    <dl>
-      <dt>Correo</dt><dd>${escapeHtml(opts.email)}</dd>
-${verificacion}
-      <dt>Tu memoria</dt><dd><code>${escapeHtml(opts.upstream ?? "sin servidor asignado todavía")}</code></dd>
-    </dl>${reenviar}
+    <div class="plate">
+      <div><span class="k">Correo</span><span class="v">${escapeHtml(opts.email)}</span></div>
+      <div><span class="k">Verificación</span><span class="v">${verificacion}</span></div>
+      <div><span class="k">Tu memoria</span><span class="v">${upstream}</span></div>
+    </div>
+    <div class="figures">
+      <div class="fig"><b>${opts.sessions.length}</b><span>sesiones abiertas</span></div>
+      <div class="fig"><b>${opts.clients.length}</b><span>apps autorizadas</span></div>
+    </div>${reenviar}
     <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>
 
   <section>
+    <p class="eyebrow">Portabilidad</p>
     <h2>Exportar todo</h2>
     <p class="muted">Descarga un archivo JSON con tu memoria completa: episodios
       (texto original), entidades y hechos con su vigencia (<code>valid_at</code> /
@@ -131,8 +166,11 @@ ${verificacion}
   </section>
 
   <section>
+    <p class="eyebrow">Accesos</p>
     <h2>Sesiones activas (${opts.sessions.length})</h2>
-    <div class="scroll"><table>
+    <p class="muted">Cada navegador donde iniciaste sesión. Si ves uno que no reconoces,
+      ciérralos todos y cambia tu contraseña.</p>
+    <div class="scroll"><table class="sesiones">
       <thead><tr><th>Último uso</th><th>Inicio</th><th>IP</th><th>Navegador</th></tr></thead>
       <tbody>
 ${sessionRows}
@@ -142,6 +180,7 @@ ${closeOthers}
   </section>
 
   <section>
+    <p class="eyebrow">Conectores</p>
     <h2>Aplicaciones autorizadas (${opts.clients.length})</h2>
     <p class="muted">Revocar corta el acceso: se borran sus tokens y se te volverá a
       pedir permiso la próxima vez que la app intente conectarse.</p>
