@@ -193,7 +193,7 @@ describe("REGISTRATION_MODE=open", () => {
     expect(await res.text()).toContain("Cuenta creada");
 
     expect(fs.readFileSync(gw.stubLog, "utf8")).toContain(`abierto ${gw.upstreamPort}`);
-    expect(mapping(gw.tenantsFile)[email]).toBe(`http://127.0.0.1:${gw.upstreamPort}/mcp`);
+    expect(mapping(gw.tenantsFile)[email].url).toBe(`http://127.0.0.1:${gw.upstreamPort}/mcp`);
     expect(countUsers(gw.db, email)).toBe(1);
   });
 
@@ -235,7 +235,7 @@ describe("REGISTRATION_MODE=open", () => {
     // intermedia de "sesion iniciada").
     expect([302, 303]).toContain(res.status);
     expect(res.headers.get("location")).toBe("/cuenta");
-    expect(mapping(gw.tenantsFile)[email]).toBe(
+    expect(mapping(gw.tenantsFile)[email].url).toBe(
       `http://127.0.0.1:${gw.upstreamPort + 1}/mcp`,
     );
   });
@@ -283,7 +283,7 @@ describe("REGISTRATION_MODE=invite", () => {
       code: CODE,
     });
     expect(res.status).toBe(200);
-    expect(mapping(gw.tenantsFile)[email]).toBe(`http://127.0.0.1:${gw.upstreamPort}/mcp`);
+    expect(mapping(gw.tenantsFile)[email].url).toBe(`http://127.0.0.1:${gw.upstreamPort}/mcp`);
   });
 
   it("Google sigue exigiendo la cookie registro_ok (usuario nuevo sin ella => 403)", async () => {
@@ -435,6 +435,6 @@ describe("fallo de aprovisionamiento", () => {
     expect(ok.status).toBe(200);
     expect(await ok.text()).toContain("Cuenta creada");
     expect(countUsers(gw.db, email)).toBe(1);
-    expect(mapping(gw.tenantsFile)[email]).toBe(`http://127.0.0.1:${gw.upstreamPort}/mcp`);
+    expect(mapping(gw.tenantsFile)[email].url).toBe(`http://127.0.0.1:${gw.upstreamPort}/mcp`);
   });
 });

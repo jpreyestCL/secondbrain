@@ -170,7 +170,8 @@ describe("registro self-service", () => {
     expect(fs.readFileSync(stubLog, "utf8")).toContain(`dave ${upstreamPort}`);
     // Y el mapeo quedó en tenants.json.
     const mapping = JSON.parse(fs.readFileSync(tenantsFile, "utf8"));
-    expect(mapping[email]).toBe(`http://127.0.0.1:${upstreamPort}/mcp`);
+    expect(mapping[email].url).toBe(`http://127.0.0.1:${upstreamPort}/mcp`);
+    expect(mapping[email].slug).toBe("dave");
 
     // Flujo completo: OAuth (DCR -> login -> authorize PKCE -> token) -> /mcp.
     const token = await obtainAccessToken(baseUrl, email, PASSWORD);
@@ -199,7 +200,13 @@ describe("registro self-service", () => {
     const log = fs.readFileSync(stubLog, "utf8");
     expect(log).toContain(`dave-2 ${upstreamPort + 1}`);
     const mapping = JSON.parse(fs.readFileSync(tenantsFile, "utf8"));
-    expect(mapping["dave@otro-dominio.dev"]).toBe(`http://127.0.0.1:${upstreamPort + 1}/mcp`);
+    expect(mapping["dave@otro-dominio.dev"].url).toBe(
+      `http://127.0.0.1:${upstreamPort + 1}/mcp`,
+    );
+    // El slug se persiste porque NO se puede derivar del correo: aqui "dave"
+    // ya estaba tomado y el aprovisionamiento asigno "dave-2". El panel y la
+    // guia muestran este valor, que es el que el CLI necesita.
+    expect(mapping["dave@otro-dominio.dev"].slug).toBe("dave-2");
   });
 
   it("rejects a duplicate email without provisioning again", async () => {

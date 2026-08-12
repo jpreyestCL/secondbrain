@@ -216,7 +216,7 @@ printf 'TENANT_NAME=%s\\nMCP_PORT=%s\\n' "$1" "$2" > "${tenantsDir}/$1.env"
     // El aprovisionamiento se ejecutó y el mapeo quedó escrito.
     expect(fs.readFileSync(stubLog, "utf8")).toContain(`coninvitacion ${upstreamPort}`);
     const mapping = JSON.parse(fs.readFileSync(tenantsFile, "utf8"));
-    expect(mapping[email]).toBe(`http://127.0.0.1:${upstreamPort}/mcp`);
+    expect(mapping[email].url).toBe(`http://127.0.0.1:${upstreamPort}/mcp`);
 
     // Flujo OAuth completo -> /mcp llega al upstream del tenant.
     const token = await obtainAccessToken(baseUrl, email, PASSWORD);

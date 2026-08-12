@@ -98,3 +98,25 @@ Formato: una entrada por decisión, estilo ADR liviano. Estados: `aceptada`, `re
 **Decisión.** Un solo grafo por tenant y `group_id == tenant` SIEMPRE; el servidor MCP por tenant lo fuerza server-side. El dominio (`personal`, `salud`, `finanzas`, `trabajo`, `proyecto-<slug>`) deja de ser partición y viaja como **metadata**: en el `source_description` (formato `dominio: <dominio> | tipo: <doc_type> | origen: <descripcion>`) y como prefijo `[<dominio>]` en el nombre del episodio. Además, FalkorDB tiene usuarios ACL por tenant (`tenant_<nombre>`, password en `infra/tenants/<nombre>.env`, patrón de claves restringido a su grafo); el CLI `brain` se conecta con esa credencial (`FALKORDB_TENANT_USER`/`FALKORDB_TENANT_PASSWORD`, con fallback a `~/.brain/config.toml`).
 
 **Consecuencias.** El filtrado por dominio pasa a ser **blando** (mención del dominio en la query semántica o filtro por `source_description`), no estructural; la frontera dura de seguridad es el par grafo-por-tenant + ACL de FalkorDB, que impide físicamente leer el grafo ajeno aun con un filtro olvidado. `SCHEMA.md`, `CLAUDE.md` y las skills se actualizan a este modelo; el nombre del grafo pasa de `brain_<tenant>` a `<tenant>`.
+
+---
+
+## ADR-007 — La ingesta masiva viaja por el conector MCP, no por acceso directo a la base
+
+- **Fecha**: 2026-08
+- **Estado**: aceptada
+
+**Contexto.** El pipeline del CLI `brain` es local hasta el último paso: `scan`, `extract`, `classify` y `chunk` trabajan sobre archivos del disco. Solo `ingest-graph` necesita el grafo, y escribía **directo a FalkorDB**. Pero FalkorDB escucha únicamente en el localhost del servidor, por diseño de ADR-005: es la frontera dura de aislamiento entre personas. La consecuencia es que la ingesta masiva quedaba reservada a quien administra la máquina, mientras la guía pública la documentaba para todos — un camino cerrado.
+
+El acceso directo tiene además dos problemas propios. El primero es que el cliente elige los modelos, y **el modelo de embeddings y su dimensión deben coincidir exactamente con los del servidor**: ingerir con otro corrompe la búsqueda semántica del grafo de forma irreversible. El segundo es que el destino no queda registrado en ninguna parte: el mismo comando escribe al FalkorDB local o al del servidor según a qué resuelva `FALKORDB_HOST:PORT`, y equivocarse **no falla** — la corrida reporta éxito, el ledger queda consistente y los datos simplemente no están donde alguien los consulta. Ocurrió: 348 episodios terminaron en el grafo local del Mac creyendo que iban al servidor.
+
+**Decisión.** `ingest-graph` gana `--via mcp --url https://<host>/mcp`, que empuja los episodios por el mismo conector MCP autenticado que usa Claude. Es la vía **recomendada** y la única disponible para quien no administra el servidor; el acceso directo (`--via falkordb`, el default) se conserva para lotes grandes de administrador, donde evitar la latencia del MCP importa.
+
+Detalles que sostienen el aislamiento:
+
+- Autenticación OAuth 2.1 + PKCE con redirect a loopback (RFC 8252). El gateway ya admitía `127.0.0.1`, así que no hubo que ampliar la allowlist de `redirect_uri` que cierra el robo de token. El `access_token` se guarda en `~/.brain/<tenant>/mcp-token.json` con permisos 600.
+- **El cliente nunca manda `group_id`**: lo fuerza el servidor MCP según el usuario autenticado. Mandarlo desde el cliente sería el atajo que ADR-006 existe para impedir.
+- El `uuid` del episodio lo genera el cliente y se lo pasa a `add_memory`, que encola en background sin devolverlo. Sin esto el ledger no podría registrar el mismo identificador que el grafo y `brain expire` quedaría sin poder borrar el episodio.
+- La redacción de credenciales ocurre **antes** de salir de la máquina, igual que en la vía directa.
+
+**Consecuencias.** Por la vía MCP los modelos los pone el servidor, así que desaparece la clase de error irreversible de la dimensión de embeddings, y no hay nada que configurar en el cliente. A cambio se hereda una limitación real del servidor: **la cola de episodios del MCP es en memoria**, y `add_memory` responde al encolar, no al terminar de procesar. Un reinicio del servidor con episodios en vuelo los pierde silenciosamente, aunque el ledger ya los dé por ingeridos. Para lotes grandes falta un paso de verificación posterior que consulte qué llegó de verdad y reencole lo faltante; hasta que exista, la vía directa sigue siendo la más segura para volúmenes altos bajo control del administrador.

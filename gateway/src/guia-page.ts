@@ -94,7 +94,7 @@ cd secondbrain/ingest
 uv sync --all-extras
 uv run brain --help`;
 
-const REMOTO_BLOCK = `brain --tenant <slug> ingest-graph --via mcp --url https://mybrain.rlz.cl/mcp`;
+
 
 const ENV_BLOCK = `# El puerto local NO puede ser 6379 si tienes Docker corriendo:
 # ese puerto ya lo publica el FalkorDB local y escribirias en el grafo equivocado.
@@ -114,13 +114,33 @@ brain --tenant <slug> classify            # emite el manifiesto JSON
 # Claude completa el manifiesto: dominio, tipo y fecha REAL de cada documento
 brain --tenant <slug> classify --apply manifiesto.json
 brain --tenant <slug> chunk
-brain --tenant <slug> ingest-graph`;
+
+# Ultimo paso: el unico que habla con el servidor
+brain --tenant <slug> ingest-graph --via mcp --url <MCP_URL>`;
+
+const REMOTO_BLOCK = `brain --tenant <slug> ingest-graph --via mcp --url <MCP_URL>`;
+
+/**
+ * Rellena los ejemplos con los datos de quien mira la pagina.
+ *
+ * Un ejemplo con `<slug>` obliga a cada usuario a averiguar cual es el suyo, y
+ * ese fue justamente el tropiezo que motivo este cambio: la guia decia que
+ * comandos correr sin decir con que valores. Con sesion iniciada se sustituye
+ * por el tenant real, listo para copiar y pegar.
+ */
+function personalizar(bloque: string, tenant: string | null, mcpUrl: string): string {
+  return bloque
+    .replaceAll("<MCP_URL>", mcpUrl)
+    .replaceAll("<slug>", tenant ?? "<slug>");
+}
 
 export interface GuiaPageOptions {
   /** URL pública del gateway; se usa para mostrar la dirección del conector. */
   baseUrl?: string;
   /** Sesión del navegador, o null si se está viendo sin iniciar sesión. */
   session?: DashboardSessionView | null;
+  /** Slug del tenant de quien mira; con él los ejemplos salen listos para usar. */
+  tenant?: string | null;
 }
 
 export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
@@ -132,6 +152,16 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
         <td class="params"><code>${escapeHtml(t.params)}</code></td>
       </tr>`,
   ).join("\n");
+
+  const tenant = opts.tenant ?? null;
+  const pipeline = personalizar(PIPELINE_BLOCK, tenant, mcpUrl);
+  const remoto = personalizar(REMOTO_BLOCK, tenant, mcpUrl);
+  const entorno = personalizar(ENV_BLOCK, tenant, mcpUrl);
+  const avisoTenant = tenant
+    ? `<p class="notice">Los ejemplos ya vienen con tu espacio
+        (<code>${escapeHtml(tenant)}</code>): puedes copiarlos y pegarlos tal cual.</p>`
+    : `<p class="muted">Sustituye <code>&lt;slug&gt;</code> por el nombre de tu espacio.
+        <a href="/cuenta">Inicia sesión</a> y los ejemplos saldrán ya rellenados.</p>`;
 
   const cliRows = CLI_COMMANDS.map(
     ([cmd, what]) => `      <tr>
@@ -279,9 +309,10 @@ ${toolRows}
     <pre><code>${escapeHtml(INSTALL_BLOCK)}</code></pre>
 
     <h3>El pipeline</h3>
+    ${avisoTenant}
     <p class="muted">Los pasos van en orden y cada uno deja su resultado en el ledger, así
       que puedes cortar y retomar donde ibas.</p>
-    <pre><code>${escapeHtml(PIPELINE_BLOCK)}</code></pre>
+    <pre><code>${escapeHtml(pipeline)}</code></pre>
 
     <h3>Comandos</h3>
     <div class="scroll"><table>
@@ -307,7 +338,7 @@ ${cliRows}
       servidor. El último paso del pipeline se hace por el mismo conector MCP que usa Claude:
       te autenticas con tu cuenta, el gateway te enruta a tu espacio y el servidor hace la
       extracción con su propio modelo.</p>
-    <pre><code>${escapeHtml(REMOTO_BLOCK)}</code></pre>
+    <pre><code>${escapeHtml(remoto)}</code></pre>
     <p class="muted">La primera vez se abre el navegador para autorizar; el token queda
       guardado en <code>~/.brain/&lt;tenant&gt;/</code> y las siguientes no preguntan.
       Los pasos anteriores (<code>scan</code>, <code>extract</code>, <code>classify</code>,
@@ -317,7 +348,7 @@ ${cliRows}
     <p class="muted">Más rápido para lotes muy grandes, porque evita la latencia del MCP,
       pero FalkorDB solo escucha en el localhost del servidor: hace falta un túnel SSH y
       configurar los modelos a mano.</p>
-    <pre><code>${escapeHtml(ENV_BLOCK)}</code></pre>
+    <pre><code>${escapeHtml(entorno)}</code></pre>
 
     <p class="warn">⚠️ El modelo de embeddings y sus dimensiones DEBEN coincidir con los del
       servidor (<code>nvidia/nv-embed-v1</code>, <code>4096</code>). Si ingieres con otro

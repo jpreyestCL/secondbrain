@@ -292,7 +292,8 @@ describe("degradación cuando el correo falla", () => {
 
     // El tenant aprovisionado NO se pierde por un fallo de correo.
     const registry = JSON.parse(fs.readFileSync(tenantsFile, "utf8")) as Record<string, string>;
-    expect(registry[email]).toBe("http://127.0.0.1:9099/mcp");
+    expect(registry[email].url).toBe("http://127.0.0.1:9099/mcp");
+    expect(registry[email].slug).toBeTruthy(); // el slug se persiste para el CLI
     expect(verifiedFlag(email)).toBe(0);
 
     // Y la cuenta sirve: se puede iniciar sesión con ella.
@@ -361,7 +362,7 @@ describe("sin RESEND_API_KEY (correo deshabilitado)", () => {
     expect(html).toContain("Verificación pendiente");
 
     const registry = JSON.parse(fs.readFileSync(tenants2, "utf8")) as Record<string, string>;
-    expect(registry[email]).toBe("http://127.0.0.1:9098/mcp");
+    expect(registry[email].url).toBe("http://127.0.0.1:9098/mcp");
 
     const login = await fetch(`${base2}/api/auth/sign-in/email`, {
       method: "POST",

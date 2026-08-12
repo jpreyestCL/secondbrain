@@ -93,7 +93,10 @@ describe("panel de cuenta", () => {
 
     const html = await cuenta(cookie);
     expect(html).toContain(EMAIL);
-    expect(html).toContain(UPSTREAM);
+    // El upstream INTERNO no debe aparecer: no le sirve al usuario y expone
+    // la topologia del servidor. Lo que se muestra es el conector publico.
+    expect(html).not.toContain(UPSTREAM);
+    expect(html).toContain("Tu espacio");
     expect(html).toContain("Sesiones activas");
     expect(html).toContain("test-client"); // nombre del cliente registrado
     expect(html).toContain("Revocar");
@@ -169,5 +172,17 @@ describe("panel de cuenta", () => {
       body: new URLSearchParams({ csrf }),
     });
     expect(noOrigin.status).toBe(403);
+  });
+});
+
+describe("identidad del espacio", () => {
+  it("muestra el slug del tenant, que es lo que el CLI necesita", async () => {
+    const cookie = await signIn();
+    const html = await cuenta(cookie);
+    // El panel decia solo el upstream interno (http://127.0.0.1:8021/mcp), que
+    // no le sirve a nadie: la guia pide `brain --tenant <slug>` y el usuario no
+    // tenia donde leer su slug.
+    expect(html).toContain("Tu espacio");
+    expect(html).toContain("brain --tenant");
   });
 });

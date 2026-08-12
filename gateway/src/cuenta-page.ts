@@ -40,6 +40,13 @@ export interface CuentaPageOptions {
   emailVerified: boolean;
   /** Upstream MCP del tenant, o null si aún no tiene uno asignado. */
   upstream: string | null;
+  /**
+   * Slug del tenant: el nombre de su grafo y el valor que necesita
+   * `brain --tenant <slug>`. null si el mapeo es antiguo y no lo guardó.
+   */
+  tenant?: string | null;
+  /** URL pública del conector (la que se pega en claude.ai). */
+  mcpUrl?: string;
   sessions: CuentaSessionView[];
   clients: CuentaClientView[];
   csrf: string;
@@ -117,7 +124,16 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
     <dl>
       <dt>Correo</dt><dd>${escapeHtml(opts.email)}</dd>
 ${verificacion}
-      <dt>Tu memoria</dt><dd><code>${escapeHtml(opts.upstream ?? "sin servidor asignado todavía")}</code></dd>
+      <dt>Tu espacio</dt><dd>${
+        opts.tenant
+          ? `<code>${escapeHtml(opts.tenant)}</code> <span class="muted">— úsalo en <code>brain --tenant ${escapeHtml(opts.tenant)}</code></span>`
+          : `<span class="muted">sin identificar</span>`
+      }</dd>
+      <dt>Conector</dt><dd>${
+        opts.upstream
+          ? `<code>${escapeHtml(opts.mcpUrl ?? "")}</code> <span class="muted">— activo</span>`
+          : `<span class="muted">sin servidor asignado todavía</span>`
+      }</dd>
     </dl>${reenviar}
     <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>

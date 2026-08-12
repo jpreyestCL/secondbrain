@@ -15,7 +15,7 @@ import { proxyMcp } from "./proxy.js";
 import { landingPageHtml } from "./landing-page.js";
 import { loginPageHtml } from "./login-page.js";
 import type { TenantRegistry } from "./tenants.js";
-import { createProvisioner, type Provisioner } from "./provision.js";
+import { createProvisioner, slugFromEmail, type Provisioner } from "./provision.js";
 import {
   registroPageHtml,
   registroExitoHtml,
@@ -557,7 +557,7 @@ export function buildApp(
     // 2) Aprovisionar su tenant (slug + puerto + contenedor) y mapearlo.
     try {
       const result = await provisioner.provision(email);
-      tenants.setMapping(email, result.upstreamUrl);
+      tenants.setMapping(email, result.upstreamUrl, result.slug);
       console.log(
         `[registro] tenant listo: ${email} -> ${result.upstreamUrl} (slug=${result.slug})`,
       );
@@ -818,7 +818,7 @@ export function buildApp(
 
     try {
       const result = await provisioner.provision(email);
-      tenants.setMapping(email, result.upstreamUrl);
+      tenants.setMapping(email, result.upstreamUrl, result.slug);
       deleteCookie(c, REGISTRO_COOKIE_NAME, { path: "/" });
       console.log(
         `[google] tenant listo: ${email} -> ${result.upstreamUrl} (slug=${result.slug})`,
@@ -924,11 +924,14 @@ export function buildApp(
       }))
       .sort((a, b) => b.lastUsed.localeCompare(a.lastUsed));
 
+    const entrada = tenants.resolveTenant(session.user.id, session.user.email);
     return c.html(
       cuentaPageHtml({
         email: session.user.email,
         emailVerified: Boolean(session.user.emailVerified),
-        upstream: tenants.resolveUpstream(session.user.id, session.user.email),
+        upstream: entrada?.url ?? null,
+        tenant: entrada?.slug ?? slugFromEmail(session.user.email),
+        mcpUrl: `${config.baseUrl.replace(/\/$/, "")}/mcp`,
         sessions,
         clients: await clientsOf(session.user.id),
         csrf: csrfToken(session.user.id, config.authSecret),
@@ -961,8 +964,16 @@ export function buildApp(
 
   app.get("/guia", async (c) => {
     const session = await requireSession(c);
+    const entrada = session
+      ? tenants.resolveTenant(session.user.id, session.user.email)
+      : null;
     return c.html(
       guiaPageHtml({
+        baseUrl: config.baseUrl,
+        // Con sesion, los ejemplos salen con el tenant real ya escrito. El slug
+        // guardado manda; el derivado del correo es el respaldo para los mapeos
+        // antiguos, anteriores a que se guardara.
+        tenant: session ? (entrada?.slug ?? slugFromEmail(session.user.email)) : null,
         session: session
           ? {
               email: session.user.email,
