@@ -31,11 +31,16 @@ Global flags: `--tenant <name>` (overrides config), `-v/--verbose`.
 Hard isolation per tenant:
 
 * State: `~/.brain/<tenant>/{ledger.sqlite, extracted/, chunks/, work/}`.
-* Graph: FalkorDB graph named `brain_<tenant>` (FalkorDriver `database=`).
+* Graph: the FalkorDB graph is named after the tenant (`jpreyest`), passed as
+  the FalkorDriver `database=`.
 * Active tenant comes from `tenant` in `~/.brain/config.toml`
   (default `jpreyest`), overridden by `brain --tenant <name> ...`.
-* `group_id` inside a tenant's graph is the document domain
-  (`personal`, `salud`, `finanzas`, `trabajo`, `proyectos`).
+* **`group_id` is the tenant, never the domain.** The FalkorDB driver uses
+  `group_id` as the graph name, so a domain there would make every tenant's
+  `salud` documents land in one shared graph — the exact leak the per-tenant
+  graph exists to prevent. The domain travels as metadata: `[<dominio>]`
+  prefixing the episode name, and a structured `source_description`
+  (`dominio: <d> | tipo: <t> | origen: <o>`). See rule 6 in `CLAUDE.md`.
 
 ## Configuration
 
@@ -49,13 +54,38 @@ Environment for `ingest-graph` / `expire`:
 |---|---|
 | `FALKORDB_HOST` / `FALKORDB_PORT` | FalkorDB address (default `localhost:6379`) |
 | `FALKORDB_USERNAME` / `FALKORDB_PASSWORD` | optional auth |
-| `OPENAI_API_KEY` | use OpenAI for LLM + embeddings (graphiti defaults) |
+| `LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL` | chat model used to extract entities |
+| `EMBEDDER_API_KEY` / `EMBEDDER_API_URL` / `EMBEDDER_MODEL` / `EMBEDDER_DIMENSIONS` | embeddings, configured **separately** |
+| `LLM_TIMEOUT_SECONDS` | per-request timeout for all three clients (default 120) |
+| `OPENAI_API_KEY` / `OPENAI_API_URL` / `MODEL_NAME` | legacy fallback for both when the split vars are unset |
 | `OLLAMA_BASE_URL` | use local Ollama (OpenAI-compatible endpoint) instead |
 | `OLLAMA_LLM_MODEL` / `OLLAMA_EMBED_MODEL` | Ollama model names |
 
-An LLM client is only configured when one of `OPENAI_API_KEY` /
+Chat and embeddings take **separate keys and URLs** on purpose: the working
+setup is gpt-4o-mini for extraction plus NVIDIA `nv-embed-v1` (4096 dims) for
+embeddings, and a single shared key sends one provider the other's credential
+(a 401 on every embedding call). Changing the embedder's provider or dimension
+corrupts semantic search on an existing graph — it cannot be undone by
+re-ingesting.
+
+An LLM client is only configured when one of `LLM_API_KEY` / `OPENAI_API_KEY` /
 `OLLAMA_BASE_URL` is present; otherwise `ingest-graph` exits with a config
 error.
+
+### Which graph am I writing to?
+
+`ingest-graph` writes **straight to FalkorDB**, so the destination is whatever
+`FALKORDB_HOST:FALKORDB_PORT` resolves to — with no record of it in the ledger.
+On a machine running the Docker stack, `127.0.0.1:6379` is the **local**
+FalkorDB, not the server's (which listens on the server's `:6380` and needs an
+explicit SSH tunnel on some *other* local port). Writing to the wrong one fails
+silently: the run succeeds, the ledger is consistent, and the data is simply
+absent from the graph anyone queries. Check with `docker ps` and
+`lsof -nP -iTCP:6379 -sTCP:LISTEN` before starting a batch.
+
+Use `--via mcp --url https://<host>/mcp` to push through the authenticated MCP
+endpoint instead; that path needs no tunnel and no model configuration, because
+the server supplies both.
 
 ## Classification manifest schema (schema_version 1)
 

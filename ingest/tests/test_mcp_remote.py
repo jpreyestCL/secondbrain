@@ -1,0 +1,176 @@
+"""Ingesta por el conector MCP (--via mcp): la vía que no requiere SSH."""
+
+import asyncio
+import json
+
+import pytest
+
+import brain_ingest.graph as graph_mod
+from brain_ingest.graph import ingest_chunks
+from brain_ingest.mcp_remote import ClienteMCP, McpRemoteError, _parse_sse
+
+
+class _ClienteFalso:
+    """Registra cada add_memory en vez de hablar con la red."""
+
+    def __init__(self, fallar=None):
+        self.llamadas = []
+        self.fallar = fallar
+
+    def llamar(self, nombre, argumentos, timeout=None):
+        self.llamadas.append((nombre, argumentos))
+        if self.fallar is not None:
+            exc = self.fallar(len(self.llamadas))
+            if exc is not None:
+                raise exc
+        return '{"message": "episodio encolado"}'
+
+
+def _prep_doc(cfg, ledger, chunks, path="/docs/escritura.pdf"):
+    _, doc_id = ledger.upsert_file(path, "sha-" + path, 10, 1e9)
+    ledger.set_classification(doc_id, "finanzas", "escritura", "2022-10-31", ["financial"])
+    (cfg.chunks_dir / f"{doc_id}.json").write_text(json.dumps(chunks), encoding="utf-8")
+    return doc_id
+
+
+def test_via_mcp_no_construye_cliente_de_falkordb(cfg, ledger, monkeypatch):
+    """Con --via mcp no debe tocarse FalkorDB ni pedirse claves de LLM.
+
+    Ese es el punto de la vía remota: quien no administra el servidor no tiene
+    ni acceso a la base ni por que configurar modelos.
+    """
+    def _explota(_tenant):
+        raise AssertionError("build_graphiti no debe llamarse en la via MCP")
+
+    monkeypatch.setattr(graph_mod, "build_graphiti", _explota)
+    doc_id = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso()
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    assert counts == {"docs": 1, "episodes": 1, "errors": 0, "skipped": 0}
+    assert ledger.get(doc_id).status == "ingested"
+
+
+def test_el_cliente_nunca_manda_group_id(cfg, ledger, monkeypatch):
+    """El group_id lo fuerza el servidor; mandarlo desde el cliente romperia
+    el aislamiento entre personas (regla 6 de CLAUDE.md)."""
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso()
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    [(nombre, args)] = falso.llamadas
+    assert nombre == "add_memory"
+    assert "group_id" not in args
+
+
+def test_metadatos_del_episodio_viajan_completos(cfg, ledger, monkeypatch):
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    doc_id = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 2, "text": "hola"}])
+
+    falso = _ClienteFalso()
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+    _, args = falso.llamadas[0]
+
+    assert args["name"].startswith("[finanzas] escritura.pdf [1/2]")
+    assert args["source_description"].startswith("dominio: finanzas | tipo: escritura")
+    assert f"doc_id={doc_id}" in args["source_description"]
+    # La fecha real del documento, no la de hoy (regla de oro 1).
+    assert args["reference_time"].startswith("2022-10-31")
+    assert args["source"] == "text"
+
+
+def test_el_uuid_lo_genera_el_cliente_y_queda_en_el_ledger(cfg, ledger, monkeypatch):
+    """add_memory encola en background sin devolver el uuid, asi que se le pasa
+    uno propio: es lo que permite que `brain expire` pueda borrarlo despues."""
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    doc_id = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso()
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    _, args = falso.llamadas[0]
+    [ep] = ledger.episodes_for_doc(doc_id)
+    assert ep["episode_uuid"] == args["uuid"]
+    assert ep["group_id"] == cfg.tenant
+
+
+def test_reanuda_sin_duplicar_por_mcp(cfg, ledger, monkeypatch):
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    doc_id = _prep_doc(
+        cfg,
+        ledger,
+        [
+            {"chunk_idx": 0, "total_chunks": 2, "text": "uno"},
+            {"chunk_idx": 1, "total_chunks": 2, "text": "dos"},
+        ],
+    )
+    ledger.record_episode("ya-estaba", doc_id, 0, cfg.tenant, domain="finanzas")
+
+    falso = _ClienteFalso()
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    assert counts["episodes"] == 1
+    assert len(falso.llamadas) == 1
+    assert "dos" in falso.llamadas[0][1]["episode_body"]
+
+
+def test_las_credenciales_se_redactan_tambien_por_mcp(cfg, ledger, monkeypatch):
+    """El texto sale de la maquina hacia un servidor remoto: la redaccion debe
+    ocurrir antes, igual que en la via directa."""
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    _prep_doc(
+        cfg,
+        ledger,
+        [{"chunk_idx": 0, "total_chunks": 1, "text": "el password: hunter2 del banco"}],
+    )
+
+    falso = _ClienteFalso()
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    cuerpo = falso.llamadas[0][1]["episode_body"]
+    assert "hunter2" not in cuerpo
+    assert "REDACTADA" in cuerpo
+
+
+def test_falla_de_un_documento_no_detiene_el_lote(cfg, ledger, monkeypatch):
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    monkeypatch.setattr(graph_mod, "RETRY_BASE_DELAY", 0)
+    _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "a"}], "/docs/a.pdf")
+    _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "b"}], "/docs/b.pdf")
+
+    falso = _ClienteFalso(
+        fallar=lambda n: McpRemoteError("401 del servidor MCP") if n == 1 else None
+    )
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    assert counts["errors"] == 1
+    assert counts["docs"] == 1
+
+
+def test_parse_sse_extrae_los_json():
+    cuerpo = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n'
+    assert list(_parse_sse(cuerpo)) == [{"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}]
+
+
+def test_structured_content_no_se_pierde(monkeypatch):
+    """FastMCP envuelve la salida en structuredContent; leer solo `content`
+    hacia ver vacias respuestas perfectamente validas."""
+    cli = ClienteMCP("https://ejemplo.cl", "tok")
+    monkeypatch.setattr(
+        cli, "_rpc", lambda *a, **k: {"content": [], "structuredContent": {"result": [1, 2]}}
+    )
+    assert json.loads(cli.llamar("x", {}))["result"] == [1, 2]
+
+
+def test_error_de_herramienta_se_propaga(monkeypatch):
+    cli = ClienteMCP("https://ejemplo.cl", "tok")
+    monkeypatch.setattr(
+        cli,
+        "_rpc",
+        lambda *a, **k: {"content": [{"type": "text", "text": "no autorizado"}], "isError": True},
+    )
+    with pytest.raises(McpRemoteError, match="no autorizado"):
+        cli.llamar("add_memory", {})

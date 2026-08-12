@@ -83,12 +83,30 @@ const CLI_COMMANDS: Array<[string, string]> = [
   ["version", "Imprime la versión del CLI."],
 ];
 
-const ENV_BLOCK = `ssh -f -N -L 16380:127.0.0.1:6380 usuario@servidor
+const INSTALL_BLOCK = `# 1) uv (gestor de Python)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2) el repo
+git clone https://github.com/jpreyestCL/secondbrain
+cd secondbrain/ingest
+
+# 3) dependencias (--all-extras trae el OCR de macOS Vision)
+uv sync --all-extras
+uv run brain --help`;
+
+const REMOTO_BLOCK = `brain --tenant <slug> ingest-graph --via mcp --url https://mybrain.rlz.cl/mcp`;
+
+const ENV_BLOCK = `# El puerto local NO puede ser 6379 si tienes Docker corriendo:
+# ese puerto ya lo publica el FalkorDB local y escribirias en el grafo equivocado.
+ssh -f -N -L 16380:127.0.0.1:6380 usuario@servidor
 
 export FALKORDB_HOST=127.0.0.1 FALKORDB_PORT=16380
 export FALKORDB_TENANT_USER=tenant_<slug> FALKORDB_TENANT_PASSWORD=<password del tenant>
-export OPENAI_API_KEY=<key> OPENAI_API_URL=https://integrate.api.nvidia.com/v1 MODEL_NAME=meta/llama-3.1-8b-instruct
-export EMBEDDER_API_URL=https://integrate.api.nvidia.com/v1 EMBEDDER_MODEL=nvidia/nv-embed-v1 EMBEDDER_DIMENSIONS=4096`;
+
+# Chat y embeddings llevan claves y URLs SEPARADAS.
+export LLM_MODEL=gpt-4o-mini LLM_API_URL=https://api.openai.com/v1 LLM_API_KEY=<key>
+export EMBEDDER_API_KEY=<key nvidia> EMBEDDER_API_URL=https://integrate.api.nvidia.com/v1
+export EMBEDDER_MODEL=nvidia/nv-embed-v1 EMBEDDER_DIMENSIONS=4096`;
 
 const PIPELINE_BLOCK = `brain --tenant <slug> scan ~/Documentos/inbox
 brain --tenant <slug> extract
@@ -255,6 +273,11 @@ ${toolRows}
     <p class="muted">Para cuando tienes cientos de documentos en el disco y adjuntarlos de
       a uno en el chat no tiene sentido. Requiere terminal.</p>
 
+    <h3>Instalar el CLI</h3>
+    <p class="muted">No se descarga aparte: vive en el repo del proyecto, en
+      <code>ingest/</code>.</p>
+    <pre><code>${escapeHtml(INSTALL_BLOCK)}</code></pre>
+
     <h3>El pipeline</h3>
     <p class="muted">Los pasos van en orden y cada uno deja su resultado en el ledger, así
       que puedes cortar y retomar donde ibas.</p>
@@ -279,17 +302,30 @@ ${cliRows}
       <li><strong>Tus originales no se tocan</strong>: el pipeline solo lee de la carpeta.</li>
     </ul>
 
-    <h3>Ingerir contra este servidor</h3>
-    <p class="muted">El CLI habla directo con FalkorDB, así que necesitas un túnel SSH y las
-      variables de entorno apuntando a él:</p>
+    <h3>Ingerir contra este servidor (sin SSH)</h3>
+    <p class="muted">Esta es la forma recomendada y la única disponible si no administras el
+      servidor. El último paso del pipeline se hace por el mismo conector MCP que usa Claude:
+      te autenticas con tu cuenta, el gateway te enruta a tu espacio y el servidor hace la
+      extracción con su propio modelo.</p>
+    <pre><code>${escapeHtml(REMOTO_BLOCK)}</code></pre>
+    <p class="muted">La primera vez se abre el navegador para autorizar; el token queda
+      guardado en <code>~/.brain/&lt;tenant&gt;/</code> y las siguientes no preguntan.
+      Los pasos anteriores (<code>scan</code>, <code>extract</code>, <code>classify</code>,
+      <code>chunk</code>) son locales y no necesitan nada de esto.</p>
+
+    <h3>Ingerir escribiendo directo a FalkorDB (requiere ser administrador)</h3>
+    <p class="muted">Más rápido para lotes muy grandes, porque evita la latencia del MCP,
+      pero FalkorDB solo escucha en el localhost del servidor: hace falta un túnel SSH y
+      configurar los modelos a mano.</p>
     <pre><code>${escapeHtml(ENV_BLOCK)}</code></pre>
 
     <p class="warn">⚠️ El modelo de embeddings y sus dimensiones DEBEN coincidir con los del
       servidor (<code>nvidia/nv-embed-v1</code>, <code>4096</code>). Si ingieres con otro
-      modelo u otra dimensión, la búsqueda semántica del grafo se corrompe.</p>
+      modelo u otra dimensión, la búsqueda semántica del grafo se corrompe. Por eso la vía
+      MCP es más segura: ahí los modelos los pone el servidor y no hay nada que igualar.</p>
 
-    <p class="notice"><strong>Alternativa sin terminal:</strong> adjunta los documentos en
-      Claude de a poco. La ingesta por MCP no requiere SSH ni variables de entorno.</p>
+    <p class="notice"><strong>Sin terminal:</strong> adjunta los documentos en Claude y pídele
+      que los guarde. No requiere instalar nada.</p>
   </section>
 
   <section id="accesos">

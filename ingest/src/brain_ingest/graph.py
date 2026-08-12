@@ -327,11 +327,49 @@ async def _add_episode_with_retry(graphiti, **kwargs):
             delay *= 2
 
 
+def _mcp_add_memory(
+    cliente,
+    *,
+    name: str,
+    episode_body: str,
+    source_description: str,
+    reference_time,
+    is_json: bool,
+) -> str:
+    """Empuja un episodio por el conector MCP y devuelve su uuid.
+
+    El uuid lo genera el CLIENTE y se le pasa al servidor: add_memory acepta uno
+    propio y encola en background sin devolverlo. Generarlo aqui es lo que
+    permite que el ledger registre el mismo identificador que el grafo, y por lo
+    tanto que `brain expire` pueda borrar ese episodio despues.
+
+    NO se manda group_id: el servidor MCP fuerza el del usuario autenticado, y
+    mandarlo desde el cliente seria justamente el atajo que rompe el aislamiento
+    entre personas.
+    """
+    import uuid as _uuid
+
+    episode_uuid = str(_uuid.uuid4())
+    cliente.llamar(
+        "add_memory",
+        {
+            "name": name,
+            "episode_body": episode_body,
+            "source": "json" if is_json else "text",
+            "source_description": source_description,
+            "reference_time": reference_time.isoformat(),
+            "uuid": episode_uuid,
+        },
+    )
+    return episode_uuid
+
+
 async def ingest_chunks(
     cfg: Config,
     ledger: Ledger,
     doc_ids: list[str] | None = None,
     force: bool = False,
+    remoto=None,
 ) -> dict[str, int]:
     """Push chunk files of classified docs to Graphiti as episodes.
 
@@ -339,13 +377,19 @@ async def ingest_chunks(
     skipped, so retrying a doc that failed mid-way resumes instead of
     duplicating episodes. Explicit ``doc_ids`` that are superseded or already
     ingested are rejected unless ``force`` is set.
+
+    ``remoto`` es un ``mcp_remote.ClienteMCP`` ya conectado. Con el, los
+    episodios se empujan por el conector MCP autenticado en vez de escribir
+    directo a FalkorDB — la unica via disponible para quien no administra el
+    servidor. El resto (ledger, reanudacion, redaccion) es identico.
     """
     from graphiti_core.nodes import EpisodeType
 
-    graphiti = build_graphiti(cfg.tenant)
+    graphiti = None if remoto is not None else build_graphiti(cfg.tenant)
     counts = {"docs": 0, "episodes": 0, "errors": 0, "skipped": 0}
     try:
-        await graphiti.build_indices_and_constraints()
+        if graphiti is not None:
+            await graphiti.build_indices_and_constraints()
 
         if doc_ids:
             rows = []
@@ -397,27 +441,40 @@ async def ingest_chunks(
                     result = redact(chunk["text"])
                     if result.flags:
                         ledger.add_sensitivity_flags(row.doc_id, result.flags)
-                    episode = await _add_episode_with_retry(
-                        graphiti,
-                        name=(
-                            f"[{domain}] {name_stem} "
-                            f"[{chunk['chunk_idx'] + 1}/{chunk['total_chunks']}]"
-                        ),
-                        episode_body=result.text,
-                        source_description=(
-                            f"dominio: {domain} | tipo: {row.doc_type or 'documento'} | "
-                            f"origen: documento {row.path} (doc_id={row.doc_id})"
-                        ),
-                        reference_time=_reference_time(row),
-                        source=EpisodeType.json if is_json else EpisodeType.text,
-                        # group_id is ALWAYS the tenant: the FalkorDB driver
-                        # uses it as the graph name. The domain is metadata
-                        # (name prefix + source_description + episodes.domain),
-                        # never a group_id.
-                        group_id=cfg.tenant,
+                    nombre = (
+                        f"[{domain}] {name_stem} "
+                        f"[{chunk['chunk_idx'] + 1}/{chunk['total_chunks']}]"
                     )
+                    descripcion = (
+                        f"dominio: {domain} | tipo: {row.doc_type or 'documento'} | "
+                        f"origen: documento {row.path} (doc_id={row.doc_id})"
+                    )
+                    if remoto is not None:
+                        episode_uuid = _mcp_add_memory(
+                            remoto,
+                            name=nombre,
+                            episode_body=result.text,
+                            source_description=descripcion,
+                            reference_time=_reference_time(row),
+                            is_json=is_json,
+                        )
+                    else:
+                        episode = await _add_episode_with_retry(
+                            graphiti,
+                            name=nombre,
+                            episode_body=result.text,
+                            source_description=descripcion,
+                            reference_time=_reference_time(row),
+                            source=EpisodeType.json if is_json else EpisodeType.text,
+                            # group_id is ALWAYS the tenant: the FalkorDB driver
+                            # uses it as the graph name. The domain is metadata
+                            # (name prefix + source_description + episodes.domain),
+                            # never a group_id.
+                            group_id=cfg.tenant,
+                        )
+                        episode_uuid = episode.episode.uuid
                     ledger.record_episode(
-                        episode.episode.uuid,
+                        episode_uuid,
                         row.doc_id,
                         chunk["chunk_idx"],
                         cfg.tenant,
@@ -433,7 +490,8 @@ async def ingest_chunks(
                 ledger.set_status(row.doc_id, "error", error=str(exc)[:500])
                 counts["errors"] += 1
     finally:
-        await graphiti.close()
+        if graphiti is not None:
+            await graphiti.close()
     return counts
 
 

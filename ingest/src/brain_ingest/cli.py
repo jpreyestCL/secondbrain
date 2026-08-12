@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
@@ -220,14 +221,53 @@ def ingest_graph(
     force: bool = typer.Option(
         False, "--force", help="Also process superseded/already-ingested doc_ids"
     ),
+    via: str = typer.Option(
+        "falkordb",
+        "--via",
+        help="falkordb (directo, requiere acceso al servidor) | mcp (por el conector, sin SSH)",
+    ),
+    url: Optional[str] = typer.Option(
+        None, "--url", help="URL del gateway MCP, ej https://mybrain.rlz.cl/mcp"
+    ),
 ) -> None:
-    """Push chunks of classified docs to Graphiti (FalkorDB) as episodes."""
+    """Push chunks of classified docs to Graphiti as episodes.
+
+    Por defecto escribe directo a FalkorDB, lo que exige alcanzarlo por red.
+    Con `--via mcp --url <gateway>/mcp` se empuja por el conector MCP
+    autenticado: no necesita SSH ni configurar modelos, porque los pone el
+    servidor.
+    """
     from .graph import GraphConfigError, ingest_chunks
 
+    if via not in ("falkordb", "mcp"):
+        console.print(f"[red]--via inválido:[/red] {via} (usa 'falkordb' o 'mcp')")
+        raise typer.Exit(2)
+    if via == "mcp" and not url:
+        console.print("[red]--via mcp requiere --url[/red] (ej: https://mybrain.rlz.cl/mcp)")
+        raise typer.Exit(2)
+    if via == "falkordb" and url:
+        console.print("[red]--url solo aplica con --via mcp[/red]")
+        raise typer.Exit(2)
+
     cfg, ledger = _open()
+    remoto = None
+    if via == "mcp":
+        from .mcp_remote import McpRemoteError, conectar
+
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        try:
+            remoto = conectar(base, cfg.tenant, cfg.home, path=parsed.path or "/mcp")
+        except McpRemoteError as exc:
+            console.print(f"[red]no se pudo conectar al MCP:[/red] {exc}")
+            raise typer.Exit(2)
+        console.print(f"conectado a {base} como tenant [bold]{cfg.tenant}[/bold]")
+
     try:
         with ledger:
-            counts = asyncio.run(ingest_chunks(cfg, ledger, doc_id or None, force=force))
+            counts = asyncio.run(
+                ingest_chunks(cfg, ledger, doc_id or None, force=force, remoto=remoto)
+            )
     except GraphConfigError as exc:
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(2)
