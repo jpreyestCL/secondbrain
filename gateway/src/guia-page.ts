@@ -25,43 +25,43 @@ interface Tool {
 const TOOLS: Tool[] = [
   {
     name: "add_memory",
-    what: "Guarda un episodio (texto, hecho o sección de documento) en tu grafo.",
+    what: "Guarda un dato o un trozo de documento en tu memoria.",
     params:
       "name, episode_body, source, source_description, group_id, uuid, reference_time",
   },
   {
     name: "search_memory_facts",
-    what: "Busca hechos (relaciones entre entidades) por semántica.",
+    what: "Busca datos: qué se relaciona con qué, y desde cuándo.",
     params: "query, group_ids, max_facts, center_node_uuid, only_current",
   },
   {
     name: "search_nodes",
-    what: "Busca entidades (personas, cuentas, empresas, documentos…).",
+    what: "Busca personas, empresas, cuentas, lugares y documentos.",
     params: "query, max_nodes, entity_types",
   },
   {
     name: "get_episodes",
-    what: "Lista los episodios más recientes, con su texto original.",
+    what: "Lista lo último guardado, con su texto original.",
     params: "max_episodes, group_ids",
   },
   {
     name: "get_entity_edge",
-    what: "Devuelve un hecho concreto por su UUID, con su vigencia.",
+    what: "Devuelve un dato concreto por su identificador, con su vigencia.",
     params: "uuid",
   },
   {
     name: "delete_entity_edge",
-    what: "Borra un hecho concreto (por ejemplo, uno mal extraído).",
+    what: "Borra un dato concreto (por ejemplo, uno mal entendido).",
     params: "uuid",
   },
   {
     name: "delete_episode",
-    what: "Borra un episodio completo y lo que derivó de él.",
+    what: "Borra un documento guardado y todo lo que se dedujo de él.",
     params: "uuid",
   },
   {
     name: "clear_graph",
-    what: "Vacía el grafo entero. DESTRUCTIVO: no hay deshacer.",
+    what: "Borra TODA tu memoria. No hay deshacer.",
     params: "group_ids",
   },
   {
@@ -282,7 +282,7 @@ ${toolRows}
       <li><code>reference_time</code> es ISO-8601 y es la <strong>fecha real del hecho</strong>.
         El servidor valida que caiga entre 1900 y como máximo un año en el futuro.</li>
       <li><code>only_current</code> viene en <code>true</code> por defecto: devuelve solo los
-        hechos vigentes. Ponlo en <code>false</code> para incluir los invalidados y ver la
+        datos vigentes. Ponlo en <code>false</code> para incluir los que ya cambiaron y ver la
         historia completa.</li>
       <li><code>clear_graph</code> es destructivo y no tiene deshacer. Exporta antes desde
         <a href="/export">/export</a> si tienes cualquier duda.</li>

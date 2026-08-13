@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { ServerType } from "@hono/node-server";
 import type Database from "better-sqlite3";
 import fs from "node:fs";
+import { cuentaPageHtml } from "../src/cuenta-page.js";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/env.js";
@@ -214,5 +215,72 @@ describe("instalador del CLI", () => {
     expect(script).toContain("brain login");
     // --frozen es lo que impide que uv resuelva versiones no probadas.
     expect(script).toContain("--frozen");
+  });
+});
+
+describe("resumen de la memoria", () => {
+  const resumen = {
+    documentos: 17,
+    fragmentos: 47,
+    personasYEmpresas: 124,
+    datosActuales: 137,
+    datosQueCambiaron: 3,
+    porDominio: { finanzas: 12, personal: 5 },
+    ultimos: [
+      { documento: "[finanzas] Escritura compraventa.pdf", dominio: "finanzas", guardado: "2026-08-13T01:00:00Z" },
+    ],
+  };
+
+  it("habla en palabras que el usuario entiende, no en jerga del grafo", async () => {
+    const html = cuentaPageHtml({
+      email: "a@b.cl", emailVerified: true, upstream: "http://x/mcp", mcpUrl: "https://y/mcp",
+      tenant: "ana", sessions: [], clients: [], csrf: "t", resumen,
+    });
+    expect(html).toContain("documentos guardados");
+    expect(html).toContain("datos que sé de ti");
+    expect(html).toContain("personas, empresas y lugares");
+    // Nadie sabe qué es un episodio, una entidad o un hecho vigente.
+    expect(html).not.toContain("episodio");
+    expect(html).not.toContain("entidades");
+    expect(html).not.toContain("hechos vigentes");
+    expect(html).toContain("17");
+    expect(html).toContain("Escritura compraventa.pdf");
+  });
+
+  it("con la memoria vacía invita a guardar en vez de mostrar ceros", async () => {
+    const html = cuentaPageHtml({
+      email: "a@b.cl", emailVerified: true, upstream: "http://x/mcp", mcpUrl: "https://y/mcp",
+      tenant: "ana", sessions: [], clients: [], csrf: "t",
+      resumen: { ...resumen, documentos: 0, datosActuales: 0, personasYEmpresas: 0, ultimos: [] },
+    });
+    expect(html).toContain("Todavía no has guardado nada");
+    expect(html).toContain("brain add");
+  });
+
+  it("omite la sección si el servidor no sabe responder el resumen", async () => {
+    // Un servidor viejo sin get_stats: mostrar ceros se leería como "no tienes
+    // nada guardado", que es el mensaje equivocado.
+    const html = cuentaPageHtml({
+      email: "a@b.cl", emailVerified: true, upstream: "http://x/mcp", mcpUrl: "https://y/mcp",
+      tenant: "ana", sessions: [], clients: [], csrf: "t", resumen: null,
+    });
+    expect(html).not.toContain("Tu memoria");
+    expect(html).toContain("Tu cuenta");
+  });
+
+  it("marca los datos que ya no están vigentes", async () => {
+    const html = cuentaPageHtml({
+      email: "a@b.cl", emailVerified: true, upstream: "http://x/mcp", mcpUrl: "https://y/mcp",
+      tenant: "ana", sessions: [], clients: [], csrf: "t", resumen,
+      busqueda: {
+        consulta: "cuenta bancaria",
+        datos: [
+          { texto: "Cuenta Banco de Chile 123", desde: "2024-03-10", hasta: "2026-08-01" },
+          { texto: "Cuenta Santander 456", desde: "2026-08-01", hasta: null },
+        ],
+      },
+    });
+    expect(html).toContain("ya no vigente desde");
+    expect(html).toContain("Cuenta Santander 456");
   });
 });

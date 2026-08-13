@@ -91,7 +91,7 @@ export interface ExportOptions {
 }
 
 /** Cliente JSON-RPC mínimo para el transporte streamable-HTTP de MCP. */
-class McpHttpClient {
+export class McpHttpClient {
   private id = 0;
   private sessionId: string | null = null;
   constructor(
@@ -287,4 +287,93 @@ export async function exportGraph(
   out.facts = unionByUuid(factLists).slice(0, maxNodes);
 
   return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// Resumen y búsqueda para el panel web
+// ---------------------------------------------------------------------------
+
+/** Resumen de lo guardado, en el vocabulario del usuario (no en el de Graphiti). */
+export interface ResumenMemoria {
+  documentos: number;
+  fragmentos: number;
+  personasYEmpresas: number;
+  datosActuales: number;
+  datosQueCambiaron: number;
+  porDominio: Record<string, number>;
+  ultimos: Array<{ documento: string; dominio: string; guardado: string }>;
+}
+
+function comoNumero(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * Pide el resumen al MCP del tenant.
+ *
+ * Devuelve null si el servidor no expone `get_stats` (versión anterior del
+ * patch): el panel entonces omite la sección en vez de mostrar ceros, que se
+ * leerían como "no tienes nada guardado" — exactamente el mensaje equivocado.
+ */
+export async function resumenMemoria(
+  upstreamUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ResumenMemoria | null> {
+  const client = new McpHttpClient(upstreamUrl, fetchImpl);
+  try {
+    await client.initialize();
+    const crudo = (await client.callTool("get_stats", {})) as Record<string, unknown> | null;
+    if (!crudo || typeof crudo !== "object" || "error" in crudo) return null;
+    const dominios = (crudo.por_dominio ?? {}) as Record<string, unknown>;
+    const porDominio: Record<string, number> = {};
+    for (const [k, v] of Object.entries(dominios)) porDominio[k] = comoNumero(v);
+    return {
+      documentos: comoNumero(crudo.documentos),
+      fragmentos: comoNumero(crudo.fragmentos),
+      personasYEmpresas: comoNumero(crudo.personas_y_empresas),
+      datosActuales: comoNumero(crudo.datos_actuales),
+      datosQueCambiaron: comoNumero(crudo.datos_que_cambiaron),
+      porDominio,
+      ultimos: Array.isArray(crudo.ultimos_documentos)
+        ? (crudo.ultimos_documentos as ResumenMemoria["ultimos"])
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Un dato encontrado, con su vigencia. */
+export interface DatoEncontrado {
+  texto: string;
+  desde: string | null;
+  hasta: string | null;
+}
+
+/** Busca datos en la memoria del usuario. Vacío si el upstream falla. */
+export async function buscarDatos(
+  upstreamUrl: string,
+  consulta: string,
+  fetchImpl: typeof fetch = fetch,
+  maximo = 15,
+): Promise<DatoEncontrado[]> {
+  const client = new McpHttpClient(upstreamUrl, fetchImpl);
+  try {
+    await client.initialize();
+    const crudo = (await client.callTool("search_memory_facts", {
+      query: consulta,
+      max_facts: maximo,
+    })) as Record<string, unknown> | null;
+    const lista = (crudo?.facts ?? crudo?.result ?? []) as Array<Record<string, unknown>>;
+    return (Array.isArray(lista) ? lista : [])
+      .map((f) => ({
+        texto: String(f.fact ?? f.name ?? ""),
+        desde: (f.valid_at as string) ?? null,
+        hasta: (f.invalid_at as string) ?? null,
+      }))
+      .filter((f) => f.texto);
+  } catch {
+    return [];
+  }
 }

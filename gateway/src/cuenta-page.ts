@@ -47,6 +47,18 @@ export interface CuentaPageOptions {
   tenant?: string | null;
   /** URL pública del conector (la que se pega en claude.ai). */
   mcpUrl?: string;
+  /** Resumen de lo guardado; null si el servidor aún no expone get_stats. */
+  resumen?: {
+    documentos: number;
+    fragmentos: number;
+    personasYEmpresas: number;
+    datosActuales: number;
+    datosQueCambiaron: number;
+    porDominio: Record<string, number>;
+    ultimos: Array<{ documento: string; dominio: string; guardado: string }>;
+  } | null;
+  /** Resultados de una búsqueda hecha desde el panel. */
+  busqueda?: { consulta: string; datos: Array<{ texto: string; desde: string | null; hasta: string | null }> } | null;
   sessions: CuentaSessionView[];
   clients: CuentaClientView[];
   csrf: string;
@@ -130,6 +142,99 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
         .join("\n")
     : `    <p class="muted">Todavía no has autorizado ninguna aplicación.</p>`;
 
+  const r = opts.resumen;
+  const fmtFecha = (v: string) => {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime())
+      ? ""
+      : d.toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+  };
+
+  // Deliberadamente en el vocabulario del usuario: "documentos" y "datos", no
+  // "episodios", "entidades" ni "hechos vigentes". Nadie sabe que es un
+  // episodio, y contar fragmentos en vez de archivos confunde mas que informa.
+  const seccionResumen = !r
+    ? ""
+    : r.documentos === 0
+      ? `
+  <section>
+    <p class="eyebrow">Tu memoria</p>
+    <h2>Todavía no has guardado nada</h2>
+    <p class="muted">Adjunta un documento en Claude y pídele que lo guarde, o usa
+      <code>brain add &lt;carpeta&gt;</code> desde la terminal.</p>
+  </section>`
+      : `
+  <section>
+    <p class="eyebrow">Tu memoria</p>
+    <h2>Qué tienes guardado</h2>
+    <div class="figures">
+      <div class="fig"><b>${r.documentos}</b><span>documentos guardados</span></div>
+      <div class="fig"><b>${r.datosActuales}</b><span>datos que sé de ti</span></div>
+      <div class="fig"><b>${r.personasYEmpresas}</b><span>personas, empresas y lugares</span></div>${
+        r.datosQueCambiaron > 0
+          ? `
+      <div class="fig"><b>${r.datosQueCambiaron}</b><span>datos que cambiaron</span></div>`
+          : ""
+      }
+    </div>${
+      Object.keys(r.porDominio).length
+        ? `
+    <p class="muted">Por tema: ${Object.entries(r.porDominio)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `<strong>${escapeHtml(k)}</strong> ${v}`)
+      .join(" · ")}</p>`
+        : ""
+    }${
+      r.ultimos.length
+        ? `
+    <h3>Lo último que guardaste</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Documento</th><th>Tema</th><th>Guardado</th></tr></thead>
+      <tbody>
+${r.ultimos
+  .map(
+    (u) =>
+      `        <tr><td>${escapeHtml(u.documento)}</td><td>${escapeHtml(
+        u.dominio || "—",
+      )}</td><td>${escapeHtml(fmtFecha(u.guardado))}</td></tr>`,
+  )
+  .join("\n")}
+      </tbody>
+    </table></div>`
+        : ""
+    }
+  </section>
+
+  <section>
+    <p class="eyebrow">Consultar</p>
+    <h2>Buscar en tu memoria</h2>
+    <p class="muted">Lo mismo que le preguntarías a Claude, sin salir de aquí.</p>
+    <form method="get" action="/cuenta" class="buscador">
+      <input type="search" name="q" placeholder="¿cuál es mi cuenta bancaria?"
+             value="${escapeHtml(opts.busqueda?.consulta ?? "")}" aria-label="Buscar">
+      <button type="submit">Buscar</button>
+    </form>${
+      opts.busqueda
+        ? opts.busqueda.datos.length
+          ? `
+    <ul class="hallazgos">${opts.busqueda.datos
+      .map(
+        (d) =>
+          `<li>${escapeHtml(d.texto)}${
+            d.hasta
+              ? ` <span class="pend">— ya no vigente desde ${escapeHtml(fmtFecha(d.hasta))}</span>`
+              : d.desde
+                ? ` <span class="muted">— desde ${escapeHtml(fmtFecha(d.desde))}</span>`
+                : ""
+          }</li>`,
+      )
+      .join("")}</ul>`
+          : `
+    <p class="muted">No encontré nada para «${escapeHtml(opts.busqueda.consulta)}».</p>`
+        : ""
+    }
+  </section>`;
+
   // Se muestra el conector PUBLICO, no el upstream interno: la direccion
   // 127.0.0.1:<puerto> del servidor no le sirve a nadie y expone topologia.
   const upstream = opts.upstream
@@ -171,12 +276,14 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
     <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>
 
+${seccionResumen}
+
   <section>
     <p class="eyebrow">Portabilidad</p>
     <h2>Exportar todo</h2>
-    <p class="muted">Descarga un archivo JSON con tu memoria completa: episodios
-      (texto original), entidades y hechos con su vigencia (<code>valid_at</code> /
-      <code>invalid_at</code>). Puede tardar unos segundos.</p>
+    <p class="muted">Descarga un archivo con toda tu memoria: el texto original de cada
+      documento, las personas y empresas que aparecen, y cada dato con la fecha desde la
+      que vale y hasta cuándo valió. Nada se queda dentro. Puede tardar unos segundos.</p>
     <p><a class="btn" href="/export">Descargar mi memoria (JSON)</a></p>
   </section>
 

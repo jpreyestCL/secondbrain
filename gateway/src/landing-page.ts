@@ -721,8 +721,9 @@ export function landingPageHtml(
       </div>
       <div>
         <b>Qué guarda el grafo</b>
-        <p>El episodio con el texto original, las entidades y relaciones que se extraen de él,
-          y la vigencia de cada hecho: desde cuándo y hasta cuándo fue verdad.</p>
+        <p>El texto original de cada documento, las personas y empresas que aparecen en él
+          y cómo se relacionan, y la vigencia de cada dato: desde cuándo y hasta cuándo fue
+          verdad.</p>
       </div>
       <div>
         <b>Nada se borra</b>
@@ -778,8 +779,9 @@ export function landingPageHtml(
     <div class="row rv" style="--i:2">
       <span class="mark yes" aria-hidden="true">↓</span>
       <h3>Salida sin fricción</h3>
-      <p>Tu memoria entera se descarga en un JSON cuando quieras: episodios, entidades y
-        hechos con su vigencia. Sin pedirle permiso a nadie.</p>
+      <p>Tu memoria entera se descarga en un archivo cuando quieras: el texto de tus
+        documentos, quiénes aparecen en ellos y cada dato con su vigencia. Sin pedirle
+        permiso a nadie.</p>
     </div>
   </div>
 </div></section>

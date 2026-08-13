@@ -403,7 +403,17 @@ export function dashboardShell(opts: DashboardShellOptions): string {
     } catch (e) {}
   })();
 </script>
-<style>${STYLE}</style>
+<style>${STYLE}
+    .buscador { display: flex; gap: .5rem; margin: .75rem 0 1rem; max-width: 34rem; }
+    .buscador input { flex: 1; padding: .55rem .7rem; font: inherit;
+      border: 1px solid var(--linea, #d9d4c7); border-radius: 2px; background: transparent;
+      color: inherit; }
+    .buscador button { padding: .55rem 1rem; font: inherit; cursor: pointer;
+      border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 2px; }
+    .hallazgos { list-style: none; padding: 0; margin: 0; }
+    .hallazgos li { padding: .6rem 0; border-bottom: 1px solid var(--linea, #e6e1d5);
+      line-height: 1.5; }
+  </style>
 </head>
 <body>
 <div class="progress" id="progress" aria-hidden="true"></div>

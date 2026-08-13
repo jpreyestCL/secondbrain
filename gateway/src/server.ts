@@ -45,7 +45,7 @@ import {
   type CuentaSessionView,
 } from "./cuenta-page.js";
 import { CSRF_FIELD, csrfToken, verifyCsrfToken, isSameOrigin } from "./csrf.js";
-import { exportGraph } from "./export.js";
+import { exportGraph, resumenMemoria, buscarDatos } from "./export.js";
 import { guiaPageHtml } from "./guia-page.js";
 import {
   REGISTRO_COOKIE_NAME,
@@ -927,8 +927,19 @@ export function buildApp(
       .sort((a, b) => b.lastUsed.localeCompare(a.lastUsed));
 
     const entrada = tenants.resolveTenant(session.user.id, session.user.email);
+    // El resumen y la búsqueda salen del MCP del propio usuario. Si el upstream
+    // no responde, se omiten: la página de cuenta debe seguir funcionando.
+    const consulta = (c.req.query("q") ?? "").trim();
+    const [resumen, encontrados] = entrada?.url
+      ? await Promise.all([
+          resumenMemoria(entrada.url),
+          consulta ? buscarDatos(entrada.url, consulta) : Promise.resolve([]),
+        ])
+      : [null, []];
     return c.html(
       cuentaPageHtml({
+        resumen,
+        busqueda: consulta ? { consulta, datos: encontrados } : null,
         email: session.user.email,
         emailVerified: Boolean(session.user.emailVerified),
         upstream: entrada?.url ?? null,

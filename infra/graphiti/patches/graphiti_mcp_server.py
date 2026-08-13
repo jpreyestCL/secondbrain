@@ -866,6 +866,124 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
         return ErrorResponse(error=f'Error clearing graph: {error_msg}')
 
 
+# PATCH (secondbrain): resumen del contenido del grafo.
+#
+# No existia forma de saber CUANTO hay guardado: get_episodes trae los ultimos
+# N y las busquedas exigen una consulta semantica. Sin un conteo, el panel web
+# no puede decirle al usuario si sus documentos llegaron — y esa ceguera ya
+# costo caro: 41 fragmentos rechazados por el servidor pasaron por exitosos
+# hasta que alguien le pregunto a Claude y no encontro nada.
+#
+# Los nombres de la respuesta estan en el vocabulario del USUARIO (documentos,
+# personas, datos), no en el interno de Graphiti (episodios, nodos, aristas).
+@mcp.tool()
+async def get_stats() -> dict[str, Any] | ErrorResponse:
+    """Resumen de lo que hay guardado: cuantos documentos, personas y datos.
+
+    Devuelve conteos, el desglose por dominio y los ultimos documentos
+    guardados. Barato: son consultas de conteo, no recorre el grafo.
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    tenant = _tenant_group_id()
+    try:
+        client = await graphiti_service.get_client()
+
+        async def uno(cypher: str, defecto=0):
+            async with client.driver.session() as session:
+                res = await session.run(cypher, group_id=tenant)
+                filas = [r async for r in res]
+                if not filas:
+                    return defecto
+                valores = list(filas[0].values()) if hasattr(filas[0], 'values') else filas[0]
+                return valores[0] if valores else defecto
+
+        async def muchos(cypher: str):
+            async with client.driver.session() as session:
+                res = await session.run(cypher, group_id=tenant)
+                return [list(r.values()) if hasattr(r, 'values') else r async for r in res]
+
+        fragmentos = await uno(
+            'MATCH (n:Episodic) WHERE n.group_id = $group_id RETURN count(n)'
+        )
+        personas = await uno(
+            'MATCH (n:Entity) WHERE n.group_id = $group_id RETURN count(n)'
+        )
+        vigentes = await uno(
+            'MATCH ()-[e:RELATES_TO]->() WHERE e.group_id = $group_id '
+            'AND e.invalid_at IS NULL RETURN count(e)'
+        )
+        historicos = await uno(
+            'MATCH ()-[e:RELATES_TO]->() WHERE e.group_id = $group_id '
+            'AND e.invalid_at IS NOT NULL RETURN count(e)'
+        )
+        # Un documento puede ocupar varios fragmentos: el nombre lleva el sufijo
+        # "[i/n]" y el source_description el doc_id. Se cuentan documentos
+        # distintos, que es la unidad en la que piensa el usuario.
+        documentos = await uno(
+            'MATCH (n:Episodic) WHERE n.group_id = $group_id '
+            'WITH DISTINCT split(n.name, " [")[0] AS doc RETURN count(doc)'
+        )
+        recientes = await muchos(
+            'MATCH (n:Episodic) WHERE n.group_id = $group_id '
+            'RETURN n.name, n.created_at, n.source_description '
+            'ORDER BY n.created_at DESC LIMIT 40'
+        )
+
+        por_dominio: dict[str, int] = {}
+        ultimos: list[dict[str, Any]] = []
+        vistos: set[str] = set()
+        for fila in recientes:
+            nombre = (fila[0] or '') if len(fila) > 0 else ''
+            creado = (fila[1] or '') if len(fila) > 1 else ''
+            descripcion = (fila[2] or '') if len(fila) > 2 else ''
+            dominio = ''
+            if descripcion.startswith('dominio: '):
+                dominio = descripcion[len('dominio: '):].split('|')[0].strip()
+            elif nombre.startswith('['):
+                dominio = nombre[1:].split(']')[0].strip()
+            documento = nombre.split(' [')[0].strip() or nombre
+            if documento and documento not in vistos:
+                vistos.add(documento)
+                ultimos.append(
+                    {'documento': documento, 'dominio': dominio, 'guardado': creado}
+                )
+        # El desglose por dominio se hace sobre TODO, no solo lo reciente.
+        todos = await muchos(
+            'MATCH (n:Episodic) WHERE n.group_id = $group_id '
+            'RETURN n.name, n.source_description'
+        )
+        docs_por_dominio: dict[str, set] = {}
+        for fila in todos:
+            nombre = (fila[0] or '') if len(fila) > 0 else ''
+            descripcion = (fila[1] or '') if len(fila) > 1 else ''
+            dominio = ''
+            if descripcion.startswith('dominio: '):
+                dominio = descripcion[len('dominio: '):].split('|')[0].strip()
+            elif nombre.startswith('['):
+                dominio = nombre[1:].split(']')[0].strip()
+            docs_por_dominio.setdefault(dominio or 'sin dominio', set()).add(
+                nombre.split(' [')[0].strip() or nombre
+            )
+        por_dominio = {k: len(v) for k, v in docs_por_dominio.items()}
+
+        return {
+            'documentos': documentos,
+            'fragmentos': fragmentos,
+            'personas_y_empresas': personas,
+            'datos_actuales': vigentes,
+            'datos_que_cambiaron': historicos,
+            'por_dominio': por_dominio,
+            'ultimos_documentos': ultimos[:10],
+        }
+    except Exception as e:
+        logger.error(f'Error en get_stats: {e}')
+        return ErrorResponse(error=f'Error obteniendo el resumen: {e}')
+
+
 @mcp.tool()
 async def get_status() -> StatusResponse:
     """Get the status of the Graphiti MCP server and database connection."""
