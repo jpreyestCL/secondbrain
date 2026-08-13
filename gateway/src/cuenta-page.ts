@@ -220,11 +220,15 @@ ${r.ultimos
     <p class="eyebrow">Consultar</p>
     <h2>Buscar en tu memoria</h2>
     <p class="muted">Lo mismo que le preguntarías a Claude, sin salir de aquí.</p>
-    <form method="get" action="/cuenta" class="buscador">
+    <form method="get" action="/cuenta" class="buscador" data-buscador>
       <input type="search" name="q" placeholder="¿cuál es mi cuenta bancaria?"
              value="${escapeHtml(opts.busqueda?.consulta ?? "")}" aria-label="Buscar">
       <button type="submit">Buscar</button>
-    </form>${
+    </form>
+    <p class="buscando" data-buscando hidden role="status">
+      <span class="giro" aria-hidden="true"></span>
+      Buscando en tu memoria… puede tardar unos segundos.
+    </p>${
       opts.busqueda
         ? opts.busqueda.datos.length
           ? `
@@ -321,6 +325,29 @@ ${r.ultimos
     <p><a href="/cuenta">← volver al resumen</a></p>
   </section>`;
 
+  // La busqueda va al servidor MCP y tarda segundos. Sin señal, el usuario
+  // pulsa Buscar y no pasa NADA: no sabe si funcionó, y vuelve a pulsar.
+  const guionBuscador = `
+<script>
+  (function () {
+    var form = document.querySelector("[data-buscador]");
+    var aviso = document.querySelector("[data-buscando]");
+    if (!form || !aviso) return;
+    form.addEventListener("submit", function () {
+      var boton = form.querySelector("button");
+      if (boton) { boton.disabled = true; boton.textContent = "Buscando…"; }
+      aviso.hidden = false;
+    });
+    // Lo mismo al abrir una constelación: es otra consulta al servidor.
+    document.querySelectorAll('a[href*="?entidad="]').forEach(function (a) {
+      a.addEventListener("click", function () {
+        a.style.opacity = "0.5";
+        aviso.hidden = false;
+      });
+    });
+  })();
+</script>`;
+
   const body = `  <section class="head">
     <p class="eyebrow">Panel personal</p>
     <h1>Tu cuenta</h1>${notice}
@@ -374,6 +401,6 @@ ${clientCards}
     title: "Tu cuenta",
     active: "cuenta",
     session: { email: opts.email, csrf: opts.csrf },
-    body,
+    body: body + guionBuscador,
   });
 }

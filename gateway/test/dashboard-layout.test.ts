@@ -116,17 +116,19 @@ describe("shell del dashboard", () => {
     expect(CUENTA).toContain("@media (max-width: 34rem)");
   });
 
-  it("las dos páginas comparten también el mismo script (una sola fuente)", () => {
+  it("las dos páginas comparten el script del shell (una sola fuente)", () => {
     const guia = guiaPageHtml();
     // El shell emite dos <script>: el que fija el tema antes de pintar (en el
     // <head>) y el de comportamiento (al final del <body>).
     for (const html of [CUENTA, guia]) {
-      expect(html.match(/<script>/g)?.length).toBe(2);
       expect(html).toContain('localStorage.setItem("sb-theme", next)');
       expect(html).toContain('aria-label="Cambiar entre tema claro y oscuro"');
     }
-    const behaviour = (html: string) => html.split("<script>").pop() ?? "";
-    expect(behaviour(guia)).toBe(behaviour(CUENTA));
+    expect(guia.match(/<script>/g)?.length).toBe(2);
+    // /cuenta añade UNO propio: es la única con buscador, y la búsqueda tarda
+    // segundos contra el servidor, así que necesita avisar que está trabajando.
+    expect(CUENTA.match(/<script>/g)?.length).toBe(3);
+    expect(CUENTA).toContain("data-buscando");
   });
 
   it("no carga nada de un tercero: sin fuentes, scripts ni imágenes remotas", () => {

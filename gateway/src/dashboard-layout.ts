@@ -415,7 +415,16 @@ export function dashboardShell(opts: DashboardShellOptions): string {
     .hallazgos li { padding: .6rem 0; border-bottom: 1px solid var(--linea, #e6e1d5);
       line-height: 1.5; }
   ${CONSTELACION_CSS}
-  </style>
+    .buscando { display: flex; align-items: center; gap: .55rem; margin: .2rem 0 1rem;
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted); }
+  .buscando[hidden] { display: none; }
+  .giro { width: .8rem; height: .8rem; border-radius: 50%;
+    border: 1.5px solid var(--line); border-top-color: var(--accent);
+    animation: giro 1s linear infinite; }
+  @keyframes giro { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .giro { animation: none; } }
+</style>
 </head>
 <body>
 <div class="progress" id="progress" aria-hidden="true"></div>
