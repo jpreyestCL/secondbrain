@@ -120,3 +120,39 @@ Detalles que sostienen el aislamiento:
 - La redacción de credenciales ocurre **antes** de salir de la máquina, igual que en la vía directa.
 
 **Consecuencias.** Por la vía MCP los modelos los pone el servidor, así que desaparece la clase de error irreversible de la dimensión de embeddings, y no hay nada que configurar en el cliente. A cambio se hereda una limitación real del servidor: **la cola de episodios del MCP es en memoria**, y `add_memory` responde al encolar, no al terminar de procesar. Un reinicio del servidor con episodios en vuelo los pierde silenciosamente, aunque el ledger ya los dé por ingeridos. Para lotes grandes falta un paso de verificación posterior que consulte qué llegó de verdad y reencole lo faltante; hasta que exista, la vía directa sigue siendo la más segura para volúmenes altos bajo control del administrador.
+
+---
+
+## ADR-008 — Destilado opcional por carpeta: `--destilar`
+
+- **Fecha**: 2026-08
+- **Estado**: propuesta (diseño; falta implementar)
+
+**Contexto.** ADR-002 decidió que la lectura y clasificación las hiciera Claude con la suscripción y no la API, y así funciona `classify`. Pero la promesa de "el único uso de API son los embeddings" dejó de cumplirse por una razón ajena a nosotros: **Graphiti corre su propia extracción con LLM en cada `add_episode`**. No es opcional — es lo que construye entidades y aristas. Da igual quién prepare el texto: enviarlo cuesta.
+
+El costo es proporcional al texto enviado. La carpeta `Documents/Sociedades` produce **8.550 fragmentos** (~USD 34, ~12 h) y buena parte es articulado repetitivo de contratos, cartolas y planillas — el mismo material que ensuciaba el grafo con entidades como "General Partner" antes de arreglar la ontología.
+
+**Decisión.** Un modo **opcional y por carpeta** en el que Claude, dentro de una sesión (suscripción), condensa el documento a hechos y se envían esos hechos en vez del texto crudo. Reutiliza el patrón de manifiesto de ADR-002, sin maquinaria nueva:
+
+```
+brain add <carpeta> --destilar _Duplicados --destilar Cartolas
+```
+
+1. `scan` / `extract` / `classify` igual que siempre (locales, sin costo).
+2. `chunk` trocea normal **salvo** los documentos bajo una ruta `--destilar`, que quedan en estado `por-destilar`.
+3. `brain destilar` emite un manifiesto con el texto extraído de esos documentos.
+4. Claude lo completa con los hechos (skill `/ingest`).
+5. `brain destilar --apply` escribe esos hechos como los fragmentos de ese documento.
+6. `ingest-graph` los envía como cualquier otro.
+
+**Invariantes que el diseño debe respetar:**
+
+- **Nunca por defecto.** Destilar es irreversible: el texto crudo se puede resumir después, un resumen no vuelve a ser el original. La opción se pide explícitamente y por carpeta.
+- **El grafo debe saber qué es textual y qué es resumen.** El `source_description` lleva `origen: destilado` y el nombre del episodio el prefijo `[resumen]`. Sin esto, dentro de un año nadie distingue una cita de una interpretación — y una respuesta resumida presentada como textual es peor que no tener el dato.
+- **La procedencia sobrevive.** El ledger conserva ruta y `sha256` del original; el episodio apunta al archivo. El destilado no reemplaza al documento, solo a su representación en el grafo.
+- **La fecha real manda igual** (regla de oro 1): los hechos destilados heredan el `doc_date` del documento, no la fecha de la sesión.
+- **Los secretos se redactan antes**, como en el resto del pipeline.
+
+**Consecuencias.** El ahorro estimado en `Sociedades` es de ~USD 34 a ~5, con un grafo más limpio. A cambio se pierde: el texto literal en el grafo (queda en disco), lo que Claude no consideró relevante, la reproducibilidad (dos sesiones destilan distinto) y superficie de búsqueda semántica — menos texto guardado son menos vectores donde una pregunta pueda enganchar. Por eso la recomendación de uso es híbrida: destilar cartolas, planillas, reportes repetitivos y duplicados; conservar crudos escrituras, contratos firmados, exámenes médicos y correspondencia, que son los que algún día se van a querer citar textualmente.
+
+**Riesgo asumido.** El destilado consume cuota de suscripción y atención humana en vez de dinero, y para volúmenes grandes requiere varias sesiones. El manifiesto debe acotar cuánto texto lleva por documento y el ledger registrar qué quedó destilado, para poder reanudar.
