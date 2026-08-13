@@ -1,8 +1,11 @@
 """Queue service for managing episode processing."""
 
 import asyncio
+import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -125,6 +128,90 @@ class QueueService:
         self._graphiti_client = graphiti_client
         logger.info('Queue service initialized with graphiti client')
 
+    # ---- diario de pendientes (PATCH secondbrain) -------------------------
+
+    @property
+    def _dir_diario(self) -> 'Path':
+        ruta = Path(os.environ.get('BRAIN_QUEUE_DIR', '/tmp/brain-queue'))
+        ruta.mkdir(parents=True, exist_ok=True)
+        return ruta
+
+    def _anotar_pendiente(
+        self, group_id, name, content, source_description, episode_type, uuid, reference_time
+    ) -> 'Path | None':
+        """Deja el episodio anotado en disco antes de procesarlo."""
+        try:
+            clave = uuid or f'{group_id}-{abs(hash((name, content))):x}'
+            destino = self._dir_diario / f'{clave}.json'
+            destino.write_text(
+                json.dumps(
+                    {
+                        'group_id': group_id,
+                        'name': name,
+                        'content': content,
+                        'source_description': source_description,
+                        'episode_type': getattr(episode_type, 'value', str(episode_type)),
+                        'uuid': uuid,
+                        'reference_time': reference_time.isoformat() if reference_time else None,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            return destino
+        except Exception as e:  # anotar no debe impedir procesar
+            logger.warning(f'No se pudo anotar el episodio pendiente: {e}')
+            return None
+
+    def _olvidar_pendiente(self, ruta: 'Path | None') -> None:
+        if ruta is None:
+            return
+        try:
+            ruta.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f'No se pudo borrar la anotacion {ruta}: {e}')
+
+    async def recuperar_pendientes(self, entity_types: Any = None) -> int:
+        """Reencola lo que quedo a medias en un reinicio anterior.
+
+        Se llama al arrancar. Sin esto, un `systemctl restart` durante una
+        ingesta pierde episodios que el cliente ya dio por aceptados.
+        """
+        from graphiti_core.nodes import EpisodeType
+
+        recuperados = 0
+        for archivo in sorted(self._dir_diario.glob('*.json')):
+            try:
+                d = json.loads(archivo.read_text(encoding='utf-8'))
+            except Exception:
+                archivo.unlink(missing_ok=True)
+                continue
+            archivo.unlink(missing_ok=True)  # se reescribe al reencolar
+            try:
+                tipo = EpisodeType(d.get('episode_type') or 'text')
+            except ValueError:
+                tipo = EpisodeType.text
+            fecha = None
+            if d.get('reference_time'):
+                try:
+                    fecha = datetime.fromisoformat(d['reference_time'])
+                except ValueError:
+                    fecha = None
+            await self.add_episode(
+                group_id=d['group_id'],
+                name=d.get('name') or 'episodio recuperado',
+                content=d.get('content') or '',
+                source_description=d.get('source_description') or '',
+                episode_type=tipo,
+                entity_types=entity_types,
+                uuid=d.get('uuid'),
+                reference_time=fecha,
+            )
+            recuperados += 1
+        if recuperados:
+            logger.info(f'Recuperados {recuperados} episodio(s) de un reinicio anterior')
+        return recuperados
+
     async def add_episode(
         self,
         group_id: str,
@@ -154,6 +241,15 @@ class QueueService:
         if self._graphiti_client is None:
             raise RuntimeError('Queue service not initialized. Call initialize() first.')
 
+        # PATCH (secondbrain): diario en disco. La cola vive en memoria, asi
+        # que un reinicio con episodios en vuelo los perdia EN SILENCIO — el
+        # cliente ya habia recibido "encolado". Paso dos veces. Cada episodio
+        # se anota antes de procesarse y se borra al terminar; lo que quede en
+        # el diario al arrancar se reencola.
+        pendiente = self._anotar_pendiente(
+            group_id, name, content, source_description, episode_type, uuid, reference_time
+        )
+
         async def process_episode():
             """Process the episode using the graphiti client."""
             try:
@@ -181,6 +277,7 @@ class QueueService:
                 )
 
                 logger.info(f'Successfully processed episode {uuid} for group {group_id}')
+                self._olvidar_pendiente(pendiente)
 
             except Exception as e:
                 logger.error(f'Failed to process episode {uuid} for group {group_id}: {str(e)}')

@@ -18,6 +18,9 @@
 set -euo pipefail
 
 REPO_URL="${BRAIN_REPO_URL:-https://github.com/jpreyestCL/secondbrain.git}"
+# Version a instalar. Fijala (BRAIN_REF=<commit>) si no quieres seguir main:
+# esto se ejecuta con `curl | sh`, asi que conviene saber QUE se instalo.
+REF="${BRAIN_REF:-main}"
 DESTINO="${BRAIN_HOME_DIR:-$HOME/.local/share/secondbrain}"
 BIN_DIR="${BRAIN_BIN_DIR:-$HOME/.local/bin}"
 # Servidor sugerido para `brain login`. Se puede fijar al servir el script.
@@ -53,11 +56,13 @@ paso "2/4  Descargando el CLI"
 if [ -d "$DESTINO/.git" ]; then
   info "actualizando $DESTINO"
   git -C "$DESTINO" fetch --quiet origin
-  git -C "$DESTINO" reset --quiet --hard origin/main
+  git -C "$DESTINO" reset --quiet --hard "origin/${REF}" 2>/dev/null \
+    || git -C "$DESTINO" reset --quiet --hard "$REF"
 else
   info "clonando en $DESTINO"
   mkdir -p "$(dirname "$DESTINO")"
-  git clone --quiet --depth 1 "$REPO_URL" "$DESTINO"
+  git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$DESTINO" 2>/dev/null \
+    || { git clone --quiet "$REPO_URL" "$DESTINO" && git -C "$DESTINO" checkout --quiet "$REF"; }
 fi
 
 paso "3/4  Preparando el entorno"
@@ -78,7 +83,9 @@ SH
 chmod +x "$BIN_DIR/brain"
 info "$BIN_DIR/brain"
 
-printf '\n\033[32mInstalado.\033[0m\n\n'
+COMMIT="$(git -C "$DESTINO" rev-parse --short HEAD 2>/dev/null || echo '?')"
+printf '\n\033[32mInstalado.\033[0m  version %s  (repo: %s)\n' "$COMMIT" "$REPO_URL"
+printf 'Verifica que ese commit exista en el repo publico antes de confiar en el.\n\n'
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

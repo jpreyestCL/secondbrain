@@ -360,10 +360,20 @@ def reconciliar_uuids(cliente, ledger: Ledger, espera: float | None = None) -> d
         except ValueError:
             espera = VERIFY_SECONDS
 
-    pendientes = {
-        e["episode_uuid"][len(PENDIENTE_PREFIJO) :]: e
-        for e in ledger.episodes_pendientes(PENDIENTE_PREFIJO)
-    }
+    filas = ledger.episodes_pendientes(PENDIENTE_PREFIJO)
+    pendientes: dict[str, object] = {}
+    ambiguos: set[str] = set()
+    for e in filas:
+        nombre = e["episode_uuid"][len(PENDIENTE_PREFIJO) :]
+        if nombre in pendientes:
+            # Dos documentos distintos con el mismo nombre de episodio: no hay
+            # forma de saber cual uuid corresponde a cual. Se prefiere no
+            # confirmar ninguno antes que asignarlos al azar.
+            ambiguos.add(nombre)
+        pendientes[nombre] = e
+    for nombre in ambiguos:
+        log.warning("nombre de episodio repetido, no se puede verificar: %s", nombre)
+        pendientes.pop(nombre, None)
     if not pendientes:
         return {"confirmados": 0, "faltantes": 0}
 

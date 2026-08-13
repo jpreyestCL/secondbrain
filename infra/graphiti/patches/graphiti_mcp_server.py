@@ -964,24 +964,19 @@ async def get_stats() -> dict[str, Any] | ErrorResponse:
                 ultimos.append(
                     {'documento': documento, 'dominio': dominio, 'guardado': creado}
                 )
-        # El desglose por dominio se hace sobre TODO, no solo lo reciente.
-        todos = await muchos(
+        # El desglose se agrega en la BASE, no recorriendo todos los episodios
+        # en Python: eso era O(n) en cada carga del panel y con volumen se nota.
+        por_dominio: dict[str, int] = {}
+        agregado = await muchos(
             'MATCH (n:Episodic) WHERE n.group_id = $group_id '
-            'RETURN n.name, n.source_description'
+            'WITH split(n.source_description, "dominio: ")[1] AS resto, '
+            '     split(n.name, " [")[0] AS doc, n.name AS nombre '
+            'WITH CASE WHEN resto IS NULL THEN "" ELSE split(resto, " |")[0] END AS dom, doc '
+            'RETURN dom, count(DISTINCT doc) ORDER BY count(DISTINCT doc) DESC'
         )
-        docs_por_dominio: dict[str, set] = {}
-        for fila in todos:
-            nombre = (fila[0] or '') if len(fila) > 0 else ''
-            descripcion = (fila[1] or '') if len(fila) > 1 else ''
-            dominio = ''
-            if descripcion.startswith('dominio: '):
-                dominio = descripcion[len('dominio: '):].split('|')[0].strip()
-            elif nombre.startswith('['):
-                dominio = nombre[1:].split(']')[0].strip()
-            docs_por_dominio.setdefault(dominio or 'sin dominio', set()).add(
-                nombre.split(' [')[0].strip() or nombre
-            )
-        por_dominio = {k: len(v) for k, v in docs_por_dominio.items()}
+        for fila in agregado:
+            clave = (fila[0] or '').strip() or 'sin tema'
+            por_dominio[clave] = por_dominio.get(clave, 0) + int(fila[1] or 0)
 
         return {
             'documentos': documentos,
@@ -1243,6 +1238,13 @@ async def initialize_server() -> ServerConfig:
 
     # Initialize queue service with the client
     await queue_service.initialize(graphiti_client)
+    # PATCH (secondbrain): reencolar lo que quedo a medias en un reinicio.
+    # La cola es en memoria; sin esto, un `systemctl restart` durante una
+    # ingesta pierde episodios que el cliente ya dio por aceptados.
+    try:
+        await queue_service.recuperar_pendientes(graphiti_service.entity_types)
+    except Exception as e:
+        logger.warning(f'No se pudieron recuperar episodios pendientes: {e}')
 
     # Set MCP server settings
     if config.server.host:

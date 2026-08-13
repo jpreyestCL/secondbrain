@@ -227,3 +227,23 @@ def test_error_de_herramienta_se_propaga(monkeypatch):
     )
     with pytest.raises(McpRemoteError, match="no autorizado"):
         cli.llamar("add_memory", {})
+
+
+def test_nombres_repetidos_no_se_confirman_al_azar(cfg, ledger, monkeypatch):
+    """Dos documentos con el mismo nombre de episodio son inverificables.
+
+    Asignar el uuid al azar dejaria el ledger apuntando al episodio equivocado,
+    y `brain expire` borraria el de otro documento.
+    """
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    monkeypatch.setenv("BRAIN_VERIFY_SECONDS", "0")
+    a = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "a"}], "/x/dup.pdf")
+    b = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "b"}], "/y/dup.pdf")
+
+    falso = _ClienteFalso()
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    # Ninguno queda con un uuid inventado del otro.
+    for doc in (a, b):
+        for ep in ledger.episodes_for_doc(doc):
+            assert not ep["episode_uuid"].startswith(graph_mod.PENDIENTE_PREFIJO)

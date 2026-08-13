@@ -328,6 +328,7 @@ export async function resumenMemoria(
     const dominios = (crudo.por_dominio ?? {}) as Record<string, unknown>;
     const porDominio: Record<string, number> = {};
     for (const [k, v] of Object.entries(dominios)) porDominio[k] = comoNumero(v);
+    if (typeof crudo.documentos !== "number") return null; // respuesta inesperada
     return {
       documentos: comoNumero(crudo.documentos),
       fragmentos: comoNumero(crudo.fragmentos),
@@ -339,7 +340,11 @@ export async function resumenMemoria(
         ? (crudo.ultimos_documentos as ResumenMemoria["ultimos"])
         : [],
     };
-  } catch {
+  } catch (e) {
+    // Tragarse el error en silencio hace que un upstream caido se vea igual
+    // que "este servidor no sabe responder el resumen" — el mismo patron de
+    // fallo silencioso que dejo pasar 41 episodios perdidos.
+    console.warn(`[resumen] no se pudo obtener el resumen del upstream: ${String(e)}`);
     return null;
   }
 }
@@ -373,7 +378,8 @@ export async function buscarDatos(
         hasta: (f.invalid_at as string) ?? null,
       }))
       .filter((f) => f.texto);
-  } catch {
+  } catch (e) {
+    console.warn(`[buscar] fallo la busqueda de datos: ${String(e)}`);
     return [];
   }
 }
@@ -408,7 +414,8 @@ export async function buscarEntidades(
         resumen: String(n.summary ?? ""),
       }))
       .filter((n) => n.nombre && n.uuid);
-  } catch {
+  } catch (e) {
+    console.warn(`[buscar] fallo la busqueda de entidades: ${String(e)}`);
     return [];
   }
 }
@@ -436,7 +443,8 @@ export async function vecindario(
         hasta: String(r.hasta ?? ""),
       })),
     };
-  } catch {
+  } catch (e) {
+    console.warn(`[constelacion] no se pudo obtener el vecindario: ${String(e)}`);
     return null;
   }
 }
