@@ -168,3 +168,30 @@ def test_image_ocr(tmp_path):
     content, kind = extract_file(png)
     assert kind == "text"
     assert "HOLA" in content.upper()
+
+
+def test_los_temporales_de_office_se_omiten(tmp_path):
+    """`~$ordenes.xlsx` es un archivo de bloqueo, no un documento.
+
+    Daba "File is not a zip file" y se contaba como error, ensuciando el
+    resumen con fallos que no lo son.
+    """
+    p = tmp_path / "~$ordenes EEUU.xlsx"
+    p.write_bytes(b"basura de bloqueo")
+    with pytest.raises(SkipFile) as exc:
+        extract_file(p)
+    assert "Office" in str(exc.value)
+
+
+def test_un_archivo_en_la_nube_se_omite_con_su_causa(tmp_path, monkeypatch):
+    """PyMuPDF dice "Failed to open file as type pdf" y parece corrupto.
+
+    No lo esta: su contenido vive en iCloud. Confundirlo con corrupcion hace
+    que el usuario descarte documentos que en realidad solo hay que bajar.
+    """
+    p = tmp_path / "escritura.pdf"
+    p.write_bytes(b"%PDF-1.4 loquesea")
+    monkeypatch.setattr("brain_ingest.extract.esta_en_la_nube", lambda _p: True)
+    with pytest.raises(SkipFile) as exc:
+        extract_file(p)
+    assert "iCloud" in str(exc.value)

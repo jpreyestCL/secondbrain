@@ -20,7 +20,7 @@ from . import __version__
 from .chunker import chunk_json, chunk_text
 from .classify import apply_manifest, emit_manifest
 from .config import Config, load_config
-from .extract import ExtractError, SkipFile, extract_file
+from .extract import ExtractError, SkipFile, esta_en_la_nube, extract_file
 from .ledger import Ledger
 from .redact import redact
 
@@ -212,7 +212,7 @@ def scan(
 def extract() -> None:
     """Extract text/JSON from every pending file into ~/.brain/extracted/."""
     cfg, ledger = _open()
-    counts = {"extracted": 0, "skipped": 0, "errors": 0}
+    counts = {"extracted": 0, "skipped": 0, "errors": 0, "en_la_nube": 0}
     with ledger:
         for row in list(ledger.by_status("pending")):
             path = Path(row.path)
@@ -228,7 +228,26 @@ def extract() -> None:
                 log.info("[skip] %s (%s)", path, exc)
                 continue
             except (ExtractError, Exception) as exc:  # noqa: BLE001
-                ledger.set_status(row.doc_id, "error", error=str(exc)[:500])
+                motivo = str(exc)
+                # Estos mensajes vienen de las librerias y no dicen nada util:
+                # se traducen a la causa real, que casi siempre es una de dos.
+                if "closed or encrypted" in motivo:
+                    ledger.set_status(
+                        row.doc_id, "skipped", error="PDF protegido con contraseña"
+                    )
+                    counts["skipped"] += 1
+                    log.info("[protegido] %s", path.name)
+                    continue
+                if esta_en_la_nube(path):
+                    ledger.set_status(
+                        row.doc_id,
+                        "pending",
+                        error="en iCloud; descárgalo y vuelve a correr el comando",
+                    )
+                    counts["en_la_nube"] = counts.get("en_la_nube", 0) + 1
+                    log.info("[en la nube] %s", path.name)
+                    continue
+                ledger.set_status(row.doc_id, "error", error=motivo[:500])
                 counts["errors"] += 1
                 log.error("[error] %s: %s", path, exc)
                 continue
@@ -242,6 +261,11 @@ def extract() -> None:
         f"extract done: {counts['extracted']} extracted, "
         f"{counts['skipped']} skipped, {counts['errors']} errors"
     )
+    if counts.get("en_la_nube"):
+        console.print(
+            f"[yellow]{counts['en_la_nube']} archivo(s) siguen en iCloud[/yellow] y quedaron "
+            f"pendientes, no perdidos: descárgalos y vuelve a correr el mismo comando."
+        )
 
 
 # -- classify ----------------------------------------------------------------

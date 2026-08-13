@@ -50,12 +50,38 @@ class ExtractError(Exception):
     """Extraction failed."""
 
 
+#: Archivos de bloqueo que Office deja abiertos junto al original ("~$x.xlsx").
+#: No son documentos: son basura temporal de unos pocos bytes.
+def es_temporal_de_office(path: Path) -> bool:
+    return path.name.startswith("~$")
+
+
+def esta_en_la_nube(path: Path) -> bool:
+    """Contenido evictado a iCloud: figura con tamaño pero no ocupa bloques.
+
+    Importa detectarlo aqui y no solo en scan: al abrirlo, PyMuPDF responde
+    "Failed to open file as type pdf" y python-docx "Package not found", que
+    parecen archivos corruptos y no lo son.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    return st.st_size > 0 and st.st_blocks == 0
+
+
 def extract_file(path: Path) -> tuple[str, str]:
     """Extract ``path``. Returns ``(content, kind)`` with kind ``text``/``json``.
 
     Raises :class:`SkipFile` or :class:`ExtractError`.
     """
     ext = path.suffix.lower()
+    if es_temporal_de_office(path):
+        raise SkipFile("archivo temporal de Office (~$), no es un documento")
+    if esta_en_la_nube(path):
+        raise SkipFile(
+            "está en iCloud y no en el disco; descárgalo (brctl download) y vuelve a correr"
+        )
     if ext in CODE_EXTS:
         raise SkipFile(CODE_SKIP_REASON)
     if ext in TEXT_EXTS:
