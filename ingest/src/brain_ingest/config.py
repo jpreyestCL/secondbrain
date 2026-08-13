@@ -118,6 +118,35 @@ class Config:
         return self.tenant_dir / "work"
 
 
+def cargar_entorno() -> Path | None:
+    """Carga ``~/.brain/env`` en el entorno del proceso, sin pisar lo ya definido.
+
+    Por que existe: las claves de LLM y embeddings se leian de un ``.env`` que
+    graphiti_core carga por su cuenta con load_dotenv(), buscandolo hacia arriba
+    desde el DIRECTORIO ACTUAL. Eso hace que el CLI funcione dentro del repo y
+    falle fuera de el — justo lo que rompe una instalacion global. Y falla del
+    peor modo posible: sin claves, la configuracion cae a valores por defecto en
+    vez de detenerse.
+
+    La configuracion vive junto al resto del estado del CLI (``~/.brain/``), que
+    es independiente de donde se ejecute. Las variables ya presentes en el
+    entorno mandan, para poder sobrescribir puntualmente sin editar el archivo.
+    """
+    ruta = brain_home() / "env"
+    if not ruta.exists():
+        return None
+    for linea in ruta.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        clave, _, valor = linea.partition("=")
+        clave = clave.strip()
+        valor = valor.strip().strip('"').strip("'")
+        if clave and clave not in os.environ:
+            os.environ[clave] = valor
+    return ruta
+
+
 def load_config(tenant: str | None = None) -> Config:
     """Load ``config.toml``, creating it (and the tenant tree) on first run.
 
@@ -125,6 +154,7 @@ def load_config(tenant: str | None = None) -> Config:
     """
     home = brain_home()
     home.mkdir(parents=True, exist_ok=True)
+    cargar_entorno()
     cfg_path = home / "config.toml"
     if not cfg_path.exists():
         default_archive = home / "archive"

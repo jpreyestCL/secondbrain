@@ -10,6 +10,31 @@ uv sync --all-extras     # --all-extras pulls in ocrmac (macOS Vision OCR)
 uv run brain --help
 ```
 
+### Running `brain` from anywhere
+
+Configuration lives in `~/.brain/env` (`KEY=value`, one per line, mode 600),
+**not** in the repo's `.env`. That matters more than it looks: `graphiti_core`
+calls `load_dotenv()`, which walks up from the *current directory*, so a CLI
+that reads the repo `.env` works inside the repo and breaks outside it — and it
+breaks silently, falling back to defaults instead of stopping. Variables already
+present in the environment win, so you can override one without editing the file.
+
+Then drop a launcher on your `PATH`:
+
+```bash
+cat > ~/.local/bin/brain <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --quiet --project "${BRAIN_REPO:-$HOME/work/secondbrain}/ingest" \
+     --all-extras brain "$@"
+SH
+chmod +x ~/.local/bin/brain
+```
+
+Prefer this over `uv tool install`: `uv tool` resolves dependencies on its own
+and ignores `uv.lock`, which pulled `openai 3.0.0` where this project pins
+`2.53.0` — a different LLM client than the one everything was verified against.
+
 ## Pipeline
 
 ```
