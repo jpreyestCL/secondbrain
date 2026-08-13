@@ -343,6 +343,24 @@ class Ledger:
         ).fetchall()
         return [FileRow(**dict(f)) for f in filas]
 
+    def retirar(self, path: str) -> bool:
+        """Saca un documento de la cola de ingesta sin borrar su historia.
+
+        Lo usa --excluir: un archivo registrado en una corrida anterior seguia
+        pendiente de enviar aunque ahora se excluya su carpeta, asi que la
+        exclusion no ahorraba ni tiempo ni dinero. No toca el grafo: si ya se
+        habia ingerido, eso se limpia aparte.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE files SET status='skipped', error='excluido por --excluir'"
+            " WHERE path = ? AND superseded = 0 AND status NOT IN ('skipped','ingested')",
+            (path,),
+        )
+        cambiado = cur.rowcount > 0
+        self.conn.commit()
+        return cambiado
+
     def rehacer(self, prefijo_ruta: str | None = None) -> dict[str, int]:
         """Olvida lo enviado al grafo para poder reingerir desde cero.
 

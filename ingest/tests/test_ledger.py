@@ -184,3 +184,20 @@ def test_rehacer_sin_ruta_alcanza_todo(ledger):
 
     fila = ledger.get(a)
     assert fila.status == "classified" and not fila.error
+
+
+def test_retirar_saca_de_la_cola_lo_ya_registrado(ledger):
+    """--excluir no servia de nada si el archivo ya estaba en el ledger.
+
+    Seguia pendiente de enviar, asi que excluir la carpeta no ahorraba ni
+    tiempo ni dinero — que es justo para lo que se usa.
+    """
+    _, doc = ledger.upsert_file("/x/_Duplicados/copia.pdf", "sha", 10, 1e9)
+    ledger.set_classification(doc, "finanzas", "contrato", "2024-01-01", [])
+
+    assert ledger.retirar("/x/_Duplicados/copia.pdf") is True
+    assert ledger.get(doc).status == "skipped"
+    # Lo ya ingerido no se toca: eso se limpia en el grafo, no aqui.
+    _, otro = ledger.upsert_file("/x/ok.pdf", "sha2", 10, 1e9)
+    ledger.set_status(otro, "ingested")
+    assert ledger.retirar("/x/ok.pdf") is False

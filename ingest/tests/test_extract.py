@@ -195,3 +195,25 @@ def test_un_archivo_en_la_nube_se_omite_con_su_causa(tmp_path, monkeypatch):
     with pytest.raises(SkipFile) as exc:
         extract_file(p)
     assert "iCloud" in str(exc.value)
+
+
+def test_un_pdf_que_no_es_pdf_dice_que_es(tmp_path):
+    """La extension miente igual que con los .xls.
+
+    Un archivo de 1,6 MB llamado .pdf resulto no serlo, y PyMuPDF solo sabia
+    decir "Failed to open file as type pdf" — que no permite distinguirlo de un
+    archivo corrupto.
+    """
+    from brain_ingest.extract import ExtractError
+
+    p = tmp_path / "contrato.pdf"
+    p.write_bytes(b"PK\x03\x04" + b"x" * 100)
+    with pytest.raises(ExtractError) as exc:
+        extract_file(p)
+    assert "zip" in str(exc.value)
+
+    p2 = tmp_path / "otro.pdf"
+    p2.write_bytes(b"<html><body>hola</body></html>")
+    with pytest.raises(ExtractError) as exc2:
+        extract_file(p2)
+    assert "HTML" in str(exc2.value)

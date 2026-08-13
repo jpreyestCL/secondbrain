@@ -159,7 +159,10 @@ def scan(
     diria "ya esta todo guardado" cuando en realidad faltan documentos.
     """
     cfg, ledger = _open()
-    counts = {"new": 0, "changed": 0, "unchanged": 0, "ilegibles": 0, "excluidos": 0}
+    counts = {
+        "new": 0, "changed": 0, "unchanged": 0,
+        "ilegibles": 0, "excluidos": 0, "retirados": 0,
+    }
     en_la_nube: list[Path] = []
     with ledger:
         for path in sorted(folder.rglob("*")):
@@ -169,6 +172,11 @@ def scan(
                 continue
             if excluir and any(e in path.parts[:-1] for e in excluir):
                 counts["excluidos"] += 1
+                # No basta con no registrarlo: si ya estaba de una corrida
+                # anterior, seguiria pendiente de enviar y --excluir no
+                # ahorraria nada. Se retira explicitamente.
+                if ledger.retirar(str(path)):
+                    counts["retirados"] += 1
                 continue
             try:
                 stat = path.stat()
@@ -195,7 +203,12 @@ def scan(
         f"(old versions marked for expiry), {counts['unchanged']} unchanged"
     )
     if counts["excluidos"]:
-        console.print(f"{counts['excluidos']} archivo(s) omitidos por --excluir")
+        extra = (
+            f", {counts['retirados']} de ellos retirados de la cola"
+            if counts["retirados"]
+            else ""
+        )
+        console.print(f"{counts['excluidos']} archivo(s) omitidos por --excluir{extra}")
     if counts["ilegibles"]:
         console.print(f"[yellow]{counts['ilegibles']} archivo(s) ilegibles, omitidos[/yellow]")
     if en_la_nube:

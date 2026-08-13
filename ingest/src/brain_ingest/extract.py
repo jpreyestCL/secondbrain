@@ -150,6 +150,21 @@ def _ocr_image(path: Path) -> str:
 def _extract_pdf(path: Path) -> str:
     import fitz  # PyMuPDF
 
+    # La extension miente igual que con los .xls: un archivo de 1,6 MB llamado
+    # .pdf resulto no serlo, y PyMuPDF solo sabe decir "Failed to open file as
+    # type pdf". Se mira la firma real para poder explicar QUE es.
+    firma = path.read_bytes()[:8]
+    if not firma.startswith(b"%PDF"):
+        if firma.startswith(b"PK"):
+            raise ExtractError(
+                "no es un PDF: es un zip (probablemente un .docx/.xlsx renombrado)"
+            )
+        if firma[:5].lower() in (b"<html", b"<!doc"):
+            raise ExtractError("no es un PDF: es un documento HTML renombrado")
+        if firma.startswith(b"\xd0\xcf\x11\xe0"):
+            raise ExtractError("no es un PDF: es un documento de Office antiguo (OLE2)")
+        raise ExtractError(f"no es un PDF: empieza por {firma[:4]!r}")
+
     parts: list[str] = []
     with fitz.open(path) as doc:
         for pageno, page in enumerate(doc):
