@@ -275,6 +275,26 @@ def add(
             f"({n['episodios']} envío(s) olvidados). No se tocó el grafo ni tus archivos."
         )
     scan(folder)
+
+    # Sin esto, `add` sobre una carpeta ya ingerida no hace NADA y no lo dice:
+    # se ve igual que un exito. El silencio en un no-op es la misma trampa que
+    # el silencio en un fallo.
+    cfg, ledger = _open()
+    with ledger:
+        bajo = [
+            f for f in ledger.all_files() if f.path.startswith(str(folder).rstrip("/"))
+        ]
+    ya = [f for f in bajo if f.status == "ingested" and not f.superseded]
+    if bajo and len(ya) == len(bajo):
+        console.print(
+            f"Los {len(ya)} documento(s) de esta carpeta ya están en tu memoria y no han "
+            f"cambiado, así que no hay nada nuevo que enviar.\n"
+            f"  · ¿agregaste archivos? vuelve a correr esto, se procesan solo los nuevos\n"
+            f"  · ¿vaciaste el grafo o cambiaste la extracción? "
+            f"[bold]brain add {folder} --rehacer[/bold]"
+        )
+        return
+
     extract()
     classify(apply=None, auto=True, dominio=dominio)
     chunk()

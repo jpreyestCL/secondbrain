@@ -336,6 +336,13 @@ class Ledger:
         self.conn.execute("DELETE FROM episodes WHERE episode_uuid = ?", (episode_uuid,))
         self.conn.commit()
 
+    def all_files(self) -> list[FileRow]:
+        """Todas las filas vigentes (no superseded), para inspeccion."""
+        filas = self.conn.execute(
+            "SELECT * FROM files WHERE superseded = 0 ORDER BY path"
+        ).fetchall()
+        return [FileRow(**dict(f)) for f in filas]
+
     def rehacer(self, prefijo_ruta: str | None = None) -> dict[str, int]:
         """Olvida lo enviado al grafo para poder reingerir desde cero.
 

@@ -153,3 +153,31 @@ def test_tenant_flag_isolates_ledgers(brain_home, tmp_path):
 
     assert (brain_home / "alice" / "ledger.sqlite").exists()
     assert (brain_home / "bob" / "ledger.sqlite").exists()
+
+
+def test_add_sobre_carpeta_ya_ingerida_lo_dice(cfg, ledger, tmp_path, monkeypatch, capsys):
+    """Un no-op silencioso se ve igual que un exito.
+
+    `add` es idempotente a proposito: relanzarlo sobre inbox/ debe procesar
+    solo lo nuevo, no repagar la extraccion de lo anterior ni duplicar
+    episodios. Pero si no queda NADA por hacer tiene que decirlo y explicar
+    cual es el comando que el usuario probablemente busca.
+    """
+    from typer.testing import CliRunner
+
+    from brain_ingest.cli import app
+
+    carpeta = tmp_path / "docs"
+    carpeta.mkdir()
+    (carpeta / "uno.md").write_text("contenido", encoding="utf-8")
+
+    monkeypatch.setenv("BRAIN_HOME", str(cfg.home))
+    runner = CliRunner()
+    runner.invoke(app, ["--tenant", cfg.tenant, "scan", str(carpeta)])
+    with ledger:
+        for fila in ledger.all_files():
+            ledger.set_status(fila.doc_id, "ingested")
+
+    res = runner.invoke(app, ["--tenant", cfg.tenant, "add", str(carpeta)])
+    assert "ya están en tu memoria" in res.stdout
+    assert "--rehacer" in res.stdout
