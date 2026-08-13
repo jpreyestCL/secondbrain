@@ -181,12 +181,19 @@ def classify(
     apply: Optional[Path] = typer.Option(
         None, "--apply", exists=True, dir_okay=False, help="Completed manifest to apply"
     ),
+    auto: bool = typer.Option(
+        False, "--auto", help="Rellena y aplica el manifiesto sin intervención (sin LLM)"
+    ),
+    dominio: Optional[str] = typer.Option(None, "--dominio", help="Fuerza el dominio"),
 ) -> None:
     """Emit a classification work manifest (no LLM calls), or apply one back.
 
     Without --apply: writes ~/.brain/work/classify-<batch>.json for Claude Code
     to fill in. With --apply FILE: reads the completed manifest and updates
     the ledger (domain, doc_type, doc_date, sensitivity flags).
+
+    Con --auto lo rellena el propio CLI con heurísticas deterministas
+    (brain_ingest.autoclas) y lo aplica: ni LLM ni intervención.
     """
     cfg, ledger = _open()
     with ledger:
@@ -198,11 +205,72 @@ def classify(
             )
             return
         out = emit_manifest(cfg, ledger)
+        if out is not None and auto:
+            _clasificar_auto(cfg, ledger, out, dominio)
+            return
     if out is None:
         console.print("nothing to classify (no docs in status=extracted)")
     else:
         console.print(f"manifest written: [bold]{out}[/bold]")
         console.print("Fill it in (e.g. with Claude Code), then run: brain classify --apply", out.name)
+
+
+def _clasificar_auto(cfg: Config, ledger: Ledger, manifiesto: Path, dominio: str | None) -> None:
+    """Rellena el manifiesto con las heurísticas y lo aplica de inmediato."""
+    from .autoclas import clasificar, fiables
+
+    datos = json.loads(manifiesto.read_text(encoding="utf-8"))
+    origenes = clasificar(datos, dominio)
+    manifiesto.write_text(json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    total = len(datos["documents"])
+    ok = fiables(origenes)
+    console.print(f"clasificados {total} documentos (fecha fiable en {ok})")
+    for k, v in sorted(origenes.items(), key=lambda kv: -kv[1]):
+        console.print(f"  {str(k):<24} {v}")
+    imprecisos = total - ok
+    if imprecisos:
+        # No es un detalle menor: una fecha inventada entra al grafo como hecho.
+        console.print(
+            f"[yellow]{imprecisos} con fecha imprecisa[/yellow] (solo año, o la fecha del "
+            f"archivo). Son los que conviene mirar antes de consultarlos."
+        )
+    counts = apply_manifest(cfg, ledger, manifiesto)
+    console.print(f"aplicados: {counts['applied']}, errores: {counts['errors']}")
+
+
+# -- add ---------------------------------------------------------------------
+
+
+@app.command()
+def add(
+    folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
+    dominio: Optional[str] = typer.Option(None, "--dominio", help="Fuerza el dominio"),
+    revisar: bool = typer.Option(
+        False, "--revisar", help="Para antes de enviar, para que revises la clasificación"
+    ),
+    url: Optional[str] = typer.Option(None, "--url", help="Servidor MCP (si no hiciste login)"),
+) -> None:
+    """Ingiere una carpeta completa: un solo comando de principio a fin.
+
+    Equivale a scan -> extract -> classify --auto -> chunk -> ingest-graph.
+    Los pasos siguen existiendo por separado porque cada uno deja su resultado
+    en el ledger: si la extracción de cientos de PDFs se cae a la mitad, o si
+    el envío al servidor falla, se retoma donde iba en vez de rehacer todo.
+    Pero orquestarlos a mano no aporta nada, así que este es el camino normal.
+    """
+    scan(folder)
+    extract()
+    classify(apply=None, auto=True, dominio=dominio)
+    chunk()
+    if revisar:
+        console.print(
+            "\n[bold]Pausa antes de enviar.[/bold] Revisa con `brain status`; cuando "
+            "estés conforme:\n  brain ingest-graph"
+        )
+        return
+    ingest_graph(doc_id=None, force=False, via=None, url=url)
+
 
 
 # -- chunk -------------------------------------------------------------------

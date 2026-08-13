@@ -108,12 +108,24 @@ clave de API:
 curl -fsSL https://mybrain.rlz.cl/install.sh | sh
 brain login https://mybrain.rlz.cl        # abre el navegador una vez
 
-brain scan ~/Documentos/inbox
+brain add ~/Documentos/inbox              # lee, clasifica y envía al servidor
+```
+
+`add` hace todo: leer los archivos (con OCR si hacen falta), determinar dominio,
+tipo y **fecha real** de cada documento, trocearlos y enviarlos. Con `--revisar` se
+detiene antes de enviar para que mires la clasificación.
+
+Por dentro son cinco etapas, y cada una deja su resultado en un ledger. Eso importa
+cuando hay volumen: si el OCR de 600 PDFs se cae a la mitad o el envío falla, se
+retoma donde iba en vez de rehacer —y repagar— todo. Puedes correrlas sueltas:
+
+```bash
+brain scan <carpeta>     # registra los archivos
 brain extract            # texto, OCR de imágenes y PDFs escaneados
-brain classify           # manifiesto: dominio, tipo y fecha REAL
-brain classify --apply <manifiesto>.json
-brain chunk
+brain classify --auto    # dominio, tipo y fecha REAL (sin LLM)
+brain chunk              # trocea
 brain ingest-graph       # envía al servidor por el conector MCP
+brain status             # en qué etapa va cada documento
 ```
 
 **Por qué no pide claves**: de los seis pasos, cinco son locales y ninguno usa un modelo

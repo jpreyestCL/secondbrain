@@ -8,7 +8,7 @@ import pathlib
 
 import pytest
 
-_RUTA = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "clasificar-auto.py"
+_RUTA = pathlib.Path(__file__).resolve().parents[1] / "src" / "brain_ingest" / "autoclas.py"
 _spec = importlib.util.spec_from_file_location("clasificar_auto", _RUTA)
 ca = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ca)
