@@ -3,6 +3,8 @@
  * gateway. Tras autenticarse, vuelve a lanzar la petición de autorización
  * OAuth original (los parámetros llegan en la query string).
  */
+import { AUTH_STYLE, THEME_BOOT } from "./auth-chrome.js";
+
 export interface LoginPageOptions {
   /** Muestra el enlace a /registro (en modo `open` o `invite`). */
   showRegisterLink?: boolean;
@@ -59,23 +61,8 @@ export function loginPageHtml(opts: LoginPageOptions = {}): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Second Brain — Iniciar sesión</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #f5f5f4; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1917; color: #e7e5e4; } }
-  form { background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 12px; padding: 2rem; width: min(90vw, 22rem); display: grid; gap: .75rem; }
-  h1 { font-size: 1.15rem; margin: 0 0 .25rem; }
-  p.sub { margin: 0 0 .5rem; font-size: .85rem; opacity: .7; }
-  label { font-size: .85rem; font-weight: 600; }
-  input { font: inherit; padding: .55rem .7rem; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; }
-  button { font: inherit; font-weight: 600; padding: .6rem; border: 0; border-radius: 8px; background: #4f46e5; color: white; cursor: pointer; }
-  button:disabled { opacity: .6; cursor: wait; }
-  button.google { background: transparent; color: inherit; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); }
-  .divider { display: flex; align-items: center; gap: .6rem; color: color-mix(in srgb, CanvasText 45%, transparent); font-size: .8rem; }
-  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, CanvasText 15%, transparent); }
-  #error { color: #dc2626; font-size: .85rem; min-height: 1.2em; margin: 0; }
-  p.alt { margin: 0; font-size: .85rem; } p.alt a { color: #4f46e5; }
-</style>
+${THEME_BOOT}
+<style>${AUTH_STYLE}</style>
 </head>
 <body>
 <form id="f">
