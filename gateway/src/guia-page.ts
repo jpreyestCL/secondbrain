@@ -72,15 +72,16 @@ const TOOLS: Tool[] = [
 ];
 
 const CLI_COMMANDS: Array<[string, string]> = [
-  ["scan <carpeta>", "Recorre la carpeta y registra cada archivo en el ledger."],
-  ["extract", "Saca el texto de cada archivo (OCR incluido si hace falta)."],
-  ["classify", "Emite un manifiesto JSON con un registro por documento."],
-  ["classify --apply <archivo>", "Aplica el manifiesto ya completado al ledger."],
-  ["chunk", "Trocea cada documento en secciones del tamaño que el grafo digiere."],
-  ["ingest-graph", "Envía las secciones al grafo (flags --doc-id y --force)."],
+  ["add &lt;carpeta&gt;", "Todo el proceso en un comando. Con --revisar se detiene antes de enviar."],
+  ["login &lt;url&gt;", "Vincula este equipo con tu cuenta del servidor. Se hace una vez."],
   ["status", "Muestra en qué etapa va cada documento."],
+  ["scan &lt;carpeta&gt;", "Solo registra los archivos en el ledger."],
+  ["extract", "Solo saca el texto (OCR incluido si hace falta)."],
+  ["classify --auto", "Solo asigna dominio, tipo y fecha real. Sin LLM."],
+  ["classify --apply &lt;archivo&gt;", "Aplica un manifiesto que revisaste a mano."],
+  ["chunk", "Solo trocea en secciones del tamaño que el grafo digiere."],
+  ["ingest-graph", "Solo envía al grafo (flags --doc-id y --force)."],
   ["expire", "Marca documentos como caducados (--all para todos)."],
-  ["version", "Imprime la versión del CLI."],
 ];
 
 const INSTALL_BLOCK = `curl -fsSL <BASE_URL>/install.sh | sh`;
@@ -101,15 +102,14 @@ export LLM_MODEL=gpt-4o-mini LLM_API_URL=https://api.openai.com/v1 LLM_API_KEY=<
 export EMBEDDER_API_KEY=<key nvidia> EMBEDDER_API_URL=https://integrate.api.nvidia.com/v1
 export EMBEDDER_MODEL=nvidia/nv-embed-v1 EMBEDDER_DIMENSIONS=4096`;
 
-const PIPELINE_BLOCK = `brain --tenant <slug> scan ~/Documentos/inbox
-brain --tenant <slug> extract
-brain --tenant <slug> classify            # emite el manifiesto JSON
-# Claude completa el manifiesto: dominio, tipo y fecha REAL de cada documento
-brain --tenant <slug> classify --apply manifiesto.json
-brain --tenant <slug> chunk
+const PIPELINE_BLOCK = `brain add ~/Documentos/inbox`;
 
-# Ultimo paso: el unico que habla con el servidor
-brain --tenant <slug> ingest-graph --via mcp --url <MCP_URL>`;
+const ETAPAS_BLOCK = `brain scan ~/Documentos/inbox   # registra los archivos
+brain extract                    # texto + OCR de imagenes y PDFs escaneados
+brain classify --auto            # dominio, tipo y fecha REAL (sin LLM)
+brain chunk                      # trocea
+brain ingest-graph               # envia al servidor
+brain status                     # en que etapa va cada documento`;
 
 /**
  * Rellena los ejemplos con los datos de quien mira la pagina.
@@ -142,6 +142,7 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
 
   const tenant = opts.tenant ?? null;
   const pipeline = personalizar(PIPELINE_BLOCK, tenant, mcpUrl);
+  const etapas = personalizar(ETAPAS_BLOCK, tenant, mcpUrl);
   const remoto = personalizar(REMOTO_BLOCK, tenant, mcpUrl);
   const entorno = personalizar(ENV_BLOCK, tenant, mcpUrl);
   const baseUrl = mcpUrl.replace(/\/mcp$/, "");

@@ -37,17 +37,34 @@ and ignores `uv.lock`, which pulled `openai 3.0.0` where this project pins
 
 ## Pipeline
 
+One command does the whole thing:
+
 ```
-uv run brain scan <folder>       # hash files, upsert into the ledger (idempotent)
-uv run brain extract             # pending -> extracted (~/.brain/<tenant>/extracted/)
-uv run brain classify            # emit work manifest (NO LLM calls happen here)
-#   ... fill the manifest in with Claude Code ...
-uv run brain classify --apply ~/.brain/<tenant>/work/classify-<batch>.json
-uv run brain chunk               # structural chunking (~1200 tokens, 150 overlap)
-uv run brain ingest-graph        # push chunks as Graphiti episodes to FalkorDB
-uv run brain status              # ledger summary
-uv run brain expire <doc_id>     # remove a doc's episodes from the graph
+brain login https://<host>        # once: authenticate against the server
+brain add <folder>                # read, classify, chunk and send
+brain add <folder> --revisar      # ...but stop before sending, so you can check
 ```
+
+Underneath it is five stages, each recording its result in the ledger. You rarely
+run them by hand, but they exist because **that's what makes failure cheap**: when
+OCR over hundreds of PDFs dies halfway, or the server hangs mid-send, the retry
+resumes at the failed document instead of redoing — and re-paying for — all of it.
+They also let you fix the pipeline mid-flight: patch the extractor, re-run
+`extract` on just the affected files, and carry on.
+
+```
+brain scan <folder>       # hash files, upsert into the ledger (idempotent)
+brain extract             # pending -> extracted (~/.brain/<tenant>/extracted/)
+brain classify --auto     # domain, doc_type and the REAL date — no LLM involved
+brain chunk               # structural chunking (~1200 tokens, 150 overlap)
+brain ingest-graph        # push chunks as episodes (via MCP by default)
+brain status              # ledger summary
+brain expire <doc_id>     # remove a doc's episodes from the graph
+```
+
+`classify` without `--auto` writes the manifest for a human (or Claude Code) to
+fill in; `--apply` reads it back. That path is still there for documents whose
+date or domain you want to set yourself.
 
 Global flags: `--tenant <name>` (overrides config), `-v/--verbose`.
 

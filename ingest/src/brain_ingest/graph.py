@@ -327,6 +327,77 @@ async def _add_episode_with_retry(graphiti, **kwargs):
             delay *= 2
 
 
+#: Marca de los episodios enviados por MCP cuyo uuid real todavia no se conoce.
+#: add_memory encola y responde de inmediato, sin devolver el uuid; se resuelve
+#: al final del lote consultando al servidor que llego realmente.
+PENDIENTE_PREFIJO = "pendiente:"
+
+
+#: Cuanto se espera a que el servidor procese la cola antes de dar por perdido
+#: un episodio. La cola del MCP es asincrona: enviar y consultar de inmediato
+#: siempre da vacio. Ajustable con BRAIN_VERIFY_SECONDS (0 = no verificar).
+VERIFY_SECONDS = 120.0
+VERIFY_POLL = 5.0
+
+
+def reconciliar_uuids(cliente, ledger: Ledger, espera: float | None = None) -> dict[str, int]:
+    """Confirma contra el servidor que los episodios enviados existen.
+
+    Sin esto, una falla del lado del servidor se ve igual que un envio exitoso:
+    add_memory responde al ENCOLAR, no al terminar. Paso de verdad — 41
+    episodios rechazados uno por uno y el CLI reportando "0 errors".
+
+    Espera a que el servidor procese la cola, cambia los ids provisionales por
+    los uuid reales y devuelve cuantos se confirmaron y cuantos no llegaron.
+    """
+    import time
+
+    from .mcp_remote import McpRemoteError, episodios_por_nombre
+
+    if espera is None:
+        try:
+            espera = float(os.environ.get("BRAIN_VERIFY_SECONDS", VERIFY_SECONDS))
+        except ValueError:
+            espera = VERIFY_SECONDS
+
+    pendientes = {
+        e["episode_uuid"][len(PENDIENTE_PREFIJO) :]: e
+        for e in ledger.episodes_pendientes(PENDIENTE_PREFIJO)
+    }
+    if not pendientes:
+        return {"confirmados": 0, "faltantes": 0}
+
+    log.info("verificando en el servidor %d episodio(s) enviado(s)...", len(pendientes))
+    limite = time.monotonic() + max(espera, 0.0)
+    encontrados: dict[str, str] = {}
+    # Se consulta SIEMPRE al menos una vez, incluso con espera=0: el objetivo es
+    # verificar, y no verificar nunca es justamente el fallo que esto corrige.
+    while True:
+        try:
+            vistos = episodios_por_nombre(cliente, maximo=max(200, len(pendientes) * 2))
+        except McpRemoteError as exc:
+            log.warning("no se pudo consultar el servidor: %s", exc)
+            break
+        for nombre in pendientes:
+            if nombre in vistos and nombre not in encontrados:
+                encontrados[nombre] = vistos[nombre]
+        if len(encontrados) >= len(pendientes) or time.monotonic() >= limite:
+            break
+        time.sleep(min(VERIFY_POLL, max(limite - time.monotonic(), 0)))
+
+    for nombre, uuid_real in encontrados.items():
+        ledger.actualizar_uuid_episodio(f"{PENDIENTE_PREFIJO}{nombre}", uuid_real)
+    faltan = [n for n in pendientes if n not in encontrados]
+    for nombre in faltan:
+        # Se borra el registro para que un reintento vuelva a enviar ese chunk,
+        # y el documento queda en error: dar por ingerido algo que no esta en el
+        # grafo es peor que fallar.
+        ledger.borrar_episodio(f"{PENDIENTE_PREFIJO}{nombre}")
+        doc = pendientes[nombre]["doc_id"]
+        ledger.set_status(doc, "error", error="el servidor no confirmó el episodio")
+    return {"confirmados": len(encontrados), "faltantes": len(faltan)}
+
+
 def _mcp_add_memory(
     cliente,
     *,
@@ -336,20 +407,19 @@ def _mcp_add_memory(
     reference_time,
     is_json: bool,
 ) -> str:
-    """Empuja un episodio por el conector MCP y devuelve su uuid.
+    """Empuja un episodio por el conector MCP. Devuelve un id provisional.
 
-    El uuid lo genera el CLIENTE y se le pasa al servidor: add_memory acepta uno
-    propio y encola en background sin devolverlo. Generarlo aqui es lo que
-    permite que el ledger registre el mismo identificador que el grafo, y por lo
-    tanto que `brain expire` pueda borrar ese episodio despues.
+    NO se manda ``uuid``. Se probo pasar uno generado por el cliente para que el
+    ledger registrara el mismo identificador que el grafo, y fue un error:
+    graphiti interpreta un uuid explicito como "actualiza el episodio que ya
+    existe con ese id", asi que el servidor rechazo los 41 episodios de una
+    carpeta con ``node <uuid> not found`` mientras el CLI los daba por buenos.
+    El uuid real se reconcilia despues con ``reconciliar_uuids``.
 
-    NO se manda group_id: el servidor MCP fuerza el del usuario autenticado, y
-    mandarlo desde el cliente seria justamente el atajo que rompe el aislamiento
-    entre personas.
+    Tampoco se manda group_id: el servidor MCP fuerza el del usuario
+    autenticado, y mandarlo desde el cliente seria el atajo que rompe el
+    aislamiento entre personas.
     """
-    import uuid as _uuid
-
-    episode_uuid = str(_uuid.uuid4())
     cliente.llamar(
         "add_memory",
         {
@@ -358,10 +428,9 @@ def _mcp_add_memory(
             "source": "json" if is_json else "text",
             "source_description": source_description,
             "reference_time": reference_time.isoformat(),
-            "uuid": episode_uuid,
         },
     )
-    return episode_uuid
+    return f"{PENDIENTE_PREFIJO}{name}"
 
 
 async def ingest_chunks(
@@ -489,6 +558,10 @@ async def ingest_chunks(
                 log.exception("ingest failed for %s", row.path)
                 ledger.set_status(row.doc_id, "error", error=str(exc)[:500])
                 counts["errors"] += 1
+        if remoto is not None and counts["episodes"]:
+            verificacion = reconciliar_uuids(remoto, ledger)
+            counts["confirmados"] = verificacion["confirmados"]
+            counts["no_confirmados"] = verificacion["faltantes"]
     finally:
         if graphiti is not None:
             await graphiti.close()

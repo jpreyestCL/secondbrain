@@ -313,6 +313,29 @@ class Ledger:
             q += " AND expired = 0"
         return self.conn.execute(q + " ORDER BY chunk_idx", (doc_id,)).fetchall()
 
+    def episodes_pendientes(self, prefijo: str) -> list[sqlite3.Row]:
+        """Episodios enviados por MCP cuyo uuid real aun no se conoce.
+
+        add_memory encola y responde de inmediato sin devolver el uuid, asi que
+        se registran con un id provisional y se reconcilian al final del lote.
+        """
+        return self.conn.execute(
+            "SELECT * FROM episodes WHERE episode_uuid LIKE ? AND expired = 0",
+            (prefijo + "%",),
+        ).fetchall()
+
+    def actualizar_uuid_episodio(self, provisional: str, real: str) -> None:
+        self.conn.execute(
+            "UPDATE episodes SET episode_uuid = ? WHERE episode_uuid = ?",
+            (real, provisional),
+        )
+        self.conn.commit()
+
+    def borrar_episodio(self, episode_uuid: str) -> None:
+        """Quita el registro para que un reintento vuelva a enviar ese chunk."""
+        self.conn.execute("DELETE FROM episodes WHERE episode_uuid = ?", (episode_uuid,))
+        self.conn.commit()
+
     def pending_expiry_episodes(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT * FROM episodes WHERE pending_expiry = 1 AND expired = 0"

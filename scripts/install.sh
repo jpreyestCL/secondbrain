@@ -20,6 +20,8 @@ set -euo pipefail
 REPO_URL="${BRAIN_REPO_URL:-https://github.com/jpreyestCL/secondbrain.git}"
 DESTINO="${BRAIN_HOME_DIR:-$HOME/.local/share/secondbrain}"
 BIN_DIR="${BRAIN_BIN_DIR:-$HOME/.local/bin}"
+# Servidor sugerido para `brain login`. Se puede fijar al servir el script.
+SERVIDOR="${BRAIN_SERVER:-https://mybrain.rlz.cl}"
 
 rojo()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 info()  { printf '  %s\n' "$*"; }
@@ -88,19 +90,19 @@ case ":$PATH:" in
     ;;
 esac
 
-cat <<'FIN'
-Siguiente paso — vincular con tu servidor:
+cat <<FIN
+Siguiente paso — vincular con tu cuenta (se hace una sola vez):
 
-    brain login https://mybrain.rlz.cl
+    brain login ${SERVIDOR}
 
-Se abre el navegador una vez para autenticarte. Despues:
+Se abre el navegador para autenticarte. Despues, para ingerir una carpeta:
 
-    brain scan ~/Documentos/inbox
-    brain extract
-    brain classify                 # y completa el manifiesto
-    brain classify --apply <archivo>
-    brain chunk
-    brain ingest-graph             # envia al servidor
+    brain add ~/Documentos/inbox
+
+Eso lee los archivos (con OCR si hace falta), determina dominio, tipo y la
+fecha REAL de cada documento, los trocea y los envia. Agrega --revisar si
+quieres mirar la clasificacion antes de que se envie.
 
 No necesitas ninguna clave de API: la extraccion la hace el servidor.
+Ver en que va todo:  brain status
 FIN

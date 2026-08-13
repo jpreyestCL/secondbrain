@@ -13,11 +13,22 @@ from brain_ingest.mcp_remote import ClienteMCP, McpRemoteError, _parse_sse
 class _ClienteFalso:
     """Registra cada add_memory en vez de hablar con la red."""
 
-    def __init__(self, fallar=None):
+    def __init__(self, fallar=None, no_confirmar=()):
         self.llamadas = []
         self.fallar = fallar
+        #: Nombres que el servidor NO confirmara, para probar la verificacion.
+        self.no_confirmar = set(no_confirmar)
 
     def llamar(self, nombre, argumentos, timeout=None):
+        if nombre == "get_episodes":
+            # El servidor real devuelve los episodios YA procesados; asi es como
+            # el CLI confirma que lo enviado llego de verdad.
+            episodios = [
+                {"name": a["name"], "uuid": f"uuid-de-{a['name']}"}
+                for n, a in self.llamadas
+                if n == "add_memory" and a["name"] not in self.no_confirmar
+            ]
+            return json.dumps({"result": episodios})
         self.llamadas.append((nombre, argumentos))
         if self.fallar is not None:
             exc = self.fallar(len(self.llamadas))
@@ -48,7 +59,7 @@ def test_via_mcp_no_construye_cliente_de_falkordb(cfg, ledger, monkeypatch):
     falso = _ClienteFalso()
     counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
 
-    assert counts == {"docs": 1, "episodes": 1, "errors": 0, "skipped": 0}
+    assert counts["docs"] == 1 and counts["episodes"] == 1 and counts["errors"] == 0
     assert ledger.get(doc_id).status == "ingested"
 
 
@@ -82,19 +93,61 @@ def test_metadatos_del_episodio_viajan_completos(cfg, ledger, monkeypatch):
     assert args["source"] == "text"
 
 
-def test_el_uuid_lo_genera_el_cliente_y_queda_en_el_ledger(cfg, ledger, monkeypatch):
-    """add_memory encola en background sin devolver el uuid, asi que se le pasa
-    uno propio: es lo que permite que `brain expire` pueda borrarlo despues."""
+def test_nunca_se_manda_un_uuid_propio(cfg, ledger, monkeypatch):
+    """Mandar un uuid generado por el cliente rompio la ingesta entera.
+
+    graphiti interpreta un uuid explicito como "actualiza el episodio que ya
+    existe con ese id". El servidor rechazo los 41 episodios de una carpeta,
+    uno por uno, con `node <uuid> not found`, mientras el CLI reportaba
+    "41 episodes, 0 errors".
+    """
     monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
-    doc_id = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+    _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
 
     falso = _ClienteFalso()
     asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
 
     _, args = falso.llamadas[0]
+    assert "uuid" not in args
+
+
+def test_el_uuid_real_se_reconcilia_contra_el_servidor(cfg, ledger, monkeypatch):
+    """El uuid se resuelve preguntando que llego, no inventandolo.
+
+    Es lo que permite que `brain expire` pueda borrar ese episodio despues.
+    """
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    doc_id = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso()
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
     [ep] = ledger.episodes_for_doc(doc_id)
-    assert ep["episode_uuid"] == args["uuid"]
+    assert ep["episode_uuid"].startswith("uuid-de-")  # el que dio el servidor
+    assert not ep["episode_uuid"].startswith(graph_mod.PENDIENTE_PREFIJO)
     assert ep["group_id"] == cfg.tenant
+    assert counts["confirmados"] == 1 and counts["no_confirmados"] == 0
+
+
+def test_si_el_servidor_no_confirma_el_documento_queda_en_error(cfg, ledger, monkeypatch):
+    """Dar por ingerido algo que no esta en el grafo es peor que fallar.
+
+    add_memory responde al ENCOLAR, asi que sin verificar, una falla del lado
+    del servidor se ve identica a un envio exitoso — y el usuario se entera
+    recien al preguntarle a Claude y no encontrar nada.
+    """
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    # Sin esto el test espera los 120 s reales que el CLI le da al servidor.
+    monkeypatch.setenv("BRAIN_VERIFY_SECONDS", "0")
+    doc_id = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso(no_confirmar=["[finanzas] escritura.pdf [1/1]"])
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    assert counts["no_confirmados"] == 1
+    assert ledger.get(doc_id).status == "error"
+    # Sin registro del episodio, un reintento vuelve a enviarlo.
+    assert ledger.episodes_for_doc(doc_id) == []
 
 
 def test_reanuda_sin_duplicar_por_mcp(cfg, ledger, monkeypatch):

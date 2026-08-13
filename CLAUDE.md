@@ -7,7 +7,7 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 | Ruta | Qué es |
 |---|---|
 | `infra/` | FalkorDB (una instancia) + un contenedor MCP de Graphiti por tenant (`:8021`, `:8022`, ...) vía docker compose. `make up` / `make down` / `make backup` / `make add-tenant NAME=x PORT=y`; config por tenant en `infra/tenants/*.env` |
-| `ingest/` | Paquete Python (uv). CLI `uv run brain --tenant <t>` (default `jpreyest`): `scan` → `extract` → `classify` → `classify --apply` → `chunk` → `ingest-graph` → `status`. Ledger y estado por tenant en `~/.brain/<tenant>/` |
+| `ingest/` | Paquete Python (uv). CLI `brain`: `brain login <url>` una vez, luego **`brain add <carpeta>`** hace todo. Por debajo son cinco etapas (`scan` → `extract` → `classify --auto` → `chunk` → `ingest-graph`), cada una registrada en el ledger para poder reanudar sin repetir ni repagar. Estado por tenant en `~/.brain/<tenant>/`; config en `~/.brain/env` |
 | `gateway/` | Gateway OAuth multiusuario en `:8787` (Better Auth, signup por invitación) que enruta cada usuario autenticado a SU MCP de tenant según `tenants.json`; sin mapeo → 403 |
 | `inbox/` | Zona de aterrizaje de documentos por ingestar |
 | `archive/<dominio>/` | Originales ya ingestados, organizados por dominio |
@@ -78,6 +78,7 @@ Despliegue nativo (sin Docker) en `/opt/secondbrain-native/`, bajo el usuario `s
 ## Flujos habituales
 
 - Guardar un hecho suelto: skill `/guardar`.
-- Procesar documentos de `inbox/`: skill `/ingest`.
+- Procesar documentos de `inbox/`: skill `/ingest`, o `brain add inbox/`.
+- **La ingesta no necesita claves de LLM en el cliente**: por el conector MCP la extracción la hace el servidor. Solo `ingest-graph --via falkordb` (acceso directo a la base, para administradores) las requiere.
 - Consultar el grafo: skill `/consultar` (estado actual = facts vigentes; historia = incluir invalidados).
 - Levantar/bajar el stack: `make up` / `make down` en `infra/`. Respaldo: `make backup`.

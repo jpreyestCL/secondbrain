@@ -105,17 +105,19 @@ describe("guía de uso", () => {
   it("documenta el pipeline del CLI y el túnel SSH con la advertencia de embeddings", async () => {
     const cookie = await signIn();
     const html = await (await fetch(`${baseUrl}/guia`, { headers: { cookie } })).text();
+    // `add` es el camino normal; el resto son las etapas sueltas, que se
+    // documentan porque sirven para reanudar y corregir a mitad de camino.
     for (const cmd of [
+      "brain add",
+      "login",
       "scan",
       "extract",
-      "classify",
+      "classify --auto",
       "--apply",
       "chunk",
       "ingest-graph",
       "status",
       "expire",
-      "version",
-      "--tenant",
     ]) {
       expect(html).toContain(cmd);
     }

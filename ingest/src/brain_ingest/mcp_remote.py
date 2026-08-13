@@ -420,6 +420,35 @@ class ClienteMCP:
         return texto
 
 
+def episodios_por_nombre(cliente: "ClienteMCP", maximo: int = 200) -> dict[str, str]:
+    """Mapa {nombre del episodio -> uuid} de los episodios ya procesados.
+
+    Sirve para verificar que lo enviado llego de verdad. add_memory encola y
+    responde de inmediato, asi que sin este paso una falla del lado del
+    servidor se ve exactamente igual que un envio exitoso.
+    """
+    import json as _json
+
+    crudo = cliente.llamar("get_episodes", {"max_episodes": maximo})
+    salida: dict[str, str] = {}
+    for trozo in crudo.split("\n"):
+        trozo = trozo.strip()
+        if not trozo:
+            continue
+        try:
+            datos = _json.loads(trozo)
+        except _json.JSONDecodeError:
+            continue
+        # FastMCP envuelve la salida en structuredContent.result.
+        episodios = datos.get("result") if isinstance(datos, dict) else datos
+        if isinstance(episodios, dict):
+            episodios = episodios.get("episodes") or episodios.get("result") or []
+        for ep in episodios or []:
+            if isinstance(ep, dict) and ep.get("name") and ep.get("uuid"):
+                salida[ep["name"]] = ep["uuid"]
+    return salida
+
+
 def conectar(base_url: str, tenant: str, brain_home: Path, path: str = "/mcp") -> ClienteMCP:
     """Autentica (o reusa el token) y deja una sesión MCP lista para usar."""
     token = obtener_token(base_url, tenant, brain_home)
