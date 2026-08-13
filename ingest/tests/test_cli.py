@@ -1,3 +1,7 @@
+import hashlib
+from pathlib import Path
+
+import pytest
 """End-to-end CLI: scan idempotency + extract dispatch through the ledger."""
 
 from typer.testing import CliRunner
@@ -181,3 +185,46 @@ def test_add_sobre_carpeta_ya_ingerida_lo_dice(cfg, ledger, tmp_path, monkeypatc
     res = runner.invoke(app, ["--tenant", cfg.tenant, "add", str(carpeta)])
     assert "ya están en tu memoria" in res.stdout
     assert "--rehacer" in res.stdout
+
+
+def test_reintenta_al_leer_un_archivo_que_baja_de_la_nube(tmp_path, monkeypatch):
+    """El primer intento de leer un archivo de iCloud solo DISPARA la descarga.
+
+    Sin reintento, `scan` lo descartaba con "vanished or unreadable" y el
+    documento no llegaba nunca al grafo, sin dejar rastro de que faltaba.
+    """
+    from brain_ingest.cli import sha256_file
+
+    p = tmp_path / "escritura.pdf"
+    p.write_bytes(b"contenido real")
+    intentos = {"n": 0}
+    abrir_real = Path.open
+
+    def abrir(self, *a, **k):
+        if self == p:
+            intentos["n"] += 1
+            if intentos["n"] == 1:
+                raise OSError(60, "Operation timed out")
+        return abrir_real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", abrir)
+    monkeypatch.setattr("brain_ingest.cli.time.sleep", lambda *_: None)
+
+    assert sha256_file(p) == hashlib.sha256(b"contenido real").hexdigest()
+    assert intentos["n"] == 2  # fallo el primero, acerto el segundo
+
+
+def test_un_error_real_de_lectura_no_se_reintenta(tmp_path, monkeypatch):
+    """Solo se reintentan los errores de descarga; un permiso denegado es real."""
+    from brain_ingest.cli import sha256_file
+
+    p = tmp_path / "x.pdf"
+    p.write_bytes(b"x")
+
+    def abrir(self, *a, **k):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", abrir)
+    with pytest.raises(OSError) as exc:
+        sha256_file(p)
+    assert exc.value.errno == 13

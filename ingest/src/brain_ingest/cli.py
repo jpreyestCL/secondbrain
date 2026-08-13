@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -94,12 +95,49 @@ def _open() -> tuple[Config, Ledger]:
     return cfg, Ledger(cfg.ledger_path)
 
 
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
+#: Errores que NO significan "el archivo esta roto", sino "todavia no esta
+#: aqui": en iCloud Drive (y en cualquier montaje de red) el archivo figura en
+#: el listado pero su contenido vive en la nube, y el primer intento de leerlo
+#: solo DISPARA la descarga. Errno 60 es ETIMEDOUT; 35 es EAGAIN.
+_ERRORES_DESCARGA = {35, 60, 89, 116}
+
+
+def es_archivo_en_la_nube(path: Path) -> bool:
+    """¿El archivo esta listado pero su contenido no esta en disco?
+
+    macOS marca asi los archivos evictados por "Optimizar almacenamiento": el
+    tamaño logico es el real, pero no ocupan bloques.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    return st.st_size > 0 and st.st_blocks == 0
+
+
+def sha256_file(path: Path, intentos: int = 3) -> str:
+    """Hash del archivo, reintentando si esta descargandose desde la nube.
+
+    El primer intento suele fallar con ETIMEDOUT porque solo pone en marcha la
+    descarga; los siguientes la encuentran ya en curso o terminada.
+    """
+    ultimo: OSError | None = None
+    for intento in range(intentos):
+        h = hashlib.sha256()
+        try:
+            with path.open("rb") as f:
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    h.update(block)
+            return h.hexdigest()
+        except OSError as exc:
+            if exc.errno not in _ERRORES_DESCARGA:
+                raise
+            ultimo = exc
+            if intento < intentos - 1:
+                # Espera creciente: la descarga puede tardar segundos.
+                time.sleep(2 * (intento + 1))
+                log.info("descargando desde la nube: %s (intento %d)", path.name, intento + 2)
+    raise ultimo if ultimo else OSError(f"no se pudo leer {path}")
 
 
 # -- scan --------------------------------------------------------------------
@@ -109,7 +147,8 @@ def sha256_file(path: Path) -> str:
 def scan(folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True)) -> None:
     """Walk FOLDER, hash every file and upsert it into the ledger."""
     cfg, ledger = _open()
-    counts = {"new": 0, "changed": 0, "unchanged": 0}
+    counts = {"new": 0, "changed": 0, "unchanged": 0, "ilegibles": 0}
+    en_la_nube: list[Path] = []
     with ledger:
         for path in sorted(folder.rglob("*")):
             if not path.is_file() or path.name.startswith("."):
@@ -120,7 +159,15 @@ def scan(folder: Path = typer.Argument(..., exists=True, file_okay=False, resolv
                 stat = path.stat()
                 digest = sha256_file(path)
             except OSError as exc:
-                log.warning("skipping %s (vanished or unreadable): %s", path, exc)
+                if exc.errno in _ERRORES_DESCARGA or es_archivo_en_la_nube(path):
+                    # No es un archivo roto: esta en iCloud y no se alcanzo a
+                    # descargar. Antes se descartaba en silencio y no quedaba
+                    # registro, asi que era imposible saber que faltaba ni
+                    # reintentarlo.
+                    en_la_nube.append(path)
+                else:
+                    log.warning("se omite %s (no se pudo leer): %s", path, exc)
+                    counts["ilegibles"] += 1
                 continue
             outcome, doc_id = ledger.upsert_file(
                 str(path), digest, stat.st_size, stat.st_mtime
@@ -132,6 +179,22 @@ def scan(folder: Path = typer.Argument(..., exists=True, file_okay=False, resolv
         f"scan done: {counts['new']} new, {counts['changed']} changed "
         f"(old versions marked for expiry), {counts['unchanged']} unchanged"
     )
+    if counts["ilegibles"]:
+        console.print(f"[yellow]{counts['ilegibles']} archivo(s) ilegibles, omitidos[/yellow]")
+    if en_la_nube:
+        # Se listan de verdad: dejar que pasen como un warning entre cientos de
+        # lineas es como perderlos.
+        console.print(
+            f"\n[yellow]{len(en_la_nube)} archivo(s) están en iCloud y no en tu disco[/yellow], "
+            f"así que NO se ingirieron. Para bajarlos y reintentar:\n"
+            f"  [bold]find '{folder}' -type f -exec brctl download {{}} \\;[/bold]\n"
+            f"  (o ábrelos en Finder y espera a que desaparezca el icono de nube)\n"
+            f"y vuelve a correr el mismo comando. Los primeros:"
+        )
+        for p in en_la_nube[:5]:
+            console.print(f"  · {p.name}")
+        if len(en_la_nube) > 5:
+            console.print(f"  · … y {len(en_la_nube) - 5} más")
 
 
 # -- extract -----------------------------------------------------------------
