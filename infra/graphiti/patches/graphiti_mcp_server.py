@@ -896,30 +896,28 @@ async def get_stats() -> dict[str, Any] | ErrorResponse:
     # valida aqui para que no pueda romper la consulta.
     if not re.fullmatch(r'[A-Za-z0-9_-]+', tenant or ''):
         return ErrorResponse(error='group_id del tenant con formato invalido')
-    seguro = f'"{tenant}"'
     try:
         client = await graphiti_service.get_client()
 
+        # session.run() del driver de FalkorDB DESCARTA el resultado y siempre
+        # devuelve None (es fire-and-forget): usarlo para leer daba cero con el
+        # grafo lleno. execute_query es la unica via que devuelve filas, y
+        # ademas si acepta parametros, asi que no hay que interpolar nada.
+        async def filas_de(cypher: str) -> list[dict]:
+            registros, _cabecera, _ = await client.driver.execute_query(
+                cypher, group_id=tenant
+            )
+            return registros or []
+
         async def uno(cypher: str, defecto=0):
-            async with client.driver.session() as session:
-                res = await session.run(cypher.replace('$group_id', seguro))
-                # El driver de FalkorDB devuelve None cuando no hay resultado
-                # (p. ej. con el grafo recien vaciado). get_status ya lo tenia
-                # en cuenta; omitirlo aqui reventaba el panel entero.
-                if res is None:
-                    return defecto
-                filas = [r async for r in res]
-                if not filas:
-                    return defecto
-                valores = list(filas[0].values()) if hasattr(filas[0], 'values') else filas[0]
-                return valores[0] if valores else defecto
+            filas = await filas_de(cypher)
+            if not filas:
+                return defecto
+            valores = list(filas[0].values())
+            return valores[0] if valores else defecto
 
         async def muchos(cypher: str):
-            async with client.driver.session() as session:
-                res = await session.run(cypher.replace('$group_id', seguro))
-                if res is None:
-                    return []
-                return [list(r.values()) if hasattr(r, 'values') else r async for r in res]
+            return [list(f.values()) for f in await filas_de(cypher)]
 
         fragmentos = await uno(
             'MATCH (n:Episodic) WHERE n.group_id = $group_id RETURN count(n)'
@@ -1025,22 +1023,17 @@ async def get_neighbors(uuid: str, limite: int = 40) -> dict[str, Any] | ErrorRe
         return ErrorResponse(error='group_id del tenant con formato invalido')
     if not re.fullmatch(r'[0-9a-fA-F-]{8,64}', uuid or ''):
         return ErrorResponse(error='identificador de entidad invalido')
-    seguro = f'"{tenant}"'
-    uuid_seguro = f'"{uuid}"'
     try:
         client = await graphiti_service.get_client()
-        async with client.driver.session() as session:
-            res = await session.run(
-                'MATCH (a:Entity)-[e:RELATES_TO]-(b:Entity) '
-                f'WHERE a.uuid = {uuid_seguro} AND a.group_id = {seguro} '
-                'RETURN a.name, b.name, b.uuid, e.fact, e.valid_at, e.invalid_at '
-                f'LIMIT {int(limite)}'
-            )
-            filas = (
-                []
-                if res is None
-                else [list(r.values()) if hasattr(r, 'values') else r async for r in res]
-            )
+        registros, _c, _ = await client.driver.execute_query(
+            'MATCH (a:Entity)-[e:RELATES_TO]-(b:Entity) '
+            'WHERE a.uuid = $uuid AND a.group_id = $group_id '
+            'RETURN a.name, b.name, b.uuid, e.fact, e.valid_at, e.invalid_at '
+            f'LIMIT {int(limite)}',
+            uuid=uuid,
+            group_id=tenant,
+        )
+        filas = [list(r.values()) for r in (registros or [])]
 
         centro = ''
         relaciones = []
@@ -1059,16 +1052,13 @@ async def get_neighbors(uuid: str, limite: int = 40) -> dict[str, Any] | ErrorRe
         if not centro:
             # Sin vecinos igual se devuelve el nombre, para no mostrar una
             # pagina vacia sin explicar que la entidad existe pero esta aislada.
-            async with client.driver.session() as session:
-                res = await session.run(
-                    f'MATCH (a:Entity) WHERE a.uuid = {uuid_seguro} '
-                    f'AND a.group_id = {seguro} RETURN a.name'
-                )
-                filas = (
-                []
-                if res is None
-                else [list(r.values()) if hasattr(r, 'values') else r async for r in res]
+            registros, _c, _ = await client.driver.execute_query(
+                'MATCH (a:Entity) WHERE a.uuid = $uuid AND a.group_id = $group_id '
+                'RETURN a.name',
+                uuid=uuid,
+                group_id=tenant,
             )
+            filas = [list(r.values()) for r in (registros or [])]
             centro = (filas[0][0] if filas and filas[0] else '') or ''
             if not centro:
                 return ErrorResponse(error='No existe esa entidad en tu memoria')
