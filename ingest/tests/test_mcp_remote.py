@@ -247,3 +247,41 @@ def test_nombres_repetidos_no_se_confirman_al_azar(cfg, ledger, monkeypatch):
     for doc in (a, b):
         for ep in ledger.episodes_for_doc(doc):
             assert not ep["episode_uuid"].startswith(graph_mod.PENDIENTE_PREFIJO)
+
+
+def test_reintenta_los_504_pasajeros(cfg, ledger, monkeypatch):
+    """Un 504 de Cloudflare no es culpa del documento: es el servidor saturado.
+
+    Sin reintento, un solo 504 descartaba el documento completo — y con el
+    servidor cargado son frecuentes.
+    """
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    monkeypatch.setattr(graph_mod, "MCP_ESPERA_BASE", 0)
+    monkeypatch.setenv("BRAIN_RITMO", "0")
+    monkeypatch.setenv("BRAIN_VERIFY_SECONDS", "0")
+    doc = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso(
+        fallar=lambda n: McpRemoteError("MCP tools/call: HTTP 504 Gateway time-out")
+        if n <= 2
+        else None
+    )
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    assert counts["errors"] == 0
+    assert ledger.get(doc).status == "ingested"
+
+
+def test_no_reintenta_un_error_real(cfg, ledger, monkeypatch):
+    """Un 401 no se arregla repitiendolo: gastar 4 intentos solo retrasa el aviso."""
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    monkeypatch.setattr(graph_mod, "MCP_ESPERA_BASE", 0)
+    monkeypatch.setenv("BRAIN_RITMO", "0")
+    monkeypatch.setenv("BRAIN_VERIFY_SECONDS", "0")
+    doc = _prep_doc(cfg, ledger, [{"chunk_idx": 0, "total_chunks": 1, "text": "hola"}])
+
+    falso = _ClienteFalso(fallar=lambda n: McpRemoteError("401 del servidor MCP"))
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+
+    assert ledger.get(doc).status == "error"
+    assert len([c for c in falso.llamadas if c[0] == "add_memory"]) == 1

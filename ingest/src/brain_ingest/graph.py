@@ -40,6 +40,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -332,6 +333,22 @@ async def _add_episode_with_retry(graphiti, **kwargs):
 #: al final del lote consultando al servidor que llego realmente.
 PENDIENTE_PREFIJO = "pendiente:"
 
+#: Reintentos ante fallos PASAJEROS del servidor (504 de Cloudflare cuando el
+#: origen esta saturado, 502/503, rate limit). Un fallo real —401, 400— no se
+#: reintenta: repetirlo no lo va a arreglar.
+MCP_MAX_INTENTOS = 4
+MCP_ESPERA_BASE = 5.0
+#: Pausa entre episodios. Sin ella el CLI encola mas rapido de lo que el
+#: servidor drena (~15 s por episodio) y termina provocando los 504 que luego
+#: hay que reintentar. Ajustable con BRAIN_RITMO.
+PAUSA_ENTRE_EPISODIOS = 1.0
+
+_PASAJEROS = ("HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504", "timeout")
+
+
+def _es_pasajero(exc: Exception) -> bool:
+    return any(p.lower() in str(exc).lower() for p in _PASAJEROS)
+
 
 #: Cuanto se espera a que el servidor procese la cola antes de dar por perdido
 #: un episodio. La cola del MCP es asincrona: enviar y consultar de inmediato
@@ -430,17 +447,41 @@ def _mcp_add_memory(
     autenticado, y mandarlo desde el cliente seria el atajo que rompe el
     aislamiento entre personas.
     """
-    cliente.llamar(
-        "add_memory",
-        {
-            "name": name,
-            "episode_body": episode_body,
-            "source": "json" if is_json else "text",
-            "source_description": source_description,
-            "reference_time": reference_time.isoformat(),
-        },
-    )
-    return f"{PENDIENTE_PREFIJO}{name}"
+    from .mcp_remote import McpRemoteError
+
+    # El camino directo a FalkorDB reintentaba los fallos pasajeros; este no, y
+    # un solo 504 de Cloudflare descartaba el documento completo. Con el
+    # servidor cargado son frecuentes: la ingesta lo satura y el origen deja de
+    # responder dentro del limite de Cloudflare (100 s).
+    ultimo: Exception | None = None
+    for intento in range(MCP_MAX_INTENTOS):
+        try:
+            cliente.llamar(
+                "add_memory",
+                {
+                    "name": name,
+                    "episode_body": episode_body,
+                    "source": "json" if is_json else "text",
+                    "source_description": source_description,
+                    "reference_time": reference_time.isoformat(),
+                },
+            )
+            return f"{PENDIENTE_PREFIJO}{name}"
+        except McpRemoteError as exc:
+            if not _es_pasajero(exc):
+                raise
+            ultimo = exc
+            if intento < MCP_MAX_INTENTOS - 1:
+                espera = MCP_ESPERA_BASE * (2**intento)
+                log.warning(
+                    "el servidor no respondio (%s); reintento en %.0fs [%d/%d]",
+                    str(exc)[:60],
+                    espera,
+                    intento + 2,
+                    MCP_MAX_INTENTOS,
+                )
+                time.sleep(espera)
+    raise ultimo if ultimo else RuntimeError("add_memory fallo sin excepcion")
 
 
 async def ingest_chunks(
@@ -552,6 +593,11 @@ async def ingest_chunks(
                             group_id=cfg.tenant,
                         )
                         episode_uuid = episode.episode.uuid
+                    if remoto is not None:
+                        try:
+                            time.sleep(float(os.environ.get("BRAIN_RITMO", PAUSA_ENTRE_EPISODIOS)))
+                        except ValueError:
+                            time.sleep(PAUSA_ENTRE_EPISODIOS)
                     ledger.record_episode(
                         episode_uuid,
                         row.doc_id,
