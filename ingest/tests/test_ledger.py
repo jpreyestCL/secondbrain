@@ -150,3 +150,37 @@ def test_episode_domain_column_and_old_db_migration(tmp_path):
         lg.record_episode("new-ep", "d2", 0, "jpreyest", domain="salud")
         [new] = lg.episodes_for_doc("d2")
         assert new["group_id"] == "jpreyest" and new["domain"] == "salud"
+
+
+def test_rehacer_devuelve_los_documentos_a_la_cola(ledger):
+    """Reingerir no debe exigir un DELETE a mano sobre el ledger (regla 5).
+
+    Hizo falta cuando el grafo se vacio del lado del servidor: el ledger seguia
+    diciendo "ingested" y `ingest-graph` se saltaba todo.
+    """
+    _, a = ledger.upsert_file("/docs/uno.pdf", "sha-a", 10, 1e9)
+    _, b = ledger.upsert_file("/otros/dos.pdf", "sha-b", 10, 1e9)
+    for doc in (a, b):
+        ledger.set_classification(doc, "finanzas", "factura", "2024-01-01", [])
+        ledger.set_status(doc, "ingested")
+        ledger.record_episode(f"uuid-{doc}", doc, 0, "jpreyest", domain="finanzas")
+
+    n = ledger.rehacer("/docs")
+
+    assert n["documentos"] == 1 and n["episodios"] == 1
+    assert ledger.get(a).status == "classified"
+    assert ledger.episodes_for_doc(a) == []
+    # Lo de otra carpeta no se toca.
+    assert ledger.get(b).status == "ingested"
+    assert len(ledger.episodes_for_doc(b)) == 1
+
+
+def test_rehacer_sin_ruta_alcanza_todo(ledger):
+    _, a = ledger.upsert_file("/x/uno.pdf", "sha-a", 10, 1e9)
+    ledger.set_classification(a, "personal", "nota", "2024-01-01", [])
+    ledger.set_status(a, "error", error="el servidor no confirmó el episodio")
+
+    ledger.rehacer()
+
+    fila = ledger.get(a)
+    assert fila.status == "classified" and not fila.error

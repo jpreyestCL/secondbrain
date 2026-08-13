@@ -23,7 +23,7 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 2. **Nunca almacenar secretos en crudo** (contraseñas, tokens, API keys, PIN, frases semilla). Redactar con `[REDACTADO]` y guardar solo la referencia (entidad `Credencial`: qué existe y dónde está guardada).
 3. **Repos de código → codebase-memory-mcp, no Graphiti.** El grafo es para hechos de vida y decisiones, no para código fuente ni detalles de implementación de repos.
 4. **Nunca mezclar tenants.** Cada operación (guardar, ingestar, consultar) actúa sobre el grafo de UN solo tenant. El CLI local usa `--tenant jpreyest` por defecto; para operar otro tenant debe indicarse explícitamente, y jamás se leen ni escriben datos de un tenant en el grafo de otro. El aislamiento por grafo+proceso separado existe justamente para que un filtro olvidado no pueda filtrar datos entre personas — no lo debilites con atajos.
-5. **El ledger se actualiza solo vía el CLI `brain`, nunca a mano.** No editar el ledger ni ingestar documentos saltándose el pipeline (`scan` → ... → `ingest-graph`); el ledger es lo que evita duplicados.
+5. **El ledger se actualiza solo vía el CLI `brain`, nunca a mano.** No editar el ledger ni ingestar documentos saltándose el pipeline; el ledger es lo que evita duplicados. Para reingerir tras vaciar el grafo existe `brain add <carpeta> --rehacer`, que devuelve esos documentos a la cola sin tocar el grafo ni los archivos — no hace falta ningún `DELETE` a mano.
 6. **`group_id` es SIEMPRE el tenant, jamás el dominio.** El driver de FalkorDB usa el `group_id` como nombre del grafo (un grafo por tenant); el servidor MCP lo fuerza. El dominio (según SCHEMA.md) viaja como metadata: en el `source_description` estructurado (`dominio: <dominio> | tipo: <doc_type> | origen: <descripcion>`) y como prefijo `[<dominio>]` en el nombre del episodio. Los hechos que cambian se invalidan (`invalid_at`), jamás se borran.
 7. Datos médicos y financieros sí se ingestan, pero con flag de sensibilidad (`sensitivity=medical|financial`).
 8. **Antes de ingerir, verificar CONTRA QUÉ GRAFO se está escribiendo.** `127.0.0.1:6379` en el Mac es el FalkorDB del Docker **local**, no el del servidor; el del servidor está en su `:6380` y solo se alcanza por túnel SSH explícito. Comprobar con `docker ps` y `lsof -nP -iTCP:6379 -sTCP:LISTEN` antes de lanzar un lote: dos grafos divergentes es el error más caro, porque no falla nada, simplemente los datos aparecen donde nadie los consulta.
@@ -31,10 +31,22 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 
 ## Advertencias operacionales
 
-- La cola de episodios del MCP server es **en memoria**: no ejecutar `make up`/`make down`
-  ni reiniciar contenedores con episodios en vuelo (se pierden silenciosamente). Verificar
-  antes con `docker logs brain-mcp-<tenant>` que no haya "Processing episode" sin su
-  "Successfully processed". La vía durable para lotes es la CLI `brain` (ledger reanudable).
+- La cola de episodios del MCP server ya **persiste en disco** (`BRAIN_QUEUE_DIR`): cada
+  episodio se anota antes de procesarse y lo pendiente se reencola al arrancar. Antes un
+  reinicio los perdía en silencio *después* de responder "encolado" al cliente. Aun así,
+  `add_memory` responde al ENCOLAR y no al terminar: quien empuje episodios debe
+  **verificar** que llegaron (el CLI lo hace y marca en error lo no confirmado).
+- **`session.run()` del driver de FalkorDB DESCARTA el resultado y devuelve `None` siempre.**
+  Es fire-and-forget. Para LEER hay que usar `driver.execute_query()`, que además sí
+  sustituye los parámetros (`$var`) — con `session.run()` tampoco llegan, y eso invita a
+  concatenar Cypher a mano, que es peor. Síntoma: consultas de conteo devolviendo 0 con el
+  grafo lleno.
+- **La ontología de entidades no es decorativa.** Con la genérica de upstream (que traía
+  `Topic`/`Object` "use as last resort" y ningún tipo `Persona`), las tres entidades más
+  conectadas del grafo eran `General Partner`, `Partnership` y `Limited Partners` — roles
+  del articulado de los contratos — por delante de la sociedad real y del dueño. Se corrige
+  con tipos concretos **y** con `custom_extraction_instructions` que digan qué NO extraer:
+  la ontología sola no basta.
 - La extracción usa qwen2.5:7b-instruct local (~1 min/episodio). NO usar modelos razonadores (qwen3) — 20x más lentos. NO usar DeepSeek — no soporta json_schema.
   Para acelerar: `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` en `.env`, o un modelo
   no-razonador en `MODEL_NAME`. Chat y embeddings se configuran por separado

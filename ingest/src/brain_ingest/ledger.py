@@ -336,6 +336,43 @@ class Ledger:
         self.conn.execute("DELETE FROM episodes WHERE episode_uuid = ?", (episode_uuid,))
         self.conn.commit()
 
+    def rehacer(self, prefijo_ruta: str | None = None) -> dict[str, int]:
+        """Olvida lo enviado al grafo para poder reingerir desde cero.
+
+        Existe para no tener que tocar el ledger a mano. Hizo falta cuando el
+        grafo se vacio del lado del servidor (por un cambio de ontologia o una
+        limpieza): el ledger seguia diciendo "ingested" y `ingest-graph` se
+        saltaba todo, asi que la unica salida era un DELETE a mano — justo lo
+        que la regla 5 del proyecto prohibe.
+
+        NO borra nada del grafo ni toca los archivos: solo el registro local de
+        que ya se habian enviado.
+        """
+        cur = self.conn.cursor()
+        if prefijo_ruta:
+            patron = prefijo_ruta.rstrip("/") + "%"
+            cur.execute(
+                "DELETE FROM episodes WHERE doc_id IN"
+                " (SELECT doc_id FROM files WHERE path LIKE ?)",
+                (patron,),
+            )
+            episodios = cur.rowcount
+            cur.execute(
+                "UPDATE files SET status='classified', error=NULL"
+                " WHERE status IN ('ingested','error') AND path LIKE ?",
+                (patron,),
+            )
+        else:
+            cur.execute("DELETE FROM episodes")
+            episodios = cur.rowcount
+            cur.execute(
+                "UPDATE files SET status='classified', error=NULL"
+                " WHERE status IN ('ingested','error')"
+            )
+        docs = cur.rowcount
+        self.conn.commit()
+        return {"documentos": max(docs, 0), "episodios": max(episodios, 0)}
+
     def pending_expiry_episodes(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT * FROM episodes WHERE pending_expiry = 1 AND expired = 0"

@@ -249,6 +249,11 @@ def add(
     revisar: bool = typer.Option(
         False, "--revisar", help="Para antes de enviar, para que revises la clasificación"
     ),
+    rehacer: bool = typer.Option(
+        False,
+        "--rehacer",
+        help="Reenvía al grafo lo ya enviado (tras vaciarlo o cambiar la extracción)",
+    ),
     url: Optional[str] = typer.Option(None, "--url", help="Servidor MCP (si no hiciste login)"),
 ) -> None:
     """Ingiere una carpeta completa: un solo comando de principio a fin.
@@ -259,6 +264,16 @@ def add(
     el envío al servidor falla, se retoma donde iba en vez de rehacer todo.
     Pero orquestarlos a mano no aporta nada, así que este es el camino normal.
     """
+    if rehacer:
+        # Sin esto, la unica forma de reingerir era un DELETE a mano sobre el
+        # ledger, que es exactamente lo que la regla 5 del proyecto prohibe.
+        cfg, ledger = _open()
+        with ledger:
+            n = ledger.rehacer(str(folder))
+        console.print(
+            f"rehacer: {n['documentos']} documento(s) vuelven a la cola "
+            f"({n['episodios']} envío(s) olvidados). No se tocó el grafo ni tus archivos."
+        )
     scan(folder)
     extract()
     classify(apply=None, auto=True, dominio=dominio)
