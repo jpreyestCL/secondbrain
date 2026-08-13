@@ -144,8 +144,15 @@ def sha256_file(path: Path, intentos: int = 3) -> str:
 
 
 @app.command()
-def scan(folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True)) -> None:
-    """Walk FOLDER, hash every file and upsert it into the ledger."""
+def scan(
+    folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
+) -> dict:
+    """Walk FOLDER, hash every file and upsert it into the ledger.
+
+    Devuelve el resumen para que `add` sepa si la carpeta quedo COMPLETA: un
+    archivo que no se pudo leer no esta en el ledger, y sin este dato `add`
+    diria "ya esta todo guardado" cuando en realidad faltan documentos.
+    """
     cfg, ledger = _open()
     counts = {"new": 0, "changed": 0, "unchanged": 0, "ilegibles": 0}
     en_la_nube: list[Path] = []
@@ -195,6 +202,7 @@ def scan(folder: Path = typer.Argument(..., exists=True, file_okay=False, resolv
             console.print(f"  · {p.name}")
         if len(en_la_nube) > 5:
             console.print(f"  · … y {len(en_la_nube) - 5} más")
+    return {**counts, "en_la_nube": len(en_la_nube)}
 
 
 # -- extract -----------------------------------------------------------------
@@ -337,7 +345,8 @@ def add(
             f"rehacer: {n['documentos']} documento(s) vuelven a la cola "
             f"({n['episodios']} envío(s) olvidados). No se tocó el grafo ni tus archivos."
         )
-    scan(folder)
+    resumen = scan(folder)
+    faltantes = resumen.get("en_la_nube", 0) + resumen.get("ilegibles", 0)
 
     # Sin esto, `add` sobre una carpeta ya ingerida no hace NADA y no lo dice:
     # se ve igual que un exito. El silencio en un no-op es la misma trampa que
@@ -349,6 +358,15 @@ def add(
         ]
     ya = [f for f in bajo if f.status == "ingested" and not f.superseded]
     if bajo and len(ya) == len(bajo):
+        if faltantes:
+            # Decir "ya está todo" con archivos que no se pudieron leer seria
+            # una afirmacion falsa: esos documentos no estan en ninguna parte.
+            console.print(
+                f"[yellow]Los {len(ya)} documento(s) legibles ya estaban en tu memoria, "
+                f"pero {faltantes} no se pudieron leer[/yellow] (ver arriba), así que esta "
+                f"carpeta NO está completa. Resuelve eso y vuelve a correr el mismo comando."
+            )
+            return
         console.print(
             f"Los {len(ya)} documento(s) de esta carpeta ya están en tu memoria y no han "
             f"cambiado, así que no hay nada nuevo que enviar.\n"

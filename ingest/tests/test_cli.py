@@ -228,3 +228,42 @@ def test_un_error_real_de_lectura_no_se_reintenta(tmp_path, monkeypatch):
     with pytest.raises(OSError) as exc:
         sha256_file(p)
     assert exc.value.errno == 13
+
+
+def test_no_dice_que_esta_todo_si_algun_archivo_no_se_pudo_leer(
+    cfg, ledger, tmp_path, monkeypatch
+):
+    """Con archivos atascados en iCloud, la carpeta NO está completa.
+
+    El que falla no queda en el ledger, asi que el resto sale "todo ingerido" y
+    `add` afirmaria que no falta nada — sobre documentos que no estan en ningun
+    lado. Es la misma afirmacion falsa que el resto de la sesion.
+    """
+    from typer.testing import CliRunner
+
+    from brain_ingest.cli import app
+
+    carpeta = tmp_path / "docs"
+    carpeta.mkdir()
+    (carpeta / "bueno.md").write_text("contenido", encoding="utf-8")
+    (carpeta / "en-la-nube.pdf").write_bytes(b"x" * 10)
+
+    monkeypatch.setenv("BRAIN_HOME", str(cfg.home))
+    monkeypatch.setattr("brain_ingest.cli.time.sleep", lambda *_: None)
+    abrir_real = Path.open
+
+    def abrir(self, *a, **k):
+        if self.name == "en-la-nube.pdf":
+            raise OSError(60, "Operation timed out")
+        return abrir_real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", abrir)
+    runner = CliRunner()
+    runner.invoke(app, ["--tenant", cfg.tenant, "scan", str(carpeta)])
+    with ledger:
+        for fila in ledger.all_files():
+            ledger.set_status(fila.doc_id, "ingested")
+
+    res = runner.invoke(app, ["--tenant", cfg.tenant, "add", str(carpeta)])
+    assert "NO está completa" in res.stdout
+    assert "no hay nada nuevo que enviar" not in res.stdout
