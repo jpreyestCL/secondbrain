@@ -146,6 +146,11 @@ def sha256_file(path: Path, intentos: int = 3) -> str:
 @app.command()
 def scan(
     folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
+    excluir: Optional[list[str]] = typer.Option(
+        None,
+        "--excluir",
+        help="Carpeta a saltar (repetible). Ej: --excluir _Duplicados --excluir 'oferta venta'",
+    ),
 ) -> dict:
     """Walk FOLDER, hash every file and upsert it into the ledger.
 
@@ -154,13 +159,16 @@ def scan(
     diria "ya esta todo guardado" cuando en realidad faltan documentos.
     """
     cfg, ledger = _open()
-    counts = {"new": 0, "changed": 0, "unchanged": 0, "ilegibles": 0}
+    counts = {"new": 0, "changed": 0, "unchanged": 0, "ilegibles": 0, "excluidos": 0}
     en_la_nube: list[Path] = []
     with ledger:
         for path in sorted(folder.rglob("*")):
             if not path.is_file() or path.name.startswith("."):
                 continue
             if any(part in SKIP_DIRS or part.startswith(".") for part in path.parts[:-1]):
+                continue
+            if excluir and any(e in path.parts[:-1] for e in excluir):
+                counts["excluidos"] += 1
                 continue
             try:
                 stat = path.stat()
@@ -186,6 +194,8 @@ def scan(
         f"scan done: {counts['new']} new, {counts['changed']} changed "
         f"(old versions marked for expiry), {counts['unchanged']} unchanged"
     )
+    if counts["excluidos"]:
+        console.print(f"{counts['excluidos']} archivo(s) omitidos por --excluir")
     if counts["ilegibles"]:
         console.print(f"[yellow]{counts['ilegibles']} archivo(s) ilegibles, omitidos[/yellow]")
     if en_la_nube:
@@ -247,9 +257,13 @@ def extract() -> None:
                     counts["en_la_nube"] = counts.get("en_la_nube", 0) + 1
                     log.info("[en la nube] %s", path.name)
                     continue
-                ledger.set_status(row.doc_id, "error", error=motivo[:500])
+                try:
+                    detalle = f" [{path.stat().st_size} bytes]"
+                except OSError:
+                    detalle = ""
+                ledger.set_status(row.doc_id, "error", error=(motivo + detalle)[:500])
                 counts["errors"] += 1
-                log.error("[error] %s: %s", path, exc)
+                log.error("[error] %s%s: %s", path.name, detalle, motivo[:160])
                 continue
             suffix = ".json" if kind == "json" else ".txt"
             out = cfg.extracted_dir / f"{row.doc_id}{suffix}"
@@ -350,6 +364,9 @@ def add(
         help="Reenvía al grafo lo ya enviado (tras vaciarlo o cambiar la extracción)",
     ),
     url: Optional[str] = typer.Option(None, "--url", help="Servidor MCP (si no hiciste login)"),
+    excluir: Optional[list[str]] = typer.Option(
+        None, "--excluir", help="Carpeta a saltar (repetible): duplicados, borradores…"
+    ),
 ) -> None:
     """Ingiere una carpeta completa: un solo comando de principio a fin.
 
@@ -369,7 +386,7 @@ def add(
             f"rehacer: {n['documentos']} documento(s) vuelven a la cola "
             f"({n['episodios']} envío(s) olvidados). No se tocó el grafo ni tus archivos."
         )
-    resumen = scan(folder)
+    resumen = scan(folder, excluir=excluir)
     faltantes = resumen.get("en_la_nube", 0) + resumen.get("ilegibles", 0)
 
     # Sin esto, `add` sobre una carpeta ya ingerida no hace NADA y no lo dice:

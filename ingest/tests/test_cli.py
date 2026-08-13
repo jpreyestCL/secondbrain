@@ -267,3 +267,42 @@ def test_no_dice_que_esta_todo_si_algun_archivo_no_se_pudo_leer(
     res = runner.invoke(app, ["--tenant", cfg.tenant, "add", str(carpeta)])
     assert "NO está completa" in res.stdout
     assert "no hay nada nuevo que enviar" not in res.stdout
+
+
+def test_excluir_salta_carpetas_completas(cfg, tmp_path, monkeypatch):
+    """Duplicados y borradores no deben entrar al grafo.
+
+    Un borrador contradice a su version firmada y el grafo no tiene como saber
+    cual manda; los duplicados inflan el costo sin aportar nada.
+    """
+    from typer.testing import CliRunner
+
+    from brain_ingest.cli import app
+
+    raiz = tmp_path / "Sociedades"
+    (raiz / "Venta Final").mkdir(parents=True)
+    (raiz / "Venta Final" / "_Duplicados").mkdir()
+    (raiz / "oferta venta").mkdir()
+    (raiz / "Venta Final" / "firmado.md").write_text("firmado", encoding="utf-8")
+    (raiz / "Venta Final" / "_Duplicados" / "copia.md").write_text("copia", encoding="utf-8")
+    (raiz / "oferta venta" / "borrador.md").write_text("borrador", encoding="utf-8")
+
+    monkeypatch.setenv("BRAIN_HOME", str(cfg.home))
+    res = CliRunner().invoke(
+        app,
+        ["--tenant", cfg.tenant, "scan", str(raiz),
+         "--excluir", "_Duplicados", "--excluir", "oferta venta"],
+    )
+    assert "1 new" in res.stdout
+    assert "2 archivo(s) omitidos por --excluir" in res.stdout
+
+
+def test_un_archivo_vacio_no_es_un_error(tmp_path):
+    """0 bytes no es corrupcion: PyMuPDF decia "failed to open as type pdf"."""
+    from brain_ingest.extract import SkipFile, extract_file
+
+    p = tmp_path / "vacio.pdf"
+    p.touch()
+    with pytest.raises(SkipFile) as exc:
+        extract_file(p)
+    assert "vacío" in str(exc.value)

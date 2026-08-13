@@ -82,6 +82,14 @@ def extract_file(path: Path) -> tuple[str, str]:
         raise SkipFile(
             "está en iCloud y no en el disco; descárgalo (brctl download) y vuelve a correr"
         )
+    try:
+        tam = path.stat().st_size
+    except OSError:
+        tam = -1
+    if tam == 0:
+        # Un archivo vacio no esta corrupto: no tiene nada. Sin esto, PyMuPDF
+        # respondia "Failed to open file as type pdf" y parecia dañado.
+        raise SkipFile("el archivo está vacío (0 bytes)")
     if ext in CODE_EXTS:
         raise SkipFile(CODE_SKIP_REASON)
     if ext in TEXT_EXTS:
