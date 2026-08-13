@@ -377,3 +377,66 @@ export async function buscarDatos(
     return [];
   }
 }
+
+
+/** Una persona, empresa o lugar encontrado en la memoria. */
+export interface EntidadEncontrada {
+  nombre: string;
+  uuid: string;
+  resumen: string;
+}
+
+/** Busca entidades por nombre/semántica. Vacío si el upstream falla. */
+export async function buscarEntidades(
+  upstreamUrl: string,
+  consulta: string,
+  fetchImpl: typeof fetch = fetch,
+  maximo = 8,
+): Promise<EntidadEncontrada[]> {
+  const client = new McpHttpClient(upstreamUrl, fetchImpl);
+  try {
+    await client.initialize();
+    const crudo = (await client.callTool("search_nodes", {
+      query: consulta,
+      max_nodes: maximo,
+    })) as Record<string, unknown> | null;
+    const lista = (crudo?.nodes ?? crudo?.result ?? []) as Array<Record<string, unknown>>;
+    return (Array.isArray(lista) ? lista : [])
+      .map((n) => ({
+        nombre: String(n.name ?? ""),
+        uuid: String(n.uuid ?? ""),
+        resumen: String(n.summary ?? ""),
+      }))
+      .filter((n) => n.nombre && n.uuid);
+  } catch {
+    return [];
+  }
+}
+
+/** Vecindario exacto de una entidad (un salto), para dibujar la constelación. */
+export async function vecindario(
+  upstreamUrl: string,
+  uuid: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ entidad: string; uuid: string; relaciones: Array<{ con: string; uuid: string; dato: string; desde: string; hasta: string }> } | null> {
+  const client = new McpHttpClient(upstreamUrl, fetchImpl);
+  try {
+    await client.initialize();
+    const crudo = (await client.callTool("get_neighbors", { uuid })) as Record<string, unknown> | null;
+    if (!crudo || typeof crudo !== "object" || "error" in crudo) return null;
+    const rels = (crudo.relaciones ?? []) as Array<Record<string, unknown>>;
+    return {
+      entidad: String(crudo.entidad ?? ""),
+      uuid: String(crudo.uuid ?? uuid),
+      relaciones: (Array.isArray(rels) ? rels : []).map((r) => ({
+        con: String(r.con ?? ""),
+        uuid: String(r.uuid ?? ""),
+        dato: String(r.dato ?? ""),
+        desde: String(r.desde ?? ""),
+        hasta: String(r.hasta ?? ""),
+      })),
+    };
+  } catch {
+    return null;
+  }
+}

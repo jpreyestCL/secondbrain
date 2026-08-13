@@ -984,6 +984,75 @@ async def get_stats() -> dict[str, Any] | ErrorResponse:
         return ErrorResponse(error=f'Error obteniendo el resumen: {e}')
 
 
+# PATCH (secondbrain): vecindario de una entidad.
+#
+# search_memory_facts acepta center_node_uuid, pero sigue siendo una busqueda
+# SEMANTICA: necesita una consulta y devuelve lo que se le parece, no lo que
+# realmente esta conectado. Para dibujar "con que se relaciona esto" hace falta
+# la respuesta exacta, que es una consulta de grafo de un salto.
+@mcp.tool()
+async def get_neighbors(uuid: str, limite: int = 40) -> dict[str, Any] | ErrorResponse:
+    """Con que se relaciona una entidad: sus vecinos a un salto y desde cuando.
+
+    Args:
+        uuid: identificador de la entidad (lo devuelve search_nodes)
+        limite: maximo de relaciones a devolver
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    tenant = _tenant_group_id()
+    try:
+        client = await graphiti_service.get_client()
+        async with client.driver.session() as session:
+            res = await session.run(
+                'MATCH (a:Entity)-[e:RELATES_TO]-(b:Entity) '
+                'WHERE a.uuid = $uuid AND a.group_id = $group_id '
+                'RETURN a.name, b.name, b.uuid, e.fact, e.valid_at, e.invalid_at '
+                'LIMIT $limite',
+                uuid=uuid,
+                group_id=tenant,
+                limite=int(limite),
+            )
+            filas = [list(r.values()) if hasattr(r, 'values') else r async for r in res]
+
+        centro = ''
+        relaciones = []
+        for f in filas:
+            f = list(f) + [None] * (6 - len(f))
+            centro = centro or (f[0] or '')
+            relaciones.append(
+                {
+                    'con': f[1] or '',
+                    'uuid': f[2] or '',
+                    'dato': f[3] or '',
+                    'desde': f[4] or '',
+                    'hasta': f[5] or '',
+                }
+            )
+        if not centro:
+            # Sin vecinos igual se devuelve el nombre, para no mostrar una
+            # pagina vacia sin explicar que la entidad existe pero esta aislada.
+            async with client.driver.session() as session:
+                res = await session.run(
+                    'MATCH (a:Entity) WHERE a.uuid = $uuid AND a.group_id = $group_id '
+                    'RETURN a.name',
+                    uuid=uuid,
+                    group_id=tenant,
+                )
+                filas = [list(r.values()) if hasattr(r, 'values') else r async for r in res]
+            centro = (filas[0][0] if filas and filas[0] else '') or ''
+            if not centro:
+                return ErrorResponse(error='No existe esa entidad en tu memoria')
+
+        return {'entidad': centro, 'uuid': uuid, 'relaciones': relaciones}
+    except Exception as e:
+        logger.error(f'Error en get_neighbors: {e}')
+        return ErrorResponse(error=f'Error obteniendo el vecindario: {e}')
+
+
 @mcp.tool()
 async def get_status() -> StatusResponse:
     """Get the status of the Graphiti MCP server and database connection."""

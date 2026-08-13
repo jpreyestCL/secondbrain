@@ -8,6 +8,7 @@
  * enrutado, sus sesiones abiertas y las aplicaciones OAuth que autorizó, con
  * un botón para revocar cada cosa y un enlace para descargar toda su memoria.
  */
+import { constelacionSvg } from "./constelacion.js";
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
 import { dashboardShell } from "./dashboard-layout.js";
@@ -58,7 +59,17 @@ export interface CuentaPageOptions {
     ultimos: Array<{ documento: string; dominio: string; guardado: string }>;
   } | null;
   /** Resultados de una búsqueda hecha desde el panel. */
-  busqueda?: { consulta: string; datos: Array<{ texto: string; desde: string | null; hasta: string | null }> } | null;
+  busqueda?: {
+    consulta: string;
+    datos: Array<{ texto: string; desde: string | null; hasta: string | null }>;
+    entidades?: Array<{ nombre: string; uuid: string; resumen: string }>;
+  } | null;
+  /** Constelación de una entidad, cuando se está mirando una. */
+  constelacion?: {
+    entidad: string;
+    uuid: string;
+    relaciones: Array<{ con: string; uuid: string; dato: string; desde: string; hasta: string }>;
+  } | null;
   sessions: CuentaSessionView[];
   clients: CuentaClientView[];
   csrf: string;
@@ -232,6 +243,20 @@ ${r.ultimos
           : `
     <p class="muted">No encontré nada para «${escapeHtml(opts.busqueda.consulta)}».</p>`
         : ""
+    }${
+      opts.busqueda?.entidades?.length
+        ? `
+    <h3>Personas, empresas y lugares</h3>
+    <p class="muted">Pincha uno para ver con qué se relaciona.</p>
+    <ul class="hallazgos">${opts.busqueda.entidades
+      .map(
+        (e) =>
+          `<li><a href="/cuenta?entidad=${encodeURIComponent(e.uuid)}">${escapeHtml(
+            e.nombre,
+          )}</a>${e.resumen ? ` <span class="muted">— ${escapeHtml(e.resumen.slice(0, 120))}</span>` : ""}</li>`,
+      )
+      .join("")}</ul>`
+        : ""
     }
   </section>`;
 
@@ -260,6 +285,42 @@ ${r.ultimos
       <button type="submit">Reenviar verificación</button>
     </form>`;
 
+  const cons = opts.constelacion;
+  const vivas = cons ? cons.relaciones.filter((r) => !r.hasta).length : 0;
+  const cambiadas = cons ? cons.relaciones.length - vivas : 0;
+  const seccionConstelacion = !cons
+    ? ""
+    : `
+  <section>
+    <p class="eyebrow">Relaciones</p>
+    <h2>${escapeHtml(cons.entidad)}</h2>
+    <p class="muted">${
+      cons.relaciones.length === 0
+        ? "Todavía no hay nada conectado con esto."
+        : `${vivas} relación${vivas === 1 ? "" : "es"} vigente${vivas === 1 ? "" : "s"}${
+            cambiadas ? ` · ${cambiadas} que ya cambió` : ""
+          }. Pincha cualquier nombre para seguir el hilo.`
+    }</p>${
+      cons.relaciones.length
+        ? `
+    ${constelacionSvg(cons, "/cuenta")}
+    <ul class="hallazgos">${cons.relaciones
+      .map(
+        (r) =>
+          `<li>${escapeHtml(r.dato || r.con)}${
+            r.hasta
+              ? ` <span class="pend">— ya no vigente desde ${escapeHtml(fmtFecha(r.hasta))}</span>`
+              : r.desde
+                ? ` <span class="muted">— desde ${escapeHtml(fmtFecha(r.desde))}</span>`
+                : ""
+          }</li>`,
+      )
+      .join("")}</ul>`
+        : ""
+    }
+    <p><a href="/cuenta">← volver al resumen</a></p>
+  </section>`;
+
   const body = `  <section class="head">
     <p class="eyebrow">Panel personal</p>
     <h1>Tu cuenta</h1>${notice}
@@ -276,7 +337,7 @@ ${r.ultimos
     <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
   </section>
 
-${seccionResumen}
+${seccionConstelacion}${seccionResumen}
 
   <section>
     <p class="eyebrow">Portabilidad</p>

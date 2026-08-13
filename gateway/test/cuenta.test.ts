@@ -284,3 +284,58 @@ describe("resumen de la memoria", () => {
     expect(html).toContain("Cuenta Santander 456");
   });
 });
+
+describe("constelación de una entidad", () => {
+  const cons = {
+    entidad: "Invest Andes LP",
+    uuid: "u-centro",
+    relaciones: [
+      { con: "Inversiones Linets SpA", uuid: "u-1", dato: "Inversiones Linets SpA posee el 99,9% de Invest Andes LP", desde: "2022-10-31", hasta: "" },
+      { con: "Banco de Chile", uuid: "u-2", dato: "Invest Andes LP tuvo cuenta en Banco de Chile", desde: "2023-01-01", hasta: "2026-08-01" },
+    ],
+  };
+  const base = {
+    email: "a@b.cl", emailVerified: true, upstream: "http://x/mcp", mcpUrl: "https://y/mcp",
+    tenant: "ana", sessions: [], clients: [], csrf: "t", resumen: null,
+  };
+
+  it("dibuja lo vigente y lo caducado distinto", () => {
+    const html = cuentaPageHtml({ ...base, constelacion: cons });
+    expect(html).toContain('class="constelacion"');
+    // La vigencia se codifica en la FORMA, no solo en el texto: lo que dejó de
+    // ser verdad va discontinuo y en el color de lo histórico.
+    expect(html).toContain('class="arista viva"');
+    expect(html).toContain('class="arista historica"');
+    expect(html).toContain("Invest Andes LP");
+    expect(html).toContain("Banco de Chile");
+  });
+
+  it("cada vecino es navegable, para seguir el hilo", () => {
+    const html = cuentaPageHtml({ ...base, constelacion: cons });
+    expect(html).toContain("/cuenta?entidad=u-1");
+    expect(html).toContain("/cuenta?entidad=u-2");
+  });
+
+  it("una entidad aislada lo dice, en vez de mostrar un lienzo vacío", () => {
+    const html = cuentaPageHtml({
+      ...base,
+      constelacion: { entidad: "Algo suelto", uuid: "u-0", relaciones: [] },
+    });
+    expect(html).toContain("Todavía no hay nada conectado");
+    // El shell trae sus propios iconos SVG: se comprueba el del dibujo.
+    expect(html).not.toContain('class="constelacion"');
+  });
+
+  it("escapa los nombres: un dato guardado no puede inyectar markup", () => {
+    const html = cuentaPageHtml({
+      ...base,
+      constelacion: {
+        entidad: '<script>alert(1)</script>',
+        uuid: "u-x",
+        relaciones: [{ con: "<img onerror=x>", uuid: "u-y", dato: "d", desde: "", hasta: "" }],
+      },
+    });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toContain("<img onerror=x>");
+  });
+});

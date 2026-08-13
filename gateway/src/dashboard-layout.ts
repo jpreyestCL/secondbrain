@@ -14,6 +14,7 @@
  * /guia es PÚBLICA: cuando no hay sesión la barra muestra «Iniciar sesión» en
  * vez del correo y del botón de salir, pero el resto del shell es idéntico.
  */
+import { CONSTELACION_CSS } from "./constelacion.js";
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
 
@@ -413,6 +414,7 @@ export function dashboardShell(opts: DashboardShellOptions): string {
     .hallazgos { list-style: none; padding: 0; margin: 0; }
     .hallazgos li { padding: .6rem 0; border-bottom: 1px solid var(--linea, #e6e1d5);
       line-height: 1.5; }
+  ${CONSTELACION_CSS}
   </style>
 </head>
 <body>
