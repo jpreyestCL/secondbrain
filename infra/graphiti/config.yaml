@@ -66,22 +66,35 @@ graphiti:
   group_id: ${GRAPHITI_GROUP_ID:main}
   episode_id_prefix: ${EPISODE_ID_PREFIX:}
   user_id: ${USER_ID:mcp_user}
+  # Ontologia ajustada a un cerebro de VIDA PERSONAL, no al ejemplo generico de
+  # upstream. El original traia Topic y Object ("use as last resort"), que
+  # legitiman abstracciones, y no tenia un tipo Persona.
+  #
+  # El efecto se midio: con la ontologia generica, las tres entidades mas
+  # conectadas del grafo eran "General Partner" (43), "Partnership" (40) y
+  # "Limited Partners" (38) — roles y conceptos del articulado de los
+  # contratos — por delante de la sociedad real (36) y del dueño (14). Buscar
+  # "socios" devolvia el concepto antes que a las personas.
+  #
+  # Cada descripcion dice tambien lo que NO es: el extractor sigue esas pistas.
   entity_types:
-    - name: "Preference"
-      description: "User preferences, choices, opinions, or selections (PRIORITIZE over most other types except User/Assistant)"
-    - name: "Requirement"
-      description: "Specific needs, features, or functionality that must be fulfilled"
-    - name: "Procedure"
-      description: "Standard operating procedures and sequential instructions"
-    - name: "Location"
-      description: "Physical or virtual places where activities occur"
-    - name: "Event"
-      description: "Time-bound activities, occurrences, or experiences"
-    - name: "Organization"
-      description: "Companies, institutions, groups, or formal entities"
-    - name: "Document"
-      description: "Information content in various forms (books, articles, reports, etc.)"
-    - name: "Topic"
-      description: "Subject of conversation, interest, or knowledge domain (use as last resort)"
-    - name: "Object"
-      description: "Physical items, tools, devices, or possessions (use as last resort)"
+    - name: "Persona"
+      description: "Un ser humano concreto, identificado por su nombre propio (ej: Juan Pablo Reyes Tollini, Dra. Laura Diaz). NO es un rol ni una parte de un contrato: 'General Partner', 'el comprador', 'Receiving Party' o 'el cliente' NO son personas."
+    - name: "Organizacion"
+      description: "Una empresa, sociedad, banco, clinica, institucion publica o estudio de abogados, identificada por su razon social (ej: Inversiones Linets SpA, Banco de Chile, Internal Revenue Service). NO son organizaciones las figuras juridicas genericas como 'Partnership', 'LP' o 'sociedad anonima'."
+    - name: "Lugar"
+      description: "Un lugar concreto: direccion, ciudad, pais, propiedad o inmueble (ej: Av. Alameda Cinco 66-W Colina, Ontario, depto 510). NO es un lugar una jurisdiccion mencionada solo como marco legal."
+    - name: "Documento"
+      description: "Un documento identificable: contrato, escritura, factura, examen medico, declaracion de impuestos, poder, certificado. Suele tener numero, fecha o partes concretas. NO son documentos las clausulas ni los tipos genericos de documento ('Agreement', 'Notice', 'Sale Notice')."
+    - name: "Cuenta"
+      description: "Una cuenta bancaria, de inversion o tributaria, con su numero o identificador (ej: cuenta corriente 123-456, EIN 98-1707887, RUT de una sociedad)."
+    - name: "Activo"
+      description: "Un bien concreto del que se es dueño: inmueble, vehiculo, participacion societaria con su porcentaje, inversion. NO son activos los conceptos como 'Percentage Interest' o 'acciones' en abstracto."
+    - name: "Obligacion"
+      description: "Una deuda, credito, arriendo o compromiso de pago concreto, con monto o contraparte (ej: credito hipotecario con el Banco X, deuda de 45 millones con Corfo)."
+    - name: "Evento"
+      description: "Un hecho ocurrido en una fecha: reunion, viaje, firma, cirugia, mudanza, pago. NO son eventos los procedimientos descritos en abstracto."
+    - name: "Condicion"
+      description: "Un diagnostico, tratamiento, medicamento o condicion de salud concreta."
+    - name: "Credencial"
+      description: "La REFERENCIA a una credencial que existe y donde esta guardada — nunca su valor. El valor se redacta antes de llegar aqui."

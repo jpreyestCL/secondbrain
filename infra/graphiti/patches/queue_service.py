@@ -9,6 +9,33 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+#: Guia adicional para el extractor de entidades. Va al prompt de extraccion.
+INSTRUCCIONES_EXTRACCION = """
+Este grafo guarda la vida de UNA persona: sus documentos, su dinero, su salud,
+su trabajo y sus proyectos. Extrae solo cosas CONCRETAS e IDENTIFICABLES.
+
+NO extraigas como entidad:
+- Roles o partes de un contrato: "General Partner", "Limited Partners",
+  "Receiving Party", "el comprador", "Third Party Purchaser", "el arrendatario".
+  Si el documento dice que Juan Pablo es el General Partner de Invest Andes LP,
+  la entidad es la PERSONA y la SOCIEDAD; "General Partner" es la relacion
+  entre ambas, no un tercer nodo.
+- Figuras juridicas o conceptos: "Partnership", "Agreement", "Notice",
+  "Percentage Interest", "Extraordinary Resolution", "sociedad anonima".
+- Terminos genericos que aparecen en cualquier documento del mismo tipo.
+
+SI extrae:
+- Personas con nombre y apellido.
+- Empresas, bancos, clinicas e instituciones con su razon social.
+- Lugares y direcciones concretas.
+- Documentos identificables (con numero, fecha o partes).
+- Cuentas, montos, activos y obligaciones con su identificador.
+
+Ante la duda: si el nombre podria aparecer igual en el contrato de otra
+persona, NO es una entidad de este grafo — es vocabulario del documento.
+"""
+
+
 class QueueService:
     """Service for managing sequential episode processing queues by group_id."""
 
@@ -142,6 +169,14 @@ class QueueService:
                     # PATCH (secondbrain): respetar la fecha real si viene del tool.
                     reference_time=reference_time or datetime.now(timezone.utc),
                     entity_types=entity_types,
+                    # PATCH (secondbrain): instrucciones negativas al extractor.
+                    # La ontologia sola no basta: el articulado de un contrato
+                    # define roles ("el General Partner podra...") y el modelo
+                    # los lee como entidades con nombre propio. Medido: las tres
+                    # entidades mas conectadas del grafo eran "General Partner",
+                    # "Partnership" y "Limited Partners", por delante de la
+                    # sociedad real y del dueño.
+                    custom_extraction_instructions=INSTRUCCIONES_EXTRACCION,
                     uuid=uuid,
                 )
 
