@@ -47,6 +47,12 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+def _lote() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
 _tenant_override: Optional[str] = None
 
 
@@ -380,6 +386,11 @@ def add(
     excluir: Optional[list[str]] = typer.Option(
         None, "--excluir", help="Carpeta a saltar (repetible): duplicados, borradores…"
     ),
+    destilar_en: Optional[list[str]] = typer.Option(
+        None,
+        "--destilar",
+        help="Carpeta cuyos documentos resume Claude en vez de enviarse crudos (repetible)",
+    ),
 ) -> None:
     """Ingiere una carpeta completa: un solo comando de principio a fin.
 
@@ -432,7 +443,19 @@ def add(
 
     extract()
     classify(apply=None, auto=True, dominio=dominio)
-    chunk()
+    chunk(destilar=destilar_en)
+    if destilar_en:
+        _, ledger2 = _open()
+        with ledger2:
+            quedan = len(list(ledger2.by_status("por-destilar")))
+        if quedan:
+            console.print(
+                f"\n[bold]{quedan} documento(s) esperan destilado.[/bold] Ejecuta "
+                f"[bold]brain destilar[/bold], pide a Claude que complete el manifiesto y "
+                f"luego [bold]brain destilar --apply <archivo>[/bold]."
+            )
+            if not revisar:
+                console.print("El resto ya se envió.")
     if revisar:
         console.print(
             "\n[bold]Pausa antes de enviar.[/bold] Revisa con `brain status`; cuando "
@@ -447,13 +470,23 @@ def add(
 
 
 @app.command()
-def chunk() -> None:
+def chunk(
+    destilar: Optional[list[str]] = typer.Option(
+        None, "--destilar", help="Carpeta cuyos documentos se resumen en vez de trocearse"
+    ),
+) -> None:
     """Chunk extracted text of classified (or extracted) docs into ~/.brain/chunks/."""
     cfg, ledger = _open()
-    n_docs = n_chunks = 0
+    n_docs = n_chunks = n_destilar = 0
     with ledger:
         rows = list(ledger.by_status("classified")) + list(ledger.by_status("extracted"))
         for row in rows:
+            if destilar and any(e in Path(row.path).parts[:-1] for e in destilar):
+                # No se trocea: lo condensara Claude. Enviar el texto crudo de
+                # estas carpetas es lo caro y lo que menos aporta.
+                ledger.set_status(row.doc_id, "por-destilar")
+                n_destilar += 1
+                continue
             src = cfg.extracted_dir / f"{row.doc_id}.txt"
             if not src.exists():
                 src = cfg.extracted_dir / f"{row.doc_id}.json"
@@ -475,6 +508,8 @@ def chunk() -> None:
             n_docs += 1
             n_chunks += len(chunks)
     console.print(f"chunk done: {n_chunks} chunks across {n_docs} docs")
+    if n_destilar:
+        console.print(f"{n_destilar} documento(s) marcados para destilar")
 
 
 # -- ingest-graph ------------------------------------------------------------
@@ -612,6 +647,110 @@ def login(
     console.print(f"conectado a [bold]{base}[/bold] ({len(herramientas)} herramientas)")
     console.print(f"espacio: [bold]{cfg.tenant}[/bold]")
     console.print("listo: `brain ingest-graph` ya envía a este servidor, sin claves locales.")
+
+
+# -- destilar ----------------------------------------------------------------
+
+
+DESTILAR_INSTRUCCIONES = (
+    "Para cada documento, reemplaza `hechos: []` por la lista de hechos concretos que "
+    "contiene, en frases completas y autocontenidas (cada una debe entenderse sola). "
+    "Incluye nombres propios, montos, fechas, porcentajes e identificadores tal como "
+    "aparecen. NO interpretes ni opines. Si el documento no aporta ningún hecho, deja "
+    "la lista vacía y se marcará como omitido. Luego: brain destilar --apply <archivo>"
+)
+
+
+@app.command()
+def destilar(
+    apply: Optional[Path] = typer.Option(
+        None, "--apply", exists=True, dir_okay=False, help="Manifiesto ya completado"
+    ),
+) -> None:
+    """Emite (o aplica) el manifiesto de destilado.
+
+    Destilar es que Claude condense el documento a hechos y se envíen esos
+    hechos en vez del texto crudo: mucho más barato, porque el costo del grafo
+    es proporcional al texto. A cambio se pierde la literalidad — por eso solo
+    ocurre en las carpetas que se piden con `--destilar`, nunca por defecto.
+    """
+    cfg, ledger = _open()
+    with ledger:
+        if apply is not None:
+            datos = json.loads(apply.read_text(encoding="utf-8"))
+            hechos_total = omitidos = 0
+            for d in datos.get("documents", []):
+                fila = ledger.get(d["doc_id"])
+                if fila is None:
+                    continue
+                hechos = [h.strip() for h in (d.get("hechos") or []) if str(h).strip()]
+                if not hechos:
+                    ledger.set_status(d["doc_id"], "skipped", error="destilado sin hechos")
+                    omitidos += 1
+                    continue
+                # Los hechos se guardan como los fragmentos del documento: de
+                # ahi en adelante el pipeline es identico al normal.
+                chunks = [
+                    {
+                        "doc_id": d["doc_id"],
+                        "chunk_idx": i,
+                        "total_chunks": len(hechos),
+                        "text": h,
+                        "source_path": fila.path,
+                        "sha256": fila.sha256,
+                        "destilado": True,
+                    }
+                    for i, h in enumerate(hechos)
+                ]
+                (cfg.chunks_dir / f"{d['doc_id']}.json").write_text(
+                    json.dumps(chunks, ensure_ascii=False, indent=1), encoding="utf-8"
+                )
+                ledger.set_status(d["doc_id"], "classified")
+                hechos_total += len(hechos)
+            console.print(
+                f"destilar --apply: {hechos_total} hecho(s) en {len(datos.get('documents', []))} "
+                f"documento(s), {omitidos} sin contenido"
+            )
+            console.print("siguiente paso: [bold]brain ingest-graph[/bold]")
+            return
+
+        pendientes = [f for f in ledger.by_status("por-destilar")]
+        if not pendientes:
+            console.print("no hay documentos por destilar")
+            return
+        salida = cfg.work_dir / f"destilar-{_lote()}.json"
+        docs = []
+        for fila in pendientes:
+            origen = cfg.extracted_dir / f"{fila.doc_id}.txt"
+            if not origen.exists():
+                origen = cfg.extracted_dir / f"{fila.doc_id}.json"
+            texto = origen.read_text(encoding="utf-8", errors="replace") if origen.exists() else ""
+            # Se acota: el manifiesto tiene que caber en una sesion.
+            docs.append(
+                {
+                    "doc_id": fila.doc_id,
+                    "path": fila.path,
+                    "doc_date": fila.doc_date,
+                    "domain": fila.domain,
+                    "texto": redact(texto[:12000]).text,
+                    "truncado": len(texto) > 12000,
+                    "hechos": [],
+                }
+            )
+        salida.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "instructions": DESTILAR_INSTRUCCIONES,
+                    "documents": docs,
+                },
+                ensure_ascii=False,
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"manifiesto de destilado: [bold]{salida}[/bold]")
+        console.print(f"{len(docs)} documento(s). {DESTILAR_INSTRUCCIONES}")
 
 
 # -- status ------------------------------------------------------------------

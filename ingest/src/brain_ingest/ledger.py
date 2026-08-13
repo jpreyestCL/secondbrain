@@ -18,7 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-STATUSES = ("pending", "extracted", "classified", "ingested", "error", "skipped")
+# "por-destilar": el documento espera que Claude lo condense a hechos (ADR-008);
+# no se trocea ni se envia hasta que `brain destilar --apply` escriba esos hechos.
+STATUSES = (
+    "pending", "extracted", "classified", "ingested", "error", "skipped", "por-destilar",
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (

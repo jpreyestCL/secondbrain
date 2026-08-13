@@ -126,7 +126,7 @@ Detalles que sostienen el aislamiento:
 ## ADR-008 — Destilado opcional por carpeta: `--destilar`
 
 - **Fecha**: 2026-08
-- **Estado**: propuesta (diseño; falta implementar)
+- **Estado**: aceptada e implementada
 
 **Contexto.** ADR-002 decidió que la lectura y clasificación las hiciera Claude con la suscripción y no la API, y así funciona `classify`. Pero la promesa de "el único uso de API son los embeddings" dejó de cumplirse por una razón ajena a nosotros: **Graphiti corre su propia extracción con LLM en cada `add_episode`**. No es opcional — es lo que construye entidades y aristas. Da igual quién prepare el texto: enviarlo cuesta.
 

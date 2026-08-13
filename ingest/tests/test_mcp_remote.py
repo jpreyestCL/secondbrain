@@ -320,3 +320,26 @@ def test_relanzar_retoma_los_documentos_en_error(cfg, ledger, monkeypatch):
     assert "dos" in enviados[0][1]["episode_body"]
     assert counts["docs"] == 1
     assert ledger.get(doc).status == "ingested"
+
+
+def test_un_episodio_destilado_se_marca_como_resumen(cfg, ledger, monkeypatch):
+    """Dar por textual algo que era un resumen es peor que no tener el dato.
+
+    El grafo tiene que poder distinguir una cita de una interpretacion, porque
+    dentro de un año nadie se acuerda de que carpeta se destilo (ADR-008).
+    """
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    monkeypatch.setenv("BRAIN_RITMO", "0")
+    monkeypatch.setenv("BRAIN_VERIFY_SECONDS", "0")
+    _prep_doc(
+        cfg,
+        ledger,
+        [{"chunk_idx": 0, "total_chunks": 1, "text": "saldo de 1.234.567", "destilado": True}],
+    )
+
+    falso = _ClienteFalso()
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+    _, args = falso.llamadas[0]
+
+    assert "[resumen]" in args["name"]
+    assert "origen: destilado de" in args["source_description"]

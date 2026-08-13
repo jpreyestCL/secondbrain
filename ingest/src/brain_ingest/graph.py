@@ -565,13 +565,20 @@ async def ingest_chunks(
                     result = redact(chunk["text"])
                     if result.flags:
                         ledger.add_sensitivity_flags(row.doc_id, result.flags)
+                    # Un episodio destilado es una interpretacion, no una cita.
+                    # El grafo debe poder distinguirlos: dentro de un año, dar
+                    # por textual algo que era un resumen es peor que no tener
+                    # el dato (ADR-008).
+                    es_destilado = bool(chunk.get("destilado"))
+                    marca = "[resumen] " if es_destilado else ""
                     nombre = (
-                        f"[{domain}] {name_stem} "
+                        f"[{domain}] {marca}{name_stem} "
                         f"[{chunk['chunk_idx'] + 1}/{chunk['total_chunks']}]"
                     )
                     descripcion = (
                         f"dominio: {domain} | tipo: {row.doc_type or 'documento'} | "
-                        f"origen: documento {row.path} (doc_id={row.doc_id})"
+                        f"origen: {'destilado de' if es_destilado else 'documento'} "
+                        f"{row.path} (doc_id={row.doc_id})"
                     )
                     if remoto is not None:
                         episode_uuid = _mcp_add_memory(
