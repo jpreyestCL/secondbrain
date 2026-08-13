@@ -285,3 +285,38 @@ def test_no_reintenta_un_error_real(cfg, ledger, monkeypatch):
 
     assert ledger.get(doc).status == "error"
     assert len([c for c in falso.llamadas if c[0] == "add_memory"]) == 1
+
+
+def test_relanzar_retoma_los_documentos_en_error(cfg, ledger, monkeypatch):
+    """Tras un 504 o un Ctrl-C, volver a correr el comando debe reanudar.
+
+    ingest-graph solo miraba los 'classified', asi que los documentos en error
+    quedaban huerfanos: ni se reintentaban solos ni sin --rehacer, que ademas
+    habria reenviado tambien los que si entraron.
+    """
+    monkeypatch.setattr(graph_mod, "build_graphiti", lambda t: None)
+    monkeypatch.setattr(graph_mod, "MCP_ESPERA_BASE", 0)
+    monkeypatch.setenv("BRAIN_RITMO", "0")
+    monkeypatch.setenv("BRAIN_VERIFY_SECONDS", "0")
+    doc = _prep_doc(
+        cfg,
+        ledger,
+        [
+            {"chunk_idx": 0, "total_chunks": 2, "text": "uno"},
+            {"chunk_idx": 1, "total_chunks": 2, "text": "dos"},
+        ],
+    )
+    # Primera pasada: el segundo chunk falla de forma no recuperable.
+    falso = _ClienteFalso(fallar=lambda n: McpRemoteError("401 del servidor MCP") if n == 2 else None)
+    asyncio.run(ingest_chunks(cfg, ledger, remoto=falso))
+    assert ledger.get(doc).status == "error"
+
+    # Segunda pasada sin flags: retoma, y solo envia el chunk que falto.
+    falso2 = _ClienteFalso()
+    counts = asyncio.run(ingest_chunks(cfg, ledger, remoto=falso2))
+
+    enviados = [c for c in falso2.llamadas if c[0] == "add_memory"]
+    assert len(enviados) == 1
+    assert "dos" in enviados[0][1]["episode_body"]
+    assert counts["docs"] == 1
+    assert ledger.get(doc).status == "ingested"

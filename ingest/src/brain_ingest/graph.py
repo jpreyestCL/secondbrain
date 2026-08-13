@@ -529,7 +529,11 @@ async def ingest_chunks(
                     continue
                 rows.append(r)
         else:
-            rows = list(ledger.by_status("classified"))
+            # Tambien los que quedaron en error: un 504 pasajero o un corte con
+            # Ctrl-C los dejo a medias, y relanzar debe retomarlos. No duplica
+            # nada porque los chunks ya confirmados de cada documento se saltan
+            # mas abajo; se reanuda exactamente en el que fallo.
+            rows = list(ledger.by_status("classified")) + list(ledger.by_status("error"))
         for row in rows:
             chunks_path = cfg.chunks_dir / f"{row.doc_id}.json"
             if not chunks_path.exists():
