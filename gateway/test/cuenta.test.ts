@@ -200,3 +200,19 @@ describe("identidad del espacio", () => {
     expect(html).toContain("brain --tenant");
   });
 });
+
+describe("instalador del CLI", () => {
+  it("se sirve como shell script y no pide claves de API", async () => {
+    const res = await fetch(`${baseUrl}/install.sh`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("shellscript");
+    const script = await res.text();
+    expect(script.startsWith("#!/usr/bin/env bash")).toBe(true);
+    // El punto del instalador: la extraccion la hace el servidor, asi que el
+    // cliente no configura ninguna clave de LLM.
+    expect(script).not.toMatch(/OPENAI_API_KEY|LLM_API_KEY=/);
+    expect(script).toContain("brain login");
+    // --frozen es lo que impide que uv resuelva versiones no probadas.
+    expect(script).toContain("--frozen");
+  });
+});

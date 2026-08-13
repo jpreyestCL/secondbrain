@@ -83,27 +83,9 @@ const CLI_COMMANDS: Array<[string, string]> = [
   ["version", "Imprime la versión del CLI."],
 ];
 
-const INSTALL_BLOCK = `# 1) uv (gestor de Python)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+const INSTALL_BLOCK = `curl -fsSL <BASE_URL>/install.sh | sh`;
 
-# 2) el repo
-git clone https://github.com/jpreyestCL/secondbrain
-cd secondbrain/ingest && uv sync --all-extras
-
-# 3) un lanzador para poder correr "brain" desde cualquier carpeta
-cat > ~/.local/bin/brain <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --quiet --project "\${BRAIN_REPO:-\$HOME/work/secondbrain}/ingest" \\
-     --all-extras brain "\$@"
-SH
-chmod +x ~/.local/bin/brain`;
-
-const CONFIG_BLOCK = `# ~/.brain/env  (permisos 600)
-# Vive aqui y no en el repo: asi el CLI funciona desde cualquier directorio.
-LLM_MODEL=gpt-4o-mini
-LLM_API_URL=https://api.openai.com/v1
-LLM_API_KEY=<tu clave>`;
+const CONFIG_BLOCK = `brain login <BASE_URL>`;
 
 const REMOTO_BLOCK = `brain --tenant <slug> ingest-graph --via mcp --url <MCP_URL>`;
 
@@ -162,6 +144,9 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
   const pipeline = personalizar(PIPELINE_BLOCK, tenant, mcpUrl);
   const remoto = personalizar(REMOTO_BLOCK, tenant, mcpUrl);
   const entorno = personalizar(ENV_BLOCK, tenant, mcpUrl);
+  const baseUrl = mcpUrl.replace(/\/mcp$/, "");
+  const instalar = INSTALL_BLOCK.replaceAll("<BASE_URL>", baseUrl);
+  const vincular = CONFIG_BLOCK.replaceAll("<BASE_URL>", baseUrl);
   const avisoTenant = tenant
     ? `<p class="notice">Los ejemplos ya vienen con tu espacio
         (<code>${escapeHtml(tenant)}</code>): puedes copiarlos y pegarlos tal cual.</p>`
@@ -314,13 +299,17 @@ ${toolRows}
     <p class="muted">Para cuando tienes cientos de documentos en el disco y adjuntarlos de
       a uno en el chat no tiene sentido. Requiere terminal.</p>
 
-    <h3>Instalar el CLI</h3>
-    <p class="muted">No se descarga aparte: vive en el repo del proyecto, en
-      <code>ingest/</code>.</p>
-    <div class="block"><pre><code>${escapeHtml(INSTALL_BLOCK)}</code></pre></div>
-    <p class="muted">Las claves van en <code>~/.brain/env</code>, no en el repo, para que
-      el CLI funcione desde cualquier carpeta:</p>
-    <div class="block"><pre><code>${escapeHtml(CONFIG_BLOCK)}</code></pre></div>
+    <h3>Instalar</h3>
+    <p class="muted">Un comando. Instala lo que falte y deja <code>brain</code> disponible
+      desde cualquier carpeta.</p>
+    <div class="block"><pre><code>${escapeHtml(instalar)}</code></pre></div>
+
+    <h3>Vincular con tu cuenta</h3>
+    <p class="muted">Se abre el navegador una vez para autenticarte.</p>
+    <div class="block"><pre><code>${escapeHtml(vincular)}</code></pre></div>
+    <p class="notice"><strong>No necesitas ninguna clave de API.</strong> La extracción de
+      entidades la hace el servidor con sus modelos; en tu equipo solo corren la lectura de
+      archivos, el OCR y el troceado, que no usan modelos de lenguaje.</p>
 
     <h3>El pipeline</h3>
     ${avisoTenant}

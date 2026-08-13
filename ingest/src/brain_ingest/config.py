@@ -70,8 +70,15 @@ archive_dir = "{archive_dir}"
 # NOT Graphiti group_ids); validated by `brain classify --apply`.
 domains = ["personal", "salud", "finanzas", "trabajo", "proyectos"]
 
-# Per-tenant FalkorDB ACL credentials (optional; the FALKORDB_TENANT_USER /
-# FALKORDB_TENANT_PASSWORD env vars take precedence over these keys).
+# Servidor al que se envian los episodios. Definido esto, `ingest-graph` usa
+# el conector MCP por defecto y NO hace falta ninguna clave de LLM en este
+# equipo: la extraccion la hace el servidor con sus propios modelos.
+# Se define solo con `brain login <url>`.
+# mcp_url = "https://mybrain.rlz.cl/mcp"
+
+# Credenciales ACL de FalkorDB por tenant. SOLO se necesitan para escribir
+# directo a la base (`ingest-graph --via falkordb`), que exige administrar el
+# servidor. Por el conector MCP no hacen falta.
 # falkordb_tenant_user = "tenant_jpreyest"
 # falkordb_tenant_password = "..."
 """
@@ -87,6 +94,9 @@ class Config:
     archive_dir: Path
     tenant: str = DEFAULT_TENANT
     domains: list[str] = field(default_factory=lambda: list(DEFAULT_DOMAINS))
+    #: Endpoint MCP del servidor. Su presencia es lo que permite ingerir sin
+    #: ninguna clave local: la extraccion ocurre del lado del servidor.
+    mcp_url: str | None = None
 
     @property
     def tenant_dir(self) -> Path:
@@ -169,6 +179,7 @@ def load_config(tenant: str | None = None) -> Config:
         archive_dir=Path(data.get("archive_dir", str(home / "archive"))).expanduser(),
         tenant=validate_tenant(tenant or str(data.get("tenant", DEFAULT_TENANT))),
         domains=list(data.get("domains", DEFAULT_DOMAINS)),
+        mcp_url=(data.get("mcp_url") or None),
     )
     for d in (cfg.extracted_dir, cfg.chunks_dir, cfg.work_dir):
         d.mkdir(parents=True, exist_ok=True)

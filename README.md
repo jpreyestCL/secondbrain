@@ -101,31 +101,33 @@ servidor MCP le entrega a Claude las instrucciones de cómo ingerir: Claude **le
 adjunto**, lo trocea, determina dominio y fecha real, redacta secretos y llama a la
 herramienta `add_memory` una vez por sección. Todo ocurre desde tu dispositivo.
 
-**Carpetas enteras, con el CLI `brain`.** Los pasos pesados son locales; solo el último
-habla con el servidor, y lo hace por el mismo conector MCP autenticado:
+**Carpetas enteras, con el CLI `brain`.** Se instala con un comando y no pide ninguna
+clave de API:
 
 ```bash
-cd secondbrain/ingest && uv sync --all-extras
+curl -fsSL https://mybrain.rlz.cl/install.sh | sh
+brain login https://mybrain.rlz.cl        # abre el navegador una vez
 
-uv run brain --tenant <slug> scan ~/Documentos/inbox
-uv run brain --tenant <slug> extract          # texto, OCR de imágenes y PDFs escaneados
-uv run brain --tenant <slug> classify         # manifiesto: dominio, tipo y fecha REAL
-uv run brain --tenant <slug> classify --apply <manifiesto>.json
-uv run brain --tenant <slug> chunk
-uv run brain --tenant <slug> ingest-graph --via mcp --url https://tu-dominio/mcp
+brain scan ~/Documentos/inbox
+brain extract            # texto, OCR de imágenes y PDFs escaneados
+brain classify           # manifiesto: dominio, tipo y fecha REAL
+brain classify --apply <manifiesto>.json
+brain chunk
+brain ingest-graph       # envía al servidor por el conector MCP
 ```
 
-La primera vez se abre el navegador para autorizar (OAuth 2.1 + PKCE); el token queda
-guardado y las siguientes no preguntan. **No hace falta SSH, ni subir archivos, ni
-configurar modelos**: los pone el servidor, lo que además evita el error irreversible de
-ingerir con una dimensión de embeddings distinta a la del grafo.
+**Por qué no pide claves**: de los seis pasos, cinco son locales y ninguno usa un modelo
+de lenguaje — leer archivos, OCR, trocear. La extracción de entidades, que sí necesita un
+LLM, ocurre **en el servidor** con sus modelos. Eso además elimina el error irreversible
+de ingerir con una dimensión de embeddings distinta a la del grafo: no hay nada que
+igualar.
 
 El ledger en `~/.brain/<tenant>/` hace todo el pipeline reanudable: si algo falla,
 relanzas el comando y sigue desde donde quedó, sin duplicar episodios.
 
-> Existe también `--via falkordb` (el default), que escribe directo a la base. Es más
-> rápido para lotes muy grandes, pero FalkorDB solo escucha en el localhost del servidor:
-> requiere ser administrador y montar un túnel SSH. Ver **ADR-007** en
+> Existe también `--via falkordb`, que escribe directo a la base. Es más rápido para lotes
+> muy grandes, pero FalkorDB solo escucha en el localhost del servidor: requiere ser
+> administrador, montar un túnel SSH y configurar los modelos a mano. Ver **ADR-007** en
 > `docs/decisiones.md`.
 
 ---

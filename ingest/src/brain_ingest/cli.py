@@ -61,6 +61,33 @@ def _main(
     _setup_logging(verbose)
 
 
+def _falkordb_configurado(cfg: Config) -> bool:
+    """¿Hay algún dato para hablar directo con FalkorDB?
+
+    Sirve para distinguir "el usuario administra el servidor y quiere la vía
+    directa" de "recién instaló y no ha hecho `brain login`". Sin esto, el
+    segundo caso terminaba en un error de autenticación de Redis.
+    """
+    import os
+    import tomllib
+
+    from .config import brain_home
+
+    if any(
+        os.environ.get(v)
+        for v in ("FALKORDB_HOST", "FALKORDB_TENANT_PASSWORD", "FALKORDB_PASSWORD")
+    ):
+        return True
+    ruta = brain_home() / "config.toml"
+    if not ruta.exists():
+        return False
+    try:
+        datos = tomllib.loads(ruta.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return False
+    return bool(datos.get("falkordb_tenant_password"))
+
+
 def _open() -> tuple[Config, Ledger]:
     cfg = load_config(tenant=_tenant_override)
     log.debug("tenant=%s graph=%s", cfg.tenant, cfg.graph_database)
@@ -221,10 +248,11 @@ def ingest_graph(
     force: bool = typer.Option(
         False, "--force", help="Also process superseded/already-ingested doc_ids"
     ),
-    via: str = typer.Option(
-        "falkordb",
+    via: Optional[str] = typer.Option(
+        None,
         "--via",
-        help="falkordb (directo, requiere acceso al servidor) | mcp (por el conector, sin SSH)",
+        help="mcp (por el conector; por defecto si hiciste `brain login`) | "
+             "falkordb (directo a la base, requiere administrar el servidor)",
     ),
     url: Optional[str] = typer.Option(
         None, "--url", help="URL del gateway MCP, ej https://mybrain.rlz.cl/mcp"
@@ -239,22 +267,41 @@ def ingest_graph(
     """
     from .graph import GraphConfigError, ingest_chunks
 
-    if via not in ("falkordb", "mcp"):
-        console.print(f"[red]--via inválido:[/red] {via} (usa 'falkordb' o 'mcp')")
-        raise typer.Exit(2)
-    if via == "mcp" and not url:
-        console.print("[red]--via mcp requiere --url[/red] (ej: https://mybrain.rlz.cl/mcp)")
-        raise typer.Exit(2)
-    if via == "falkordb" and url:
-        console.print("[red]--url solo aplica con --via mcp[/red]")
-        raise typer.Exit(2)
-
     cfg, ledger = _open()
+
+    # Por defecto se usa el conector MCP si hay servidor configurado. Es el
+    # camino que NO necesita ninguna clave de LLM en este equipo: la extraccion
+    # la hace el servidor. Solo se cae a FalkorDB si no hay servidor.
+    destino = url or cfg.mcp_url
+    if via is None:
+        via = "mcp" if destino else "falkordb"
+    if via == "falkordb" and not destino and not _falkordb_configurado(cfg):
+        # Un usuario recien instalado no tiene ni servidor ni credenciales de la
+        # base. Antes caia a FalkorDB y reventaba con un error de Redis, que no
+        # dice que hacer; el paso que falta es vincularse con el servidor.
+        console.print(
+            "[yellow]Este equipo todavía no está vinculado a un servidor.[/yellow]\n\n"
+            "  [bold]brain login https://mybrain.rlz.cl[/bold]\n\n"
+            "Se abre el navegador una vez y listo. No hace falta ninguna clave de\n"
+            "API: la extracción la hace el servidor con sus propios modelos."
+        )
+        raise typer.Exit(2)
+    if via not in ("falkordb", "mcp"):
+        console.print(f"[red]--via inválido:[/red] {via} (usa 'mcp' o 'falkordb')")
+        raise typer.Exit(2)
+    if via == "mcp" and not destino:
+        console.print(
+            "[red]No hay servidor configurado.[/red] Ejecuta primero:\n"
+            "  [bold]brain login https://mybrain.rlz.cl[/bold]\n"
+            "o pasa --url. Sin servidor, la única alternativa es --via falkordb, "
+            "que requiere acceso directo a la base."
+        )
+        raise typer.Exit(2)
     remoto = None
     if via == "mcp":
         from .mcp_remote import McpRemoteError, conectar
 
-        parsed = urlparse(url)
+        parsed = urlparse(destino)
         base = f"{parsed.scheme}://{parsed.netloc}"
         try:
             remoto = conectar(base, cfg.tenant, cfg.home, path=parsed.path or "/mcp")
@@ -275,6 +322,58 @@ def ingest_graph(
         f"ingest-graph done: {counts['docs']} docs, {counts['episodes']} episodes, "
         f"{counts['errors']} errors, {counts['skipped']} skipped"
     )
+
+
+# -- login -------------------------------------------------------------------
+
+
+@app.command()
+def login(
+    url: str = typer.Argument(..., help="URL del servidor, ej: https://mybrain.rlz.cl"),
+) -> None:
+    """Vincula este equipo con un servidor y guarda la sesión.
+
+    Es lo único que hace falta para poder ingerir: la extracción ocurre en el
+    servidor con SUS modelos, así que en este equipo no se configura ninguna
+    clave de LLM. Abre el navegador para autenticarte con tu cuenta.
+    """
+    import tomllib
+
+    from .config import brain_home
+    from .mcp_remote import McpRemoteError, conectar
+
+    limpia = url.rstrip("/")
+    if not limpia.startswith(("http://", "https://")):
+        limpia = f"https://{limpia}"
+    if not limpia.endswith("/mcp"):
+        limpia += "/mcp"
+
+    cfg, _ = _open()
+    parsed = urlparse(limpia)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        cliente = conectar(base, cfg.tenant, cfg.home, path=parsed.path)
+        herramientas = cliente.herramientas()
+    except McpRemoteError as exc:
+        console.print(f"[red]no se pudo conectar:[/red] {exc}")
+        raise typer.Exit(2)
+
+    # Se guarda en config.toml para no tener que repetir --url en cada comando.
+    ruta = brain_home() / "config.toml"
+    texto = ruta.read_text(encoding="utf-8")
+    datos = tomllib.loads(texto)
+    linea = f'mcp_url = "{limpia}"'
+    if datos.get("mcp_url"):
+        texto = "\n".join(
+            linea if l.strip().startswith("mcp_url") else l for l in texto.splitlines()
+        ) + "\n"
+    else:
+        texto = texto.rstrip("\n") + f"\n\n{linea}\n"
+    ruta.write_text(texto, encoding="utf-8")
+
+    console.print(f"conectado a [bold]{base}[/bold] ({len(herramientas)} herramientas)")
+    console.print(f"espacio: [bold]{cfg.tenant}[/bold]")
+    console.print("listo: `brain ingest-graph` ya envía a este servidor, sin claves locales.")
 
 
 # -- status ------------------------------------------------------------------

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
@@ -961,6 +963,20 @@ export function buildApp(
   // y por el retorno de Google cuando no hay flujo OAuth que reanudar.
   // Se conserva por compatibilidad con enlaces antiguos: ahora lleva al panel.
   app.get("/sesion-iniciada", (c) => c.redirect("/cuenta", 302));
+
+  // Instalador del CLI. Se sirve desde el propio gateway para que la
+  // instruccion sea una sola linea contra el mismo host que el usuario ya
+  // conoce: curl -fsSL https://<host>/install.sh | sh
+  app.get("/install.sh", (c) => {
+    const script = fs.readFileSync(
+      path.join(import.meta.dirname, "..", "..", "scripts", "install.sh"),
+      "utf8",
+    );
+    return c.text(script, 200, {
+      "Content-Type": "text/x-shellscript; charset=utf-8",
+      "Cache-Control": "no-cache",
+    });
+  });
 
   app.get("/guia", async (c) => {
     const session = await requireSession(c);
