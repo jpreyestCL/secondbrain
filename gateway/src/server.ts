@@ -968,14 +968,33 @@ export function buildApp(
   // instruccion sea una sola linea contra el mismo host que el usuario ya
   // conoce: curl -fsSL https://<host>/install.sh | sh
   app.get("/install.sh", (c) => {
-    const script = fs.readFileSync(
+    // Se buscan varias rutas porque el layout del repo y el del servidor no
+    // coinciden: en el repo el script vive en scripts/, y el despliegue nativo
+    // copia los fuentes del gateway a /opt/.../gateway sin esa carpeta.
+    const candidatos = [
+      path.join(import.meta.dirname, "install.sh"),
+      path.join(import.meta.dirname, "..", "install.sh"),
       path.join(import.meta.dirname, "..", "..", "scripts", "install.sh"),
-      "utf8",
+      path.join(import.meta.dirname, "..", "..", "..", "scripts", "install.sh"),
+    ];
+    for (const ruta of candidatos) {
+      try {
+        const script = fs.readFileSync(ruta, "utf8");
+        return c.text(script, 200, {
+          "Content-Type": "text/x-shellscript; charset=utf-8",
+          "Cache-Control": "no-cache",
+        });
+      } catch {
+        /* siguiente candidato */
+      }
+    }
+    console.error(`[install.sh] no encontrado en: ${candidatos.join(", ")}`);
+    return c.text(
+      "# El instalador no esta disponible en este servidor.\n" +
+        "# Instalacion manual: https://github.com/jpreyestCL/secondbrain#readme\n",
+      503,
+      { "Content-Type": "text/x-shellscript; charset=utf-8" },
     );
-    return c.text(script, 200, {
-      "Content-Type": "text/x-shellscript; charset=utf-8",
-      "Cache-Control": "no-cache",
-    });
   });
 
   app.get("/guia", async (c) => {
