@@ -291,7 +291,12 @@ export async function exportGraph(
 
 
 // ---------------------------------------------------------------------------
-// Resumen y búsqueda para el panel web
+// Panel web: resumen, búsqueda y constelación
+//
+// Todo pasa por UNA sola sesión MCP. Cada consulta abría antes su propio
+// cliente con su propio `initialize`, así que pintar /cuenta con una búsqueda
+// costaba tres handshakes y tres llamadas contra un servidor que ya va justo
+// de recursos — y el usuario lo notaba como varios segundos de nada.
 // ---------------------------------------------------------------------------
 
 /** Resumen de lo guardado, en el vocabulario del usuario (no en el de Graphiti). */
@@ -305,85 +310,12 @@ export interface ResumenMemoria {
   ultimos: Array<{ documento: string; dominio: string; guardado: string }>;
 }
 
-function comoNumero(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
-}
-
-/**
- * Pide el resumen al MCP del tenant.
- *
- * Devuelve null si el servidor no expone `get_stats` (versión anterior del
- * patch): el panel entonces omite la sección en vez de mostrar ceros, que se
- * leerían como "no tienes nada guardado" — exactamente el mensaje equivocado.
- */
-export async function resumenMemoria(
-  upstreamUrl: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<ResumenMemoria | null> {
-  const client = new McpHttpClient(upstreamUrl, fetchImpl);
-  try {
-    await client.initialize();
-    const crudo = (await client.callTool("get_stats", {})) as Record<string, unknown> | null;
-    if (!crudo || typeof crudo !== "object" || "error" in crudo) return null;
-    const dominios = (crudo.por_dominio ?? {}) as Record<string, unknown>;
-    const porDominio: Record<string, number> = {};
-    for (const [k, v] of Object.entries(dominios)) porDominio[k] = comoNumero(v);
-    if (typeof crudo.documentos !== "number") return null; // respuesta inesperada
-    return {
-      documentos: comoNumero(crudo.documentos),
-      fragmentos: comoNumero(crudo.fragmentos),
-      personasYEmpresas: comoNumero(crudo.personas_y_empresas),
-      datosActuales: comoNumero(crudo.datos_actuales),
-      datosQueCambiaron: comoNumero(crudo.datos_que_cambiaron),
-      porDominio,
-      ultimos: Array.isArray(crudo.ultimos_documentos)
-        ? (crudo.ultimos_documentos as ResumenMemoria["ultimos"])
-        : [],
-    };
-  } catch (e) {
-    // Tragarse el error en silencio hace que un upstream caido se vea igual
-    // que "este servidor no sabe responder el resumen" — el mismo patron de
-    // fallo silencioso que dejo pasar 41 episodios perdidos.
-    console.warn(`[resumen] no se pudo obtener el resumen del upstream: ${String(e)}`);
-    return null;
-  }
-}
-
 /** Un dato encontrado, con su vigencia. */
 export interface DatoEncontrado {
   texto: string;
   desde: string | null;
   hasta: string | null;
 }
-
-/** Busca datos en la memoria del usuario. Vacío si el upstream falla. */
-export async function buscarDatos(
-  upstreamUrl: string,
-  consulta: string,
-  fetchImpl: typeof fetch = fetch,
-  maximo = 15,
-): Promise<DatoEncontrado[]> {
-  const client = new McpHttpClient(upstreamUrl, fetchImpl);
-  try {
-    await client.initialize();
-    const crudo = (await client.callTool("search_memory_facts", {
-      query: consulta,
-      max_facts: maximo,
-    })) as Record<string, unknown> | null;
-    const lista = (crudo?.facts ?? crudo?.result ?? []) as Array<Record<string, unknown>>;
-    return (Array.isArray(lista) ? lista : [])
-      .map((f) => ({
-        texto: String(f.fact ?? f.name ?? ""),
-        desde: (f.valid_at as string) ?? null,
-        hasta: (f.invalid_at as string) ?? null,
-      }))
-      .filter((f) => f.texto);
-  } catch (e) {
-    console.warn(`[buscar] fallo la busqueda de datos: ${String(e)}`);
-    return [];
-  }
-}
-
 
 /** Una persona, empresa o lugar encontrado en la memoria. */
 export interface EntidadEncontrada {
@@ -392,59 +324,179 @@ export interface EntidadEncontrada {
   resumen: string;
 }
 
-/** Busca entidades por nombre/semántica. Vacío si el upstream falla. */
-export async function buscarEntidades(
-  upstreamUrl: string,
-  consulta: string,
-  fetchImpl: typeof fetch = fetch,
-  maximo = 8,
-): Promise<EntidadEncontrada[]> {
-  const client = new McpHttpClient(upstreamUrl, fetchImpl);
-  try {
-    await client.initialize();
-    const crudo = (await client.callTool("search_nodes", {
-      query: consulta,
-      max_nodes: maximo,
-    })) as Record<string, unknown> | null;
-    const lista = (crudo?.nodes ?? crudo?.result ?? []) as Array<Record<string, unknown>>;
-    return (Array.isArray(lista) ? lista : [])
-      .map((n) => ({
-        nombre: String(n.name ?? ""),
-        uuid: String(n.uuid ?? ""),
-        resumen: String(n.summary ?? ""),
-      }))
-      .filter((n) => n.nombre && n.uuid);
-  } catch (e) {
-    console.warn(`[buscar] fallo la busqueda de entidades: ${String(e)}`);
-    return [];
-  }
+export interface Relacion {
+  con: string;
+  uuid: string;
+  dato: string;
+  desde: string;
+  hasta: string;
 }
 
-/** Vecindario exacto de una entidad (un salto), para dibujar la constelación. */
-export async function vecindario(
+export interface Vecindario {
+  entidad: string;
+  uuid: string;
+  relaciones: Relacion[];
+}
+
+export interface PanelMemoria {
+  resumen: ResumenMemoria | null;
+  datos: DatoEncontrado[];
+  entidades: EntidadEncontrada[];
+  constelacion: Vecindario | null;
+}
+
+function comoNumero(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/** Saca la lista de una respuesta MCP, venga suelta o envuelta en `result`. */
+function comoLista(crudo: unknown, ...claves: string[]): Array<Record<string, unknown>> {
+  if (Array.isArray(crudo)) return crudo as Array<Record<string, unknown>>;
+  if (!crudo || typeof crudo !== "object") return [];
+  const obj = crudo as Record<string, unknown>;
+  for (const clave of [...claves, "result"]) {
+    const v = obj[clave];
+    if (Array.isArray(v)) return v as Array<Record<string, unknown>>;
+    if (v && typeof v === "object") {
+      const anidado = comoLista(v, ...claves);
+      if (anidado.length) return anidado;
+    }
+  }
+  return [];
+}
+
+async function leerResumen(client: McpHttpClient): Promise<ResumenMemoria | null> {
+  const crudo = (await client.callTool("get_stats", {})) as Record<string, unknown> | null;
+  // Una respuesta con forma inesperada NO es una memoria vacía: devolver ceros
+  // se leería como "no tienes nada guardado", que es el mensaje equivocado.
+  if (!crudo || typeof crudo !== "object" || typeof crudo.documentos !== "number") {
+    return null;
+  }
+  const dominios = (crudo.por_dominio ?? {}) as Record<string, unknown>;
+  const porDominio: Record<string, number> = {};
+  for (const [k, v] of Object.entries(dominios)) porDominio[k] = comoNumero(v);
+  return {
+    documentos: comoNumero(crudo.documentos),
+    fragmentos: comoNumero(crudo.fragmentos),
+    personasYEmpresas: comoNumero(crudo.personas_y_empresas),
+    datosActuales: comoNumero(crudo.datos_actuales),
+    datosQueCambiaron: comoNumero(crudo.datos_que_cambiaron),
+    porDominio,
+    ultimos: Array.isArray(crudo.ultimos_documentos)
+      ? (crudo.ultimos_documentos as ResumenMemoria["ultimos"])
+      : [],
+  };
+}
+
+async function leerDatos(
+  client: McpHttpClient,
+  consulta: string,
+  maximo = 15,
+): Promise<DatoEncontrado[]> {
+  const crudo = await client.callTool("search_memory_facts", {
+    query: consulta,
+    max_facts: maximo,
+  });
+  return comoLista(crudo, "facts")
+    .map((f) => ({
+      texto: String(f.fact ?? f.name ?? ""),
+      desde: (f.valid_at as string) ?? null,
+      hasta: (f.invalid_at as string) ?? null,
+    }))
+    .filter((f) => f.texto);
+}
+
+async function leerEntidades(
+  client: McpHttpClient,
+  consulta: string,
+  maximo = 8,
+): Promise<EntidadEncontrada[]> {
+  const crudo = await client.callTool("search_nodes", {
+    query: consulta,
+    max_nodes: maximo,
+  });
+  return comoLista(crudo, "nodes")
+    .map((n) => ({
+      nombre: String(n.name ?? ""),
+      uuid: String(n.uuid ?? ""),
+      resumen: String(n.summary ?? ""),
+    }))
+    .filter((n) => n.nombre && n.uuid);
+}
+
+async function leerVecindario(client: McpHttpClient, uuid: string): Promise<Vecindario | null> {
+  const crudo = (await client.callTool("get_neighbors", { uuid })) as Record<
+    string,
+    unknown
+  > | null;
+  if (!crudo || typeof crudo !== "object" || "error" in crudo) return null;
+  const rels = comoLista(crudo, "relaciones");
+  return {
+    entidad: String(crudo.entidad ?? ""),
+    uuid: String(crudo.uuid ?? uuid),
+    relaciones: rels.map((r) => ({
+      con: String(r.con ?? ""),
+      uuid: String(r.uuid ?? ""),
+      dato: String(r.dato ?? ""),
+      desde: String(r.desde ?? ""),
+      hasta: String(r.hasta ?? ""),
+    })),
+  };
+}
+
+/**
+ * Todo lo que el panel necesita, en una sola sesión MCP.
+ *
+ * Cada consulta se aísla: si la búsqueda falla, el resumen igual se pinta. Los
+ * fallos se registran — tragárselos en silencio hace que un upstream caído se
+ * vea igual que "este servidor no soporta la función", que es el patrón de
+ * fallo silencioso que ya costó caro en este proyecto.
+ */
+export async function panelMemoria(
   upstreamUrl: string,
-  uuid: string,
+  opciones: { consulta?: string; entidad?: string } = {},
   fetchImpl: typeof fetch = fetch,
-): Promise<{ entidad: string; uuid: string; relaciones: Array<{ con: string; uuid: string; dato: string; desde: string; hasta: string }> } | null> {
+): Promise<PanelMemoria> {
+  const vacio: PanelMemoria = { resumen: null, datos: [], entidades: [], constelacion: null };
   const client = new McpHttpClient(upstreamUrl, fetchImpl);
   try {
     await client.initialize();
-    const crudo = (await client.callTool("get_neighbors", { uuid })) as Record<string, unknown> | null;
-    if (!crudo || typeof crudo !== "object" || "error" in crudo) return null;
-    const rels = (crudo.relaciones ?? []) as Array<Record<string, unknown>>;
-    return {
-      entidad: String(crudo.entidad ?? ""),
-      uuid: String(crudo.uuid ?? uuid),
-      relaciones: (Array.isArray(rels) ? rels : []).map((r) => ({
-        con: String(r.con ?? ""),
-        uuid: String(r.uuid ?? ""),
-        dato: String(r.dato ?? ""),
-        desde: String(r.desde ?? ""),
-        hasta: String(r.hasta ?? ""),
-      })),
-    };
   } catch (e) {
-    console.warn(`[constelacion] no se pudo obtener el vecindario: ${String(e)}`);
-    return null;
+    console.warn(`[panel] no se pudo abrir la sesión MCP: ${String(e)}`);
+    return vacio;
   }
+
+  async function seguro<T>(etiqueta: string, porDefecto: T, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      console.warn(`[panel] falló ${etiqueta}: ${String(e)}`);
+      return porDefecto;
+    }
+  }
+
+  const { consulta, entidad } = opciones;
+  const [resumen, datos, entidades, constelacion] = await Promise.all([
+    seguro<ResumenMemoria | null>("el resumen", null, () => leerResumen(client)),
+    consulta
+      ? seguro<DatoEncontrado[]>("la búsqueda de datos", [], () => leerDatos(client, consulta))
+      : Promise.resolve<DatoEncontrado[]>([]),
+    consulta
+      ? seguro<EntidadEncontrada[]>("la búsqueda de entidades", [], () =>
+          leerEntidades(client, consulta),
+        )
+      : Promise.resolve<EntidadEncontrada[]>([]),
+    entidad
+      ? seguro<Vecindario | null>("la constelación", null, () => leerVecindario(client, entidad))
+      : Promise.resolve<Vecindario | null>(null),
+  ]);
+  return { resumen, datos, entidades, constelacion };
+}
+
+/** Solo el resumen (una sesión propia). Útil fuera del panel y en tests. */
+export async function resumenMemoria(
+  upstreamUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ResumenMemoria | null> {
+  return (await panelMemoria(upstreamUrl, {}, fetchImpl)).resumen;
 }

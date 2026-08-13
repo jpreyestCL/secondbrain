@@ -45,7 +45,7 @@ import {
   type CuentaSessionView,
 } from "./cuenta-page.js";
 import { CSRF_FIELD, csrfToken, verifyCsrfToken, isSameOrigin } from "./csrf.js";
-import { exportGraph, resumenMemoria, buscarDatos, buscarEntidades, vecindario } from "./export.js";
+import { exportGraph, panelMemoria } from "./export.js";
 import { guiaPageHtml } from "./guia-page.js";
 import {
   REGISTRO_COOKIE_NAME,
@@ -931,19 +931,17 @@ export function buildApp(
     // no responde, se omiten: la página de cuenta debe seguir funcionando.
     const consulta = (c.req.query("q") ?? "").trim();
     const entidad = (c.req.query("entidad") ?? "").trim();
-    const [resumen, encontrados, entidades, constelacion] = entrada?.url
-      ? await Promise.all([
-          resumenMemoria(entrada.url),
-          consulta ? buscarDatos(entrada.url, consulta) : Promise.resolve([]),
-          consulta ? buscarEntidades(entrada.url, consulta) : Promise.resolve([]),
-          entidad ? vecindario(entrada.url, entidad) : Promise.resolve(null),
-        ])
-      : [null, [], [], null];
+    // Una sola sesión MCP para todo el panel: antes eran tres handshakes.
+    const panel = entrada?.url
+      ? await panelMemoria(entrada.url, { consulta, entidad })
+      : { resumen: null, datos: [], entidades: [], constelacion: null };
     return c.html(
       cuentaPageHtml({
-        resumen,
-        constelacion,
-        busqueda: consulta ? { consulta, datos: encontrados, entidades } : null,
+        resumen: panel.resumen,
+        constelacion: panel.constelacion,
+        busqueda: consulta
+          ? { consulta, datos: panel.datos, entidades: panel.entidades }
+          : null,
         email: session.user.email,
         emailVerified: Boolean(session.user.emailVerified),
         upstream: entrada?.url ?? null,
