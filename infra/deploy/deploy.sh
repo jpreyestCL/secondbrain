@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Despliegue del second brain en el servidor de dev (mybrain.rlz.cl).
-# Se ejecuta DESDE el Mac:  bash infra/deploy/deploy.sh root@178.62.201.63
+# Se ejecuta DESDE el Mac:  bash infra/deploy/deploy.sh root@37.27.190.92
 #
 # Variables opcionales (se leen del entorno al ejecutar):
 #   DEEPSEEK_API_KEY   clave para el extractor LLM (api.deepseek.com). Si falta,

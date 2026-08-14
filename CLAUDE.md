@@ -72,10 +72,17 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 - Un `.xls` a menudo **no es Excel**: los exports de banca y contabilidad son tablas HTML
   renombradas. El extractor despacha por la firma del archivo, no por la extensión.
 
-## Servidor (mybrain.rlz.cl, `root@178.62.201.63`)
+## Servidor (mybrain.rlz.cl, `root@37.27.190.92`)
 
 Despliegue nativo (sin Docker) en `/opt/secondbrain-native/`, bajo el usuario `secondbrain`
 — **no** `dev`, que está compartido con otros proyectos.
+
+> **Migrado desde `root@178.62.201.63`** (2026-08). La máquina anterior tenía 3,9 GB de RAM
+> compartidos con otras aplicaciones (`polytrade`, Postgres), y esa estrechez aparecía una y
+> otra vez: 504 de Cloudflare al ingerir porque el origen no alcanzaba a responder, y sin
+> espacio para el grafo proyectado (~1 GB) sin irse a swap. La máquina nueva es más grande,
+> lo que además permite correr el **LLM de extracción en local** en vez de una API externa
+> con límites de tasa.
 
 - **FalkorDB escucha en `:6380`.** El `:6379` de esa máquina es **otro Redis de otra
   aplicación**: consultarlo da respuestas que parecen válidas (`INFO` responde) pero son
@@ -84,8 +91,13 @@ Despliegue nativo (sin Docker) en `/opt/secondbrain-native/`, bajo el usuario `s
 - Credenciales del tenant `jpreyest` en `/opt/secondbrain-native/mcp.env` (unidad legacy
   `brain-mcp.service`); los tenants nuevos viven en `tenants/<nombre>/` con la unidad
   plantilla `brain-mcp@`. Ambos esquemas conviven.
-- La máquina está compartida y con carga alta (`polytrade` consume CPU de forma
-  sostenida): un lote grande contra el grafo del servidor compite con eso.
+- El **LLM de extracción corre local** (Ollama). El chat y los embeddings se configuran por
+  separado a propósito: **los embeddings deben seguir en NVIDIA `nv-embed-v1` a 4096
+  dimensiones**, pase lo que pase con el chat. Cambiar el proveedor o la dimensión del
+  embedder corrompe la búsqueda del grafo existente y no se arregla reingiriendo.
+- El modelo local debe soportar **`json_schema`** (structured output): Graphiti lo exige para
+  extraer entidades. Por eso NO sirve DeepSeek (solo `json_object`), y NO conviene un modelo
+  razonador como qwen3 (medido: 20x más lento que qwen2.5:7b-instruct).
 
 ## Flujos habituales
 

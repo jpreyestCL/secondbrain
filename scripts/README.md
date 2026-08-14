@@ -621,7 +621,7 @@ FalkorDB de producción escucha en `127.0.0.1:6380` del servidor
 hay que abrir un túnel:
 
 ```bash
-ssh -N -L 16380:127.0.0.1:6380 root@178.62.201.63
+ssh -N -L 16380:127.0.0.1:6380 root@37.27.190.92
 # (dejar corriendo en otra terminal; -N = sin shell remota)
 ```
 

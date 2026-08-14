@@ -1,6 +1,6 @@
 # Deploy nativo (sin Docker) — mybrain.rlz.cl
 
-Servidor compartido de prod (Ubuntu 24.04, `ssh root@178.62.201.63`). Todo vive en
+Servidor compartido de prod (Ubuntu 24.04, `ssh root@37.27.190.92`). Todo vive en
 `/opt/secondbrain-native/` y corre por **systemd**, reutilizando el nginx existente.
 NO usa Docker ni toca el redis/nginx de producción.
 
