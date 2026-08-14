@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 
 
 #: Guia adicional para el extractor de entidades. Va al prompt de extraccion.
+#: Reintentos ante rate limit del proveedor. Sin esto, un 429 pasajero daba el
+#: episodio por FALLIDO y se quedaba en el diario hasta el siguiente reinicio:
+#: 15 episodios perdidos en una hora durante una ingesta normal. La espera es
+#: exponencial y larga a proposito — un rate limit por minuto se pasa esperando.
+RATE_LIMIT_INTENTOS = 5
+RATE_LIMIT_ESPERA_BASE = 20.0
+
+_SENALES_RATE_LIMIT = ("rate limit", "429", "too many requests", "quota")
+
+
+def _es_rate_limit(exc: Exception) -> bool:
+    return any(s in str(exc).lower() for s in _SENALES_RATE_LIMIT)
+
+
 INSTRUCCIONES_EXTRACCION = """
 Este grafo guarda la vida de UNA persona: sus documentos, su dinero, su salud,
 su trabajo y sus proyectos. Extrae solo cosas CONCRETAS e IDENTIFICABLES.
@@ -212,6 +226,30 @@ class QueueService:
             logger.info(f'Recuperados {recuperados} episodio(s) de un reinicio anterior')
         return recuperados
 
+    async def _con_reintento_rate_limit(self, hacer, etiqueta: str):
+        """Ejecuta `hacer()` reintentando si el proveedor limita la tasa.
+
+        Un 429 no es un fallo del documento: es "vuelve en un rato". Darlo por
+        perdido obliga a reingerir el lote entero, que es justo lo que vuelve a
+        disparar el limite.
+        """
+        ultimo = None
+        for intento in range(RATE_LIMIT_INTENTOS):
+            try:
+                return await hacer()
+            except Exception as e:
+                if not _es_rate_limit(e):
+                    raise
+                ultimo = e
+                if intento < RATE_LIMIT_INTENTOS - 1:
+                    espera = RATE_LIMIT_ESPERA_BASE * (2**intento)
+                    logger.warning(
+                        f'Rate limit en {etiqueta}; esperando {espera:.0f}s '
+                        f'[{intento + 2}/{RATE_LIMIT_INTENTOS}]'
+                    )
+                    await asyncio.sleep(espera)
+        raise ultimo
+
     async def add_episode(
         self,
         group_id: str,
@@ -255,16 +293,16 @@ class QueueService:
             try:
                 logger.info(f'Processing episode {uuid} for group {group_id}')
 
-                # Process the episode using the graphiti client
-                await self._graphiti_client.add_episode(
-                    name=name,
-                    episode_body=content,
-                    source_description=source_description,
-                    source=episode_type,
-                    group_id=group_id,
+                await self._con_reintento_rate_limit(
+                    lambda: self._graphiti_client.add_episode(
+                        name=name,
+                        episode_body=content,
+                        source_description=source_description,
+                        source=episode_type,
+                        group_id=group_id,
                     # PATCH (secondbrain): respetar la fecha real si viene del tool.
-                    reference_time=reference_time or datetime.now(timezone.utc),
-                    entity_types=entity_types,
+                        reference_time=reference_time or datetime.now(timezone.utc),
+                        entity_types=entity_types,
                     # PATCH (secondbrain): instrucciones negativas al extractor.
                     # La ontologia sola no basta: el articulado de un contrato
                     # define roles ("el General Partner podra...") y el modelo
@@ -272,8 +310,10 @@ class QueueService:
                     # entidades mas conectadas del grafo eran "General Partner",
                     # "Partnership" y "Limited Partners", por delante de la
                     # sociedad real y del dueño.
-                    custom_extraction_instructions=INSTRUCCIONES_EXTRACCION,
-                    uuid=uuid,
+                        custom_extraction_instructions=INSTRUCCIONES_EXTRACCION,
+                        uuid=uuid,
+                    ),
+                    etiqueta=f'episodio {uuid}',
                 )
 
                 logger.info(f'Successfully processed episode {uuid} for group {group_id}')
