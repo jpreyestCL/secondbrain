@@ -113,6 +113,17 @@ Y por llamada suelta, con el mismo texto de contrato: gemma3:1b 25 s (4 entidade
 phi4-mini 51 s (6, sin ruido), gemma3:4b 57 s (6, sin ruido), llama3.2:3b 77 s (6, sin
 ruido), qwen2.5:3b 33 s (4, **2 de ruido**).
 
+Y en el episodio COMPLETO la calidad se desploma más de lo que sugiere la prueba de una
+llamada suelta. `gemma3:1b` (320 s/episodio), sobre "contraté a Rodrigo Munoz como abogado de
+Inversiones Linets SpA por 3 millones de pesos mensuales", produjo: el nombre de la sociedad
+**mal escrito** (`Inversión Linets SpA` — una entidad nueva que fragmenta el grafo en vez de
+unirse a la que ya existe), el monto como **dos entidades** distintas, y **dos entidades que
+no estaban en el texto** (`Banco Chile` y una dirección, esta última tipada como `Cuenta`).
+No es solo ruido: son datos inventados y duplicados sobre los que después se consulta.
+
+La prueba de una llamada engaña. El pipeline real encadena varias (extraer, deduplicar,
+resumir) y ahí los modelos chicos alucinan. **Medir siempre el episodio completo.**
+
 **Conclusión: en CPU no es viable para volumen.** Los ~1.500 fragmentos pendientes serían 5
 días con qwen (y grafo sucio) o 12 días con phi4-mini, contra ~6 horas con gpt-4o-mini. El
 límite de tasa se ataja mejor con `BRAIN_RITMO` que pagando 20-45x en tiempo.
