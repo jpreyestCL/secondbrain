@@ -91,13 +91,37 @@ Despliegue nativo (sin Docker) en `/opt/secondbrain-native/`, bajo el usuario `s
 - Credenciales del tenant `jpreyest` en `/opt/secondbrain-native/mcp.env` (unidad legacy
   `brain-mcp.service`); los tenants nuevos viven en `tenants/<nombre>/` con la unidad
   plantilla `brain-mcp@`. Ambos esquemas conviven.
-- El **LLM de extracción corre local** (Ollama). El chat y los embeddings se configuran por
-  separado a propósito: **los embeddings deben seguir en NVIDIA `nv-embed-v1` a 4096
-  dimensiones**, pase lo que pase con el chat. Cambiar el proveedor o la dimensión del
-  embedder corrompe la búsqueda del grafo existente y no se arregla reingiriendo.
-- El modelo local debe soportar **`json_schema`** (structured output): Graphiti lo exige para
-  extraer entidades. Por eso NO sirve DeepSeek (solo `json_object`), y NO conviene un modelo
-  razonador como qwen3 (medido: 20x más lento que qwen2.5:7b-instruct).
+- El chat y los embeddings se configuran por separado a propósito: **los embeddings deben
+  seguir en NVIDIA `nv-embed-v1` a 4096 dimensiones**, pase lo que pase con el chat. Cambiar
+  el proveedor o la dimensión del embedder corrompe la búsqueda del grafo existente y no se
+  arregla reingiriendo.
+- Cualquier modelo de extracción debe soportar **`json_schema`** (structured output):
+  Graphiti lo exige. Por eso NO sirve DeepSeek (solo `json_object`).
+
+### LLM local: probado y descartado para lotes (2026-08)
+
+La máquina tiene 8 núcleos y 15 GB, pero **sin GPU**. Se instaló Ollama y se midió el
+episodio completo (Graphiti hace ~6-9 llamadas por episodio):
+
+| modelo | s/episodio | ruido en las entidades |
+|---|---:|---|
+| `gpt-4o-mini` (API) | **~15** | ninguno |
+| `qwen2.5:3b-instruct` | 301 | **sí** — mete "Sale Notice", "Receiving Party" |
+| `phi4-mini` | 702 | ninguno |
+
+Y por llamada suelta, con el mismo texto de contrato: gemma3:1b 25 s (4 entidades útiles),
+phi4-mini 51 s (6, sin ruido), gemma3:4b 57 s (6, sin ruido), llama3.2:3b 77 s (6, sin
+ruido), qwen2.5:3b 33 s (4, **2 de ruido**).
+
+**Conclusión: en CPU no es viable para volumen.** Los ~1.500 fragmentos pendientes serían 5
+días con qwen (y grafo sucio) o 12 días con phi4-mini, contra ~6 horas con gpt-4o-mini. El
+límite de tasa se ataja mejor con `BRAIN_RITMO` que pagando 20-45x en tiempo.
+
+Ollama queda instalado como respaldo. Para cambiar, en `mcp.env`:
+`LLM_MODEL=phi4-mini` + `LLM_API_URL=http://127.0.0.1:11434/v1` + `LLM_API_KEY=ollama`.
+Si algún día la máquina lleva GPU, la configuración ya está probada. **Si se usa local,
+que sea phi4-mini o gemma3, nunca qwen2.5:3b**: es el único que no respeta las
+instrucciones negativas de la ontología.
 
 ## Flujos habituales
 
