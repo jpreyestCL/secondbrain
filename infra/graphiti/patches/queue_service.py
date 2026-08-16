@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from datetime import datetime, timezone
@@ -20,13 +21,51 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_INTENTOS = 5
 RATE_LIMIT_ESPERA_BASE = 20.0
 
-#: Episodios en paralelo por tenant. Uno solo deja el pipeline esperando a la
-#: API la mayor parte del tiempo (medido: ~2,4 min por episodio, o ~10 h para
-#: 259). El numero va aqui A PROPOSITO y acotado: la version anterior tenia
-#: paralelismo ACCIDENTAL e ilimitado — un worker por episodio encolado — y con
-#: 337 pendientes eso fueron ~124 episodios simultaneos, 12 peticiones por
-#: segundo y cero avance. Acotado no es lo mismo que ausente.
-BRAIN_WORKERS = max(1, int(os.environ.get('BRAIN_WORKERS', '3') or 3))
+#: Episodios en paralelo por tenant. POR DEFECTO 1, y no es una timidez.
+#:
+#: Graphiti resuelve entidades LEYENDO el grafo antes de escribir: busca si
+#: "Inversiones Linets SpA" ya existe y, si no, la crea. Dos episodios
+#: simultaneos que mencionan la misma entidad buscan los dos, ninguno ve al
+#: otro (todavia no esta escrita) y ambos crean un nodo. El resultado es la
+#: entidad DUPLICADA y el grafo fragmentado que CLAUDE.md documenta como el
+#: error caro — el mismo dano que hacian los modelos chicos, pero por
+#: concurrencia. El contrato esta escrito en la propia tool `add_memory`:
+#: "Episodes for the same group_id are processed sequentially to avoid race
+#: conditions".
+#:
+#: El candado de `factories.py` NO lo arregla: serializa la escritura, no la
+#: lectura+resolucion que la precede. Los dos episodios entran ordenados y cada
+#: uno con su nodo nuevo.
+#:
+#: Subirlo cambia velocidad por integridad del grafo, y el grafo no se arregla
+#: reingiriendo. Se deja configurable solo para medir, con el pool ACOTADO: la
+#: version anterior tenia paralelismo accidental e ILIMITADO —un worker por
+#: episodio encolado— y con 337 pendientes fueron ~124 episodios simultaneos,
+#: 12 peticiones por segundo y cero avance.
+def _entero_env(nombre: str, defecto: int, minimo: int = 1) -> int:
+    """Lee un entero del entorno sin poder tumbar el arranque.
+
+    `int('abc')` en el cuerpo del modulo revienta al importar, con una traza
+    criptica en el arranque de un servicio. Un valor mal escrito debe degradar
+    al defecto y decirlo, no impedir que el MCP levante.
+    """
+    crudo = (os.environ.get(nombre) or '').strip()
+    if not crudo:
+        return defecto
+    try:
+        return max(minimo, int(crudo))
+    except ValueError:
+        logger.warning(f'{nombre}={crudo!r} no es un entero; se usa {defecto}')
+        return defecto
+
+
+BRAIN_WORKERS = _entero_env('BRAIN_WORKERS', 1)
+
+#: Todo lo que no sea esto se sustituye antes de usarse como nombre de archivo
+#: o de directorio. El `uuid` de un episodio lo elige el CLIENTE (es un
+#: parametro publico de la tool `add_memory`), asi que llega sin garantia
+#: ninguna.
+_NOMBRE_SEGURO = re.compile(r'[^A-Za-z0-9_.-]')
 
 _SENALES_RATE_LIMIT = ("rate limit", "429", "too many requests", "quota")
 
@@ -48,8 +87,44 @@ class SinSaldoError(RuntimeError):
     """El proveedor rechaza por saldo/cuota, no por ritmo. No se reintenta."""
 
 
+def _cadena(exc: BaseException):
+    """La excepcion y todo lo que la envuelve.
+
+    Graphiti hace `raise RateLimitError from e` SIN pasar el mensaje, y su
+    `RateLimitError` trae uno por defecto ("Rate limit exceeded. Please try
+    again later."). O sea que mirar solo `str(exc)` pierde el motivo real: el
+    cuerpo de OpenAI con `insufficient_quota` vive en `__cause__`. Comprobarlo
+    solo en el nivel de arriba fue el fallo de la primera version de esto — el
+    test lo tapaba porque construia la excepcion a mano, de una forma que
+    produccion no genera nunca.
+    """
+    visto = set()
+    actual: BaseException | None = exc
+    while actual is not None and id(actual) not in visto:
+        visto.add(id(actual))
+        yield actual
+        actual = actual.__cause__ or actual.__context__
+
+
+def _texto_completo(exc: BaseException) -> str:
+    """Todo lo que se pueda leer de la cadena: mensajes y campos del SDK."""
+    partes: list[str] = []
+    for e in _cadena(exc):
+        partes.append(str(e))
+        # El SDK de OpenAI trae el motivo estructurado; es mas fiable que el
+        # texto, que cambia con cada redaccion del proveedor.
+        for campo in ('code', 'type'):
+            valor = getattr(e, campo, None)
+            if isinstance(valor, str):
+                partes.append(valor)
+        cuerpo = getattr(e, 'body', None)
+        if isinstance(cuerpo, dict):
+            partes.append(str(cuerpo))
+    return ' '.join(partes).lower()
+
+
 def _es_sin_saldo(exc: Exception) -> bool:
-    return any(s in str(exc).lower() for s in _SENALES_SIN_SALDO)
+    return any(s in _texto_completo(exc) for s in _SENALES_SIN_SALDO)
 
 
 def _es_rate_limit(exc: Exception) -> bool:
@@ -57,7 +132,11 @@ def _es_rate_limit(exc: Exception) -> bool:
     # saldo NO es un rate limit por mucho que el codigo HTTP coincida.
     if _es_sin_saldo(exc):
         return False
-    return any(s in str(exc).lower() for s in _SENALES_RATE_LIMIT)
+    # Basta con el nombre del tipo: graphiti envuelve en su propia
+    # `RateLimitError`, que puede llegar sin ningun texto reconocible.
+    if any(type(e).__name__ == 'RateLimitError' for e in _cadena(exc)):
+        return True
+    return any(s in _texto_completo(exc) for s in _SENALES_RATE_LIMIT)
 
 
 INSTRUCCIONES_EXTRACCION = """
@@ -204,37 +283,67 @@ class QueueService:
         # reiniciar repetia el ciclo: el diario del primer tenant se reescribia
         # entero cada ~100s y su cola no drenaba nunca.
         base = Path(os.environ.get('BRAIN_QUEUE_DIR', '/tmp/brain-queue'))
-        tenant = os.environ.get('GRAPHITI_GROUP_ID', '').strip()
-        ruta = base / tenant if tenant else base
+        # NUNCA la base pelada. Con GRAPHITI_GROUP_ID vacio el diario volvia a
+        # ser compartido Y la defensa de `recuperar_pendientes` se apagaba
+        # (comprueba `if self._tenant and ...`), o sea que un proceso mal
+        # configurado barria los pendientes de todos los demas tenants: el
+        # incidente entero, reintroducido por la ruta del valor vacio.
+        ruta = base / self._tenant
         ruta.mkdir(parents=True, exist_ok=True)
         return ruta
 
     @property
     def _tenant(self) -> str:
-        return os.environ.get('GRAPHITI_GROUP_ID', '').strip()
+        """Nombre del tenant, saneado para poder usarse como directorio.
+
+        `GRAPHITI_GROUP_ID` sale del entorno y acaba en una ruta: sin sanear,
+        un valor como `../otro` deja el diario fuera de la base.
+        """
+        crudo = (os.environ.get('GRAPHITI_GROUP_ID') or '').strip()
+        seguro = _NOMBRE_SEGURO.sub('_', crudo)[:64]
+        return seguro or '_sin_tenant'
 
     def _anotar_pendiente(
         self, group_id, name, content, source_description, episode_type, uuid, reference_time
     ) -> 'Path | None':
         """Deja el episodio anotado en disco antes de procesarlo."""
         try:
-            clave = uuid or f'{group_id}-{abs(hash((name, content))):x}'
-            destino = self._dir_diario / f'{clave}.json'
-            destino.write_text(
-                json.dumps(
-                    {
-                        'group_id': group_id,
-                        'name': name,
-                        'content': content,
-                        'source_description': source_description,
-                        'episode_type': getattr(episode_type, 'value', str(episode_type)),
-                        'uuid': uuid,
-                        'reference_time': reference_time.isoformat() if reference_time else None,
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding='utf-8',
+            # El `uuid` lo elige el CLIENTE. Sin sanear, `uuid="../otro/EP-1"`
+            # escribe en el diario de OTRO tenant: le pisa un episodio
+            # pendiente que, al reiniciar, su propia defensa descarta por
+            # "ajeno" — trabajo perdido para siempre y en silencio. Y con
+            # `../../..` es escritura arbitraria de .json en cualquier ruta del
+            # usuario del servicio.
+            crudo = uuid or f'{group_id}-{abs(hash((name, content))):x}'
+            clave = _NOMBRE_SEGURO.sub('_', str(crudo))[:120] or 'episodio'
+            diario = self._dir_diario
+            destino = diario / f'{clave}.json'
+            # Cinturon y tirantes: aunque el saneado ya impide salir, se
+            # comprueba que el destino cae DENTRO del diario del tenant.
+            if destino.resolve().parent != diario.resolve():
+                logger.warning(f'Anotacion fuera del diario ({destino}); se descarta el nombre')
+                destino = diario / 'episodio.json'
+            texto = json.dumps(
+                {
+                    'group_id': group_id,
+                    'name': name,
+                    'content': content,
+                    'source_description': source_description,
+                    'episode_type': getattr(episode_type, 'value', str(episode_type)),
+                    'uuid': uuid,
+                    'reference_time': reference_time.isoformat() if reference_time else None,
+                },
+                ensure_ascii=False,
             )
+            # Escritura ATOMICA. Con `write_text` directo, un corte a media
+            # escritura (disco lleno, SIGKILL) deja un JSON truncado, y al
+            # arrancar `recuperar_pendientes` lo ve ilegible y lo BORRA: el
+            # episodio se pierde en silencio, que es justo lo que el diario
+            # existe para impedir. Con tmp+replace el archivo final o esta
+            # entero o no esta.
+            tmp = destino.with_suffix('.json.tmp')
+            tmp.write_text(texto, encoding='utf-8')
+            os.replace(tmp, destino)
             return destino
         except Exception as e:  # anotar no debe impedir procesar
             logger.warning(f'No se pudo anotar el episodio pendiente: {e}')
@@ -258,6 +367,8 @@ class QueueService:
 
         recuperados = 0
         for archivo in sorted(self._dir_diario.glob('*.json')):
+            if archivo.name.endswith('.json.tmp'):
+                continue
             try:
                 d = json.loads(archivo.read_text(encoding='utf-8'))
             except Exception:
@@ -266,10 +377,11 @@ class QueueService:
             # Defensa en profundidad: aunque el diario ya es por tenant, jamas
             # tocar una anotacion ajena. Ni procesarla ni BORRARLA: borrarla
             # seria destruir el trabajo pendiente de otra persona.
-            if self._tenant and d.get('group_id') and d['group_id'] != self._tenant:
+            ajeno = d.get('group_id')
+            if ajeno and ajeno != self._tenant:
                 logger.warning(
                     f'Anotacion de otro tenant en {archivo.name} '
-                    f'(group_id={d["group_id"]}, soy {self._tenant}); se ignora'
+                    f'(group_id={ajeno}, soy {self._tenant}); se ignora'
                 )
                 continue
 
@@ -285,7 +397,11 @@ class QueueService:
                 except ValueError:
                     fecha = None
             await self.add_episode(
-                group_id=d['group_id'],
+                # `.get`, no `d['group_id']`: era la unica clave sin defecto, y
+                # un JSON valido sin ella lanzaba KeyError FUERA del try,
+                # abortando la recuperacion ENTERA — el resto de episodios se
+                # quedaba sin reencolar.
+                group_id=ajeno or self._tenant,
                 name=d.get('name') or 'episodio recuperado',
                 content=d.get('content') or '',
                 source_description=d.get('source_description') or '',

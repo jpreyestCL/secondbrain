@@ -576,6 +576,11 @@ _log_parche = _logging.getLogger(__name__)
 #: apagarlo es volver al estado que trababa el grafo.
 BRAIN_ESCRITURA_SERIAL = (_os.environ.get('BRAIN_ESCRITURA_SERIAL', '1') or '1') != '0'
 
+#: Cuanto esperar el candado antes de dar por colgada la escritura de otro y
+#: seguir sin el. Generoso: un episodio grande escribe en decimas de segundo,
+#: asi que llegar aqui significa que algo va mal de verdad.
+BRAIN_ESPERA_CANDADO = float(_os.environ.get('BRAIN_ESPERA_CANDADO', '300') or 300)
+
 #: Textos por peticion de embeddings; 0 = apagado.
 #:
 #: `add_episode` genera los embeddings que faltan en un bucle SECUENCIAL: una
@@ -591,14 +596,30 @@ BRAIN_ESCRITURA_SERIAL = (_os.environ.get('BRAIN_ESCRITURA_SERIAL', '1') or '1')
 #: Requiere BRAIN_ESCRITURA_SERIAL. Sin el candado esos ~15s de espera por
 #: episodio actuaban de freno accidental, escalonando a los workers; al
 #: quitarlos, los cinco escribian a la vez y el grafo se trababa en 35s.
-BRAIN_EMBED_LOTE = max(0, int(_os.environ.get('BRAIN_EMBED_LOTE', '64') or 0))
+def _entero_env(nombre: str, defecto: int, minimo: int = 0) -> int:
+    """Un valor mal escrito degrada al defecto; no tumba el arranque.
+
+    Y la variable AUSENTE y la variable VACIA significan lo mismo, que antes no
+    era asi: ausente daba 64 y vacia caia en `or 0`, o sea apagado.
+    """
+    crudo = (_os.environ.get(nombre) or '').strip()
+    if not crudo:
+        return defecto
+    try:
+        return max(minimo, int(crudo))
+    except ValueError:
+        _log_parche.warning(f'{nombre}={crudo!r} no es un entero; se usa {defecto}')
+        return defecto
+
+
+BRAIN_EMBED_LOTE = _entero_env('BRAIN_EMBED_LOTE', 64)
 
 #: Presupuesto de tokens POR PETICION. `nv-embed-v1` corta en 4096 y el limite
 #: es del lote entero, no de cada texto: agrupar de a 64 sin mirar el tamano
 #: reventaba con "Input length 4286 exceeds maximum allowed token size 4096" y
 #: el episodio entero fallaba. Se deja margen porque la estimacion es eso, una
 #: estimacion.
-BRAIN_EMBED_TOKENS = max(256, int(_os.environ.get('BRAIN_EMBED_TOKENS', '3500') or 3500))
+BRAIN_EMBED_TOKENS = _entero_env('BRAIN_EMBED_TOKENS', 3500, minimo=256)
 
 
 def _tokens_aprox(texto: str) -> int:
@@ -651,19 +672,37 @@ async def _en_lotes(embedder, textos: list[str]) -> list[list[float]]:
     return salida
 
 
+def _texto_embebible(valor: str) -> str:
+    """El MISMO texto que embeberia upstream.
+
+    `EntityNode.generate_name_embedding` y `EntityEdge.generate_embedding`
+    hacen `texto.replace(chr(10), " ")` antes de llamar al embedder. Sin
+    replicarlo, un `fact` con un salto de linea —y los genera el LLM en frases
+    largas— produce un vector DISTINTO del que habria producido el camino
+    original: la misma entidad cae en dos puntos del espacio vectorial segun
+    por donde entro, y la busqueda degrada en silencio. Es la clase de dano que
+    no se arregla reingiriendo.
+    """
+    return valor.replace(chr(10), ' ')
+
+
 async def _pre_embeddings(embedder, entity_nodes, entity_edges) -> None:
     """Genera por lotes lo que el bucle original pediria de a uno."""
     nodos = [n for n in entity_nodes if n.name and n.name_embedding is None]
     if nodos:
         for nodo, vector in zip(
-            nodos, await _en_lotes(embedder, [n.name for n in nodos]), strict=True
+            nodos,
+            await _en_lotes(embedder, [_texto_embebible(n.name) for n in nodos]),
+            strict=True,
         ):
             nodo.name_embedding = vector
 
     aristas = [e for e in entity_edges if e.fact and e.fact_embedding is None]
     if aristas:
         for arista, vector in zip(
-            aristas, await _en_lotes(embedder, [e.fact for e in aristas]), strict=True
+            aristas,
+            await _en_lotes(embedder, [_texto_embebible(e.fact) for e in aristas]),
+            strict=True,
         ):
             arista.fact_embedding = vector
 
@@ -676,7 +715,12 @@ def instalar_parche_escritura(logger=_log_parche) -> bool:
     try:
         from graphiti_core import graphiti as _graphiti_mod
         from graphiti_core.utils import bulk_utils as _bulk
-    except Exception:  # pragma: no cover - sin graphiti no hay nada que envolver
+    except Exception as e:
+        # Ancho a proposito, pero NUNCA silencioso: si esto falla el servidor
+        # arranca sin candado, o sea en la configuracion exacta que trabo el
+        # grafo tres veces, y antes no lo decia nadie.
+        if logger:
+            logger.error(f'PATCH NO INSTALADO (escritura sin serializar): {e}')
         return False
 
     if getattr(_bulk.add_nodes_and_edges_bulk, '_secondbrain_parche', False):
@@ -704,10 +748,27 @@ def instalar_parche_escritura(logger=_log_parche) -> bool:
                 driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
             )
 
-        async with _lock_escritura():
+        # Con timeout A PROPOSITO. Sin el, una sola escritura colgada (el
+        # escenario original: FalkorDB con TIMEOUT=0) ya no cuelga UN worker
+        # sino TODOS los que esperan el candado, y sin una linea en el log: el
+        # mismo sintoma que se venia persiguiendo, con mas radio de dano.
+        try:
+            await _asyncio.wait_for(_lock_escritura().acquire(), timeout=BRAIN_ESPERA_CANDADO)
+        except _asyncio.TimeoutError:
+            if logger:
+                logger.error(
+                    f'Llevo {BRAIN_ESPERA_CANDADO:.0f}s esperando para escribir en el grafo: '
+                    f'hay una escritura colgada. Se escribe sin serializar para no parar la cola.'
+                )
             return await original(
                 driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
             )
+        try:
+            return await original(
+                driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
+            )
+        finally:
+            _lock_escritura().release()
 
     add_nodes_and_edges_bulk._secondbrain_parche = True
     # Hay que parchear AMBOS modulos: `graphiti.py` importo el nombre directo
