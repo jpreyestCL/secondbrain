@@ -20,10 +20,43 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_INTENTOS = 5
 RATE_LIMIT_ESPERA_BASE = 20.0
 
+#: Episodios en paralelo por tenant. Uno solo deja el pipeline esperando a la
+#: API la mayor parte del tiempo (medido: ~2,4 min por episodio, o ~10 h para
+#: 259). El numero va aqui A PROPOSITO y acotado: la version anterior tenia
+#: paralelismo ACCIDENTAL e ilimitado — un worker por episodio encolado — y con
+#: 337 pendientes eso fueron ~124 episodios simultaneos, 12 peticiones por
+#: segundo y cero avance. Acotado no es lo mismo que ausente.
+BRAIN_WORKERS = max(1, int(os.environ.get('BRAIN_WORKERS', '3') or 3))
+
 _SENALES_RATE_LIMIT = ("rate limit", "429", "too many requests", "quota")
+
+#: Cuota/saldo agotado. OpenAI lo devuelve con el MISMO codigo 429 que un rate
+#: limit, asi que sin esta lista el reintento espera 20+40+80+160s y se rinde,
+#: episodio tras episodio, ante algo que no se arregla esperando. Paso: la cola
+#: entera quedo parada y el log solo decia "Rate limit; esperando 40s", que
+#: manda a diagnosticar el ritmo en vez de la facturacion.
+_SENALES_SIN_SALDO = (
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "no credits remaining",
+    "exceeded your current quota",
+    "billing",
+)
+
+
+class SinSaldoError(RuntimeError):
+    """El proveedor rechaza por saldo/cuota, no por ritmo. No se reintenta."""
+
+
+def _es_sin_saldo(exc: Exception) -> bool:
+    return any(s in str(exc).lower() for s in _SENALES_SIN_SALDO)
 
 
 def _es_rate_limit(exc: Exception) -> bool:
+    # El orden importa: "quota" aparece en ambas familias de mensaje, y sin
+    # saldo NO es un rate limit por mucho que el codigo HTTP coincida.
+    if _es_sin_saldo(exc):
+        return False
     return any(s in str(exc).lower() for s in _SENALES_RATE_LIMIT)
 
 
@@ -60,8 +93,9 @@ class QueueService:
         """Initialize the queue service."""
         # Dictionary to store queues for each group_id
         self._episode_queues: dict[str, asyncio.Queue] = {}
-        # Dictionary to track if a worker is running for each group_id
-        self._queue_workers: dict[str, bool] = {}
+        # PATCH (secondbrain): cuantos workers hay vivos por group_id. Antes era
+        # un bool ("hay o no hay"), que no permite un pool acotado.
+        self._queue_workers: dict[str, int] = {}
         # Store the graphiti client after initialization
         self._graphiti_client: Any = None
 
@@ -84,8 +118,22 @@ class QueueService:
         # Add the episode processing function to the queue
         await self._episode_queues[group_id].put(process_func)
 
-        # Start a worker for this queue if one isn't already running
-        if not self._queue_workers.get(group_id, False):
+        # Start a worker for this queue if one isn't already running.
+        #
+        # PATCH (secondbrain): la bandera se marca AQUI, antes de crear la
+        # tarea, y no dentro del worker. Marcarla dentro deja una ventana en la
+        # que la tarea existe pero todavia no corre: `recuperar_pendientes`
+        # encola cientos de episodios en un bucle cerrado sin ceder el control,
+        # asi que la bandera seguia en False y se creaba UN WORKER POR EPISODIO.
+        # Los 336 workers consumian la misma cola a la vez y convertian una cola
+        # secuencial en ~124 episodios simultaneos: 12 peticiones por segundo
+        # contra el proveedor, 2.000 rechazos en tres minutos y CERO episodios
+        # procesados. El sintoma parecia "el proveedor nos limita"; la causa era
+        # nuestra.
+        # El contador sube ANTES de crear la tarea y nunca pasa de BRAIN_WORKERS.
+        vivos = self._queue_workers.get(group_id, 0)
+        if vivos < BRAIN_WORKERS:
+            self._queue_workers[group_id] = vivos + 1
             asyncio.create_task(self._process_episode_queue(group_id))
 
         return self._episode_queues[group_id].qsize()
@@ -96,8 +144,10 @@ class QueueService:
         This function runs as a long-lived task that processes episodes
         from the queue one at a time.
         """
-        logger.info(f'Starting episode queue worker for group_id: {group_id}')
-        self._queue_workers[group_id] = True
+        logger.info(
+            f'Starting episode queue worker for group_id: {group_id} '
+            f'({self._queue_workers.get(group_id, 1)}/{BRAIN_WORKERS})'
+        )
 
         try:
             while True:
@@ -120,7 +170,7 @@ class QueueService:
         except Exception as e:
             logger.error(f'Unexpected error in queue worker for group_id {group_id}: {str(e)}')
         finally:
-            self._queue_workers[group_id] = False
+            self._queue_workers[group_id] = max(0, self._queue_workers.get(group_id, 1) - 1)
             logger.info(f'Stopped episode queue worker for group_id: {group_id}')
 
     def get_queue_size(self, group_id: str) -> int:
@@ -131,7 +181,7 @@ class QueueService:
 
     def is_worker_running(self, group_id: str) -> bool:
         """Check if a worker is running for a group_id."""
-        return self._queue_workers.get(group_id, False)
+        return self._queue_workers.get(group_id, 0) > 0
 
     async def initialize(self, graphiti_client: Any) -> None:
         """Initialize the queue service with a graphiti client.
@@ -146,9 +196,22 @@ class QueueService:
 
     @property
     def _dir_diario(self) -> 'Path':
-        ruta = Path(os.environ.get('BRAIN_QUEUE_DIR', '/tmp/brain-queue'))
+        # PATCH (secondbrain): el diario es POR TENANT. Cuando dos tenants
+        # compartian BRAIN_QUEUE_DIR, el MCP de uno recuperaba al arrancar los
+        # episodios del otro (el glob no mira de quien son), los borraba y los
+        # reencolaba contra SU grafo. Lo salvo el ACL de FalkorDB — "No
+        # permissions to access a key" — pero el proceso moria por eso, y al
+        # reiniciar repetia el ciclo: el diario del primer tenant se reescribia
+        # entero cada ~100s y su cola no drenaba nunca.
+        base = Path(os.environ.get('BRAIN_QUEUE_DIR', '/tmp/brain-queue'))
+        tenant = os.environ.get('GRAPHITI_GROUP_ID', '').strip()
+        ruta = base / tenant if tenant else base
         ruta.mkdir(parents=True, exist_ok=True)
         return ruta
+
+    @property
+    def _tenant(self) -> str:
+        return os.environ.get('GRAPHITI_GROUP_ID', '').strip()
 
     def _anotar_pendiente(
         self, group_id, name, content, source_description, episode_type, uuid, reference_time
@@ -200,6 +263,16 @@ class QueueService:
             except Exception:
                 archivo.unlink(missing_ok=True)
                 continue
+            # Defensa en profundidad: aunque el diario ya es por tenant, jamas
+            # tocar una anotacion ajena. Ni procesarla ni BORRARLA: borrarla
+            # seria destruir el trabajo pendiente de otra persona.
+            if self._tenant and d.get('group_id') and d['group_id'] != self._tenant:
+                logger.warning(
+                    f'Anotacion de otro tenant en {archivo.name} '
+                    f'(group_id={d["group_id"]}, soy {self._tenant}); se ignora'
+                )
+                continue
+
             archivo.unlink(missing_ok=True)  # se reescribe al reencolar
             try:
                 tipo = EpisodeType(d.get('episode_type') or 'text')
@@ -238,6 +311,15 @@ class QueueService:
             try:
                 return await hacer()
             except Exception as e:
+                if _es_sin_saldo(e):
+                    # Fallar rapido y con el motivo verdadero: reintentar esto
+                    # solo retrasa el diagnostico y castiga al proveedor.
+                    logger.error(
+                        f'Sin saldo/cuota en el proveedor de LLM ({etiqueta}): {e}. '
+                        f'No se reintenta; el episodio queda en el diario y se '
+                        f'reencola al reiniciar cuando haya saldo.'
+                    )
+                    raise SinSaldoError(str(e)) from e
                 if not _es_rate_limit(e):
                     raise
                 ultimo = e

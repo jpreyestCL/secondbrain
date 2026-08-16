@@ -36,6 +36,23 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
   reinicio los perdía en silencio *después* de responder "encolado" al cliente. Aun así,
   `add_memory` responde al ENCOLAR y no al terminar: quien empuje episodios debe
   **verificar** que llegaron (el CLI lo hace y marca en error lo no confirmado).
+- **El diario de la cola es POR TENANT** (`$BRAIN_QUEUE_DIR/<group_id>/`). Cuando dos
+  tenants compartían el directorio, el MCP de uno recuperaba al arrancar los episodios del
+  otro — el glob no mira de quién son — y los reencolaba contra SU grafo. Lo frenó el ACL
+  de FalkorDB (`No permissions to access a key`), o sea que el aislamiento aguantó, pero el
+  proceso moría por esa excepción y al reiniciar repetía el ciclo: el diario ajeno se
+  reescribía entero cada ~100 s y esa cola **no drenaba nunca**. El síntoma era
+  desconcertante — los archivos cambiaban de nombre solos — porque cada reinicio traía una
+  semilla de `hash()` nueva. Además de separar el directorio, `recuperar_pendientes` ignora
+  (y **no borra**) las anotaciones de otro `group_id`.
+- **Un 429 no siempre es ritmo: `insufficient_quota` es saldo agotado** y viene con el
+  mismo código HTTP. Reintentarlo son 300 s por episodio tirados y un log que manda a
+  investigar el ritmo en vez de la facturación. Se distingue y falla rápido.
+- **El paralelismo de la cola va acotado y a propósito** (`BRAIN_WORKERS`, 3 por defecto).
+  La marca de "ya hay worker" se ponía *dentro* de la tarea, así que recuperar cientos de
+  episodios en un bucle cerrado creaba **un worker por episodio**: ~124 episodios
+  simultáneos, 12 peticiones por segundo y cero avance. Acotado no es lo mismo que ausente:
+  con 1 worker son ~2,4 min por episodio; con 3, ~22 s.
 - **`session.run()` del driver de FalkorDB DESCARTA el resultado y devuelve `None` siempre.**
   Es fire-and-forget. Para LEER hay que usar `driver.execute_query()`, que además sí
   sustituye los parámetros (`$var`) — con `session.run()` tampoco llegan, y eso invita a
