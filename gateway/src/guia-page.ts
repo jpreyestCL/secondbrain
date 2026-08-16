@@ -72,7 +72,7 @@ const TOOLS: Tool[] = [
 ];
 
 const CLI_COMMANDS: Array<[string, string]> = [
-  ["add &lt;carpeta&gt;", "Todo el proceso en un comando. Con --revisar se detiene antes de enviar."],
+  ["add &lt;carpeta&gt;", "Todo el proceso en un comando. Con --review se detiene antes de enviar."],
   ["login &lt;url&gt;", "Vincula este equipo con tu cuenta del servidor. Se hace una vez."],
   ["status", "Muestra en qué etapa va cada documento."],
   ["scan &lt;carpeta&gt;", "Solo registra los archivos en el ledger."],

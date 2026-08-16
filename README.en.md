@@ -96,9 +96,9 @@ brain ingest-graph       # send to the server over the MCP connector
 brain status             # which stage each document is in
 ```
 
-Useful flags: `--excluir <folder>` skips duplicates or drafts; `--destilar <folder>` has
+Useful flags: `--exclude <folder>` skips duplicates or drafts; `--distill <folder>` has
 Claude condense bulky, repetitive documents into facts instead of sending the raw text
-(see **ADR-008**); `--rehacer` puts already-sent documents back in the queue after the
+(see **ADR-008**); `--redo` puts already-sent documents back in the queue after the
 graph has been wiped.
 
 > `--via falkordb` also exists, writing straight to the database. It's faster for very

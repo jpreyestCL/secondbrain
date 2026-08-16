@@ -389,12 +389,12 @@ def reconciliar_uuids(cliente, ledger: Ledger, espera: float | None = None) -> d
             ambiguos.add(nombre)
         pendientes[nombre] = e
     for nombre in ambiguos:
-        log.warning("nombre de episodio repetido, no se puede verificar: %s", nombre)
+        log.warning("duplicate episode name, cannot verify: %s", nombre)
         pendientes.pop(nombre, None)
     if not pendientes:
         return {"confirmados": 0, "faltantes": 0}
 
-    log.info("verificando en el servidor %d episodio(s) enviado(s)...", len(pendientes))
+    log.info("verifying %d sent episode(s) against the server...", len(pendientes))
     limite = time.monotonic() + max(espera, 0.0)
     encontrados: dict[str, str] = {}
     # Se consulta SIEMPRE al menos una vez, incluso con espera=0: el objetivo es
@@ -403,7 +403,7 @@ def reconciliar_uuids(cliente, ledger: Ledger, espera: float | None = None) -> d
         try:
             vistos = episodios_por_nombre(cliente, maximo=max(200, len(pendientes) * 2))
         except McpRemoteError as exc:
-            log.warning("no se pudo consultar el servidor: %s", exc)
+            log.warning("could not query the server: %s", exc)
             break
         for nombre in pendientes:
             if nombre in vistos and nombre not in encontrados:
@@ -421,7 +421,7 @@ def reconciliar_uuids(cliente, ledger: Ledger, espera: float | None = None) -> d
         # grafo es peor que fallar.
         ledger.borrar_episodio(f"{PENDIENTE_PREFIJO}{nombre}")
         doc = pendientes[nombre]["doc_id"]
-        ledger.set_status(doc, "error", error="el servidor no confirmó el episodio")
+        ledger.set_status(doc, "error", error="the server did not confirm the episode")
     return {"confirmados": len(encontrados), "faltantes": len(faltan)}
 
 
@@ -474,7 +474,7 @@ def _mcp_add_memory(
             if intento < MCP_MAX_INTENTOS - 1:
                 espera = MCP_ESPERA_BASE * (2**intento)
                 log.warning(
-                    "el servidor no respondio (%s); reintento en %.0fs [%d/%d]",
+                    "the server did not respond (%s); retrying in %.0fs [%d/%d]",
                     str(exc)[:60],
                     espera,
                     intento + 2,

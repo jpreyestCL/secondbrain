@@ -42,7 +42,7 @@ One command does the whole thing:
 ```
 brain login https://<host>        # once: authenticate against the server
 brain add <folder>                # read, classify, chunk and send
-brain add <folder> --revisar      # ...but stop before sending, so you can check
+brain add <folder> --review      # ...but stop before sending, so you can check
 ```
 
 Underneath it is five stages, each recording its result in the ledger. You rarely

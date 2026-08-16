@@ -114,7 +114,7 @@ brain add ~/Documentos/inbox              # lee, clasifica y envía al servidor
 ```
 
 `add` hace todo: leer los archivos (con OCR si hacen falta), determinar dominio,
-tipo y **fecha real** de cada documento, trocearlos y enviarlos. Con `--revisar` se
+tipo y **fecha real** de cada documento, trocearlos y enviarlos. Con `--review` se
 detiene antes de enviar para que mires la clasificación.
 
 Por dentro son cinco etapas, y cada una deja su resultado en un ledger. Eso importa

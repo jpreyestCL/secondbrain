@@ -142,7 +142,7 @@ def sha256_file(path: Path, intentos: int = 3) -> str:
             if intento < intentos - 1:
                 # Espera creciente: la descarga puede tardar segundos.
                 time.sleep(2 * (intento + 1))
-                log.info("descargando desde la nube: %s (intento %d)", path.name, intento + 2)
+                log.info("downloading from the cloud: %s (attempt %d)", path.name, intento + 2)
     raise ultimo if ultimo else OSError(f"no se pudo leer {path}")
 
 
@@ -154,8 +154,8 @@ def scan(
     folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
     excluir: Optional[list[str]] = typer.Option(
         None,
-        "--excluir",
-        help="Carpeta a saltar (repetible). Ej: --excluir _Duplicados --excluir 'oferta venta'",
+        "--exclude", "--excluir",
+        help="Folder to skip (repeatable). E.g. --exclude _Duplicados --exclude drafts",
     ),
 ) -> dict:
     """Walk FOLDER, hash every file and upsert it into the ledger.
@@ -195,7 +195,7 @@ def scan(
                     # reintentarlo.
                     en_la_nube.append(path)
                 else:
-                    log.warning("se omite %s (no se pudo leer): %s", path, exc)
+                    log.warning("skipping %s (unreadable): %s", path, exc)
                     counts["ilegibles"] += 1
                 continue
             outcome, doc_id = ledger.upsert_file(
@@ -210,27 +210,27 @@ def scan(
     )
     if counts["excluidos"]:
         extra = (
-            f", {counts['retirados']} de ellos retirados de la cola"
+            f", {counts['retirados']} of them removed from the queue"
             if counts["retirados"]
             else ""
         )
-        console.print(f"{counts['excluidos']} archivo(s) omitidos por --excluir{extra}")
+        console.print(f"{counts['excluidos']} file(s) skipped by --exclude{extra}")
     if counts["ilegibles"]:
-        console.print(f"[yellow]{counts['ilegibles']} archivo(s) ilegibles, omitidos[/yellow]")
+        console.print(f"[yellow]{counts['ilegibles']} unreadable file(s), skipped[/yellow]")
     if en_la_nube:
         # Se listan de verdad: dejar que pasen como un warning entre cientos de
         # lineas es como perderlos.
         console.print(
-            f"\n[yellow]{len(en_la_nube)} archivo(s) están en iCloud y no en tu disco[/yellow], "
-            f"así que NO se ingirieron. Para bajarlos y reintentar:\n"
+            f"\n[yellow]{len(en_la_nube)} file(s) are in iCloud, not on your disk[/yellow], "
+            f"so they were NOT ingested. To download them and retry:\n"
             f"  [bold]find '{folder}' -type f -exec brctl download {{}} \\;[/bold]\n"
-            f"  (o ábrelos en Finder y espera a que desaparezca el icono de nube)\n"
-            f"y vuelve a correr el mismo comando. Los primeros:"
+            f"  (or open them in Finder and wait for the cloud icon to go away)\n"
+            f"then run the same command again. The first ones:"
         )
         for p in en_la_nube[:5]:
             console.print(f"  · {p.name}")
         if len(en_la_nube) > 5:
-            console.print(f"  · … y {len(en_la_nube) - 5} más")
+            console.print(f"  · … and {len(en_la_nube) - 5} more")
     return {**counts, "en_la_nube": len(en_la_nube)}
 
 
@@ -262,19 +262,19 @@ def extract() -> None:
                 # se traducen a la causa real, que casi siempre es una de dos.
                 if "closed or encrypted" in motivo:
                     ledger.set_status(
-                        row.doc_id, "skipped", error="PDF protegido con contraseña"
+                        row.doc_id, "skipped", error="password-protected PDF"
                     )
                     counts["skipped"] += 1
-                    log.info("[protegido] %s", path.name)
+                    log.info("[protected] %s", path.name)
                     continue
                 if esta_en_la_nube(path):
                     ledger.set_status(
                         row.doc_id,
                         "pending",
-                        error="en iCloud; descárgalo y vuelve a correr el comando",
+                        error="in iCloud; download it and run the command again",
                     )
                     counts["en_la_nube"] = counts.get("en_la_nube", 0) + 1
-                    log.info("[en la nube] %s", path.name)
+                    log.info("[in the cloud] %s", path.name)
                     continue
                 try:
                     detalle = f" [{path.stat().st_size} bytes]"
@@ -296,8 +296,8 @@ def extract() -> None:
     )
     if counts.get("en_la_nube"):
         console.print(
-            f"[yellow]{counts['en_la_nube']} archivo(s) siguen en iCloud[/yellow] y quedaron "
-            f"pendientes, no perdidos: descárgalos y vuelve a correr el mismo comando."
+            f"[yellow]{counts['en_la_nube']} file(s) are still in iCloud[/yellow] and were left "
+            f"pending, not lost: download them and run the same command again."
         )
 
 
@@ -310,9 +310,9 @@ def classify(
         None, "--apply", exists=True, dir_okay=False, help="Completed manifest to apply"
     ),
     auto: bool = typer.Option(
-        False, "--auto", help="Rellena y aplica el manifiesto sin intervención (sin LLM)"
+        False, "--auto", help="Fill in and apply the manifest unattended (no LLM)"
     ),
-    dominio: Optional[str] = typer.Option(None, "--dominio", help="Fuerza el dominio"),
+    dominio: Optional[str] = typer.Option(None, "--domain", "--dominio", help="Force the domain"),
 ) -> None:
     """Emit a classification work manifest (no LLM calls), or apply one back.
 
@@ -320,8 +320,8 @@ def classify(
     to fill in. With --apply FILE: reads the completed manifest and updates
     the ledger (domain, doc_type, doc_date, sensitivity flags).
 
-    Con --auto lo rellena el propio CLI con heurísticas deterministas
-    (brain_ingest.autoclas) y lo aplica: ni LLM ni intervención.
+    With --auto the CLI fills it in itself using deterministic heuristics
+    (brain_ingest.autoclas) and applies it: no LLM, no human step.
     """
     cfg, ledger = _open()
     with ledger:
@@ -353,18 +353,18 @@ def _clasificar_auto(cfg: Config, ledger: Ledger, manifiesto: Path, dominio: str
 
     total = len(datos["documents"])
     ok = fiables(origenes)
-    console.print(f"clasificados {total} documentos (fecha fiable en {ok})")
+    console.print(f"classified {total} documents (reliable date on {ok})")
     for k, v in sorted(origenes.items(), key=lambda kv: -kv[1]):
         console.print(f"  {str(k):<24} {v}")
     imprecisos = total - ok
     if imprecisos:
         # No es un detalle menor: una fecha inventada entra al grafo como hecho.
         console.print(
-            f"[yellow]{imprecisos} con fecha imprecisa[/yellow] (solo año, o la fecha del "
-            f"archivo). Son los que conviene mirar antes de consultarlos."
+            f"[yellow]{imprecisos} with an imprecise date[/yellow] (year only, or the file's "
+            f"date). Worth reviewing before you rely on them."
         )
     counts = apply_manifest(cfg, ledger, manifiesto)
-    console.print(f"aplicados: {counts['applied']}, errores: {counts['errors']}")
+    console.print(f"applied: {counts['applied']}, errors: {counts['errors']}")
 
 
 # -- add ---------------------------------------------------------------------
@@ -373,32 +373,32 @@ def _clasificar_auto(cfg: Config, ledger: Ledger, manifiesto: Path, dominio: str
 @app.command()
 def add(
     folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
-    dominio: Optional[str] = typer.Option(None, "--dominio", help="Fuerza el dominio"),
+    dominio: Optional[str] = typer.Option(None, "--domain", "--dominio", help="Force the domain"),
     revisar: bool = typer.Option(
-        False, "--revisar", help="Para antes de enviar, para que revises la clasificación"
+        False, "--review", "--revisar", help="Stop before sending, so you can review the classification"
     ),
     rehacer: bool = typer.Option(
         False,
-        "--rehacer",
-        help="Reenvía al grafo lo ya enviado (tras vaciarlo o cambiar la extracción)",
+        "--redo", "--rehacer",
+        help="Send already-sent documents again (after wiping the graph or changing extraction)",
     ),
-    url: Optional[str] = typer.Option(None, "--url", help="Servidor MCP (si no hiciste login)"),
+    url: Optional[str] = typer.Option(None, "--url", help="MCP server URL (if you have not run login)"),
     excluir: Optional[list[str]] = typer.Option(
-        None, "--excluir", help="Carpeta a saltar (repetible): duplicados, borradores…"
+        None, "--exclude", "--excluir", help="Folder to skip (repeatable): duplicates, drafts…"
     ),
     destilar_en: Optional[list[str]] = typer.Option(
         None,
-        "--destilar",
-        help="Carpeta cuyos documentos resume Claude en vez de enviarse crudos (repetible)",
+        "--distill", "--destilar",
+        help="Folder whose documents Claude condenses into facts instead of sending raw (repeatable)",
     ),
 ) -> None:
-    """Ingiere una carpeta completa: un solo comando de principio a fin.
+    """Ingest a whole folder: one command from start to finish.
 
-    Equivale a scan -> extract -> classify --auto -> chunk -> ingest-graph.
-    Los pasos siguen existiendo por separado porque cada uno deja su resultado
-    en el ledger: si la extracción de cientos de PDFs se cae a la mitad, o si
-    el envío al servidor falla, se retoma donde iba en vez de rehacer todo.
-    Pero orquestarlos a mano no aporta nada, así que este es el camino normal.
+    Equivalent to scan -> extract -> classify --auto -> chunk -> ingest-graph.
+    The stages still exist separately because each records its result in the
+    ledger: if OCR over hundreds of PDFs dies halfway, or the send fails, the
+    retry resumes where it stopped instead of redoing everything. Driving them
+    by hand adds nothing, so this is the normal path.
     """
     if rehacer:
         # Sin esto, la unica forma de reingerir era un DELETE a mano sobre el
@@ -407,8 +407,8 @@ def add(
         with ledger:
             n = ledger.rehacer(str(folder))
         console.print(
-            f"rehacer: {n['documentos']} documento(s) vuelven a la cola "
-            f"({n['episodios']} envío(s) olvidados). No se tocó el grafo ni tus archivos."
+            f"redo: {n['documentos']} document(s) back in the queue "
+            f"({n['episodios']} send(s) forgotten). The graph and your files were not touched."
         )
     resumen = scan(folder, excluir=excluir)
     faltantes = resumen.get("en_la_nube", 0) + resumen.get("ilegibles", 0)
@@ -428,16 +428,16 @@ def add(
             # una afirmacion falsa: esos documentos no estan en ninguna parte.
             console.print(
                 f"[yellow]Los {len(ya)} documento(s) legibles ya estaban en tu memoria, "
-                f"pero {faltantes} no se pudieron leer[/yellow] (ver arriba), así que esta "
-                f"carpeta NO está completa. Resuelve eso y vuelve a correr el mismo comando."
+                f"but {faltantes} could not be read[/yellow] (see above), so this "
+                f"folder is NOT complete. Fix that and run the same command again."
             )
             return
         console.print(
-            f"Los {len(ya)} documento(s) de esta carpeta ya están en tu memoria y no han "
-            f"cambiado, así que no hay nada nuevo que enviar.\n"
-            f"  · ¿agregaste archivos? vuelve a correr esto, se procesan solo los nuevos\n"
-            f"  · ¿vaciaste el grafo o cambiaste la extracción? "
-            f"[bold]brain add {folder} --rehacer[/bold]"
+            f"The {len(ya)} document(s) in this folder are already in your memory and have "
+            f"not changed, so there is nothing new to send.\n"
+            f"  · added files? run this again, only the new ones are processed\n"
+            f"  · wiped the graph or changed extraction? "
+            f"[bold]brain add {folder} --redo[/bold]"
         )
         return
 
@@ -450,16 +450,16 @@ def add(
             quedan = len(list(ledger2.by_status("por-destilar")))
         if quedan:
             console.print(
-                f"\n[bold]{quedan} documento(s) esperan destilado.[/bold] Ejecuta "
-                f"[bold]brain destilar[/bold], pide a Claude que complete el manifiesto y "
-                f"luego [bold]brain destilar --apply <archivo>[/bold]."
+                f"\n[bold]{quedan} document(s) awaiting distillation.[/bold] Run "
+                f"[bold]brain distill[/bold], ask Claude to fill in the manifest and then "
+                f"[bold]brain distill --apply <file>[/bold]."
             )
             if not revisar:
-                console.print("El resto ya se envió.")
+                console.print("The rest has been sent.")
     if revisar:
         console.print(
-            "\n[bold]Pausa antes de enviar.[/bold] Revisa con `brain status`; cuando "
-            "estés conforme:\n  brain ingest-graph"
+            "\n[bold]Paused before sending.[/bold] Check with `brain status`; when "
+            "you are happy:\n  brain ingest-graph"
         )
         return
     ingest_graph(doc_id=None, force=False, via=None, url=url)
@@ -472,7 +472,7 @@ def add(
 @app.command()
 def chunk(
     destilar: Optional[list[str]] = typer.Option(
-        None, "--destilar", help="Carpeta cuyos documentos se resumen en vez de trocearse"
+        None, "--distill", "--destilar", help="Folder whose documents are summarised instead of chunked"
     ),
 ) -> None:
     """Chunk extracted text of classified (or extracted) docs into ~/.brain/chunks/."""
@@ -509,7 +509,7 @@ def chunk(
             n_chunks += len(chunks)
     console.print(f"chunk done: {n_chunks} chunks across {n_docs} docs")
     if n_destilar:
-        console.print(f"{n_destilar} documento(s) marcados para destilar")
+        console.print(f"{n_destilar} document(s) marked for distilling")
 
 
 # -- ingest-graph ------------------------------------------------------------
@@ -524,11 +524,11 @@ def ingest_graph(
     via: Optional[str] = typer.Option(
         None,
         "--via",
-        help="mcp (por el conector; por defecto si hiciste `brain login`) | "
-             "falkordb (directo a la base, requiere administrar el servidor)",
+        help="mcp (through the connector; the default once you run `brain login`) | "
+             "falkordb (straight to the database, needs server admin)",
     ),
     url: Optional[str] = typer.Option(
-        None, "--url", help="URL del gateway MCP, ej https://mybrain.rlz.cl/mcp"
+        None, "--url", help="MCP gateway URL, e.g. https://mybrain.rlz.cl/mcp"
     ),
 ) -> None:
     """Push chunks of classified docs to Graphiti as episodes.
@@ -553,21 +553,21 @@ def ingest_graph(
         # base. Antes caia a FalkorDB y reventaba con un error de Redis, que no
         # dice que hacer; el paso que falta es vincularse con el servidor.
         console.print(
-            "[yellow]Este equipo todavía no está vinculado a un servidor.[/yellow]\n\n"
+            "[yellow]This machine is not linked to a server yet.[/yellow]\n\n"
             "  [bold]brain login https://mybrain.rlz.cl[/bold]\n\n"
-            "Se abre el navegador una vez y listo. No hace falta ninguna clave de\n"
-            "API: la extracción la hace el servidor con sus propios modelos."
+            "The browser opens once and that is it. No API key needed:\n"
+            "the server does the extraction with its own models."
         )
         raise typer.Exit(2)
     if via not in ("falkordb", "mcp"):
-        console.print(f"[red]--via inválido:[/red] {via} (usa 'mcp' o 'falkordb')")
+        console.print(f"[red]invalid --via:[/red] {via} (use 'mcp' or 'falkordb')")
         raise typer.Exit(2)
     if via == "mcp" and not destino:
         console.print(
-            "[red]No hay servidor configurado.[/red] Ejecuta primero:\n"
+            "[red]No server configured.[/red] Run this first:\n"
             "  [bold]brain login https://mybrain.rlz.cl[/bold]\n"
-            "o pasa --url. Sin servidor, la única alternativa es --via falkordb, "
-            "que requiere acceso directo a la base."
+            "or pass --url. Without a server the only alternative is --via falkordb, "
+            "which needs direct database access."
         )
         raise typer.Exit(2)
     remoto = None
@@ -579,9 +579,9 @@ def ingest_graph(
         try:
             remoto = conectar(base, cfg.tenant, cfg.home, path=parsed.path or "/mcp")
         except McpRemoteError as exc:
-            console.print(f"[red]no se pudo conectar al MCP:[/red] {exc}")
+            console.print(f"[red]could not connect to the MCP server:[/red] {exc}")
             raise typer.Exit(2)
-        console.print(f"conectado a {base} como tenant [bold]{cfg.tenant}[/bold]")
+        console.print(f"connected to {base} as tenant [bold]{cfg.tenant}[/bold]")
 
     try:
         with ledger:
@@ -602,13 +602,13 @@ def ingest_graph(
 
 @app.command()
 def login(
-    url: str = typer.Argument(..., help="URL del servidor, ej: https://mybrain.rlz.cl"),
+    url: str = typer.Argument(..., help="Server URL, e.g. https://mybrain.rlz.cl"),
 ) -> None:
-    """Vincula este equipo con un servidor y guarda la sesión.
+    """Link this machine to a server and store the session.
 
-    Es lo único que hace falta para poder ingerir: la extracción ocurre en el
-    servidor con SUS modelos, así que en este equipo no se configura ninguna
-    clave de LLM. Abre el navegador para autenticarte con tu cuenta.
+    This is all you need before ingesting: extraction happens on the server
+    with ITS models, so no LLM API key is configured here. Opens the browser
+    to authenticate with your account.
     """
     import tomllib
 
@@ -628,7 +628,7 @@ def login(
         cliente = conectar(base, cfg.tenant, cfg.home, path=parsed.path)
         herramientas = cliente.herramientas()
     except McpRemoteError as exc:
-        console.print(f"[red]no se pudo conectar:[/red] {exc}")
+        console.print(f"[red]could not connect:[/red] {exc}")
         raise typer.Exit(2)
 
     # Se guarda en config.toml para no tener que repetir --url en cada comando.
@@ -644,35 +644,35 @@ def login(
         texto = texto.rstrip("\n") + f"\n\n{linea}\n"
     ruta.write_text(texto, encoding="utf-8")
 
-    console.print(f"conectado a [bold]{base}[/bold] ({len(herramientas)} herramientas)")
-    console.print(f"espacio: [bold]{cfg.tenant}[/bold]")
-    console.print("listo: `brain ingest-graph` ya envía a este servidor, sin claves locales.")
+    console.print(f"connected to [bold]{base}[/bold] ({len(herramientas)} tools)")
+    console.print(f"space: [bold]{cfg.tenant}[/bold]")
+    console.print("done: `brain ingest-graph` now sends to this server, with no local API keys.")
 
 
 # -- destilar ----------------------------------------------------------------
 
 
 DESTILAR_INSTRUCCIONES = (
-    "Para cada documento, reemplaza `hechos: []` por la lista de hechos concretos que "
-    "contiene, en frases completas y autocontenidas (cada una debe entenderse sola). "
-    "Incluye nombres propios, montos, fechas, porcentajes e identificadores tal como "
-    "aparecen. NO interpretes ni opines. Si el documento no aporta ningún hecho, deja "
-    "la lista vacía y se marcará como omitido. Luego: brain destilar --apply <archivo>"
+    "For each document, replace `hechos: []` with the list of concrete facts it contains, "
+    "as complete self-contained sentences (each must stand on its own). Keep proper names, "
+    "amounts, dates, percentages and identifiers exactly as they appear. Do NOT interpret "
+    "or add opinions. If a document carries no fact, leave the list empty and it will be "
+    "skipped. Then run: brain distill --apply <file>"
 )
 
 
-@app.command()
+@app.command("distill")
 def destilar(
     apply: Optional[Path] = typer.Option(
-        None, "--apply", exists=True, dir_okay=False, help="Manifiesto ya completado"
+        None, "--apply", exists=True, dir_okay=False, help="Completed manifest"
     ),
 ) -> None:
-    """Emite (o aplica) el manifiesto de destilado.
+    """Emit (or apply) the distillation manifest.
 
-    Destilar es que Claude condense el documento a hechos y se envíen esos
-    hechos en vez del texto crudo: mucho más barato, porque el costo del grafo
-    es proporcional al texto. A cambio se pierde la literalidad — por eso solo
-    ocurre en las carpetas que se piden con `--destilar`, nunca por defecto.
+    Distilling means Claude condenses the document into facts and those facts
+    are sent instead of the raw text: far cheaper, because the graph's cost is
+    proportional to the text. In exchange you lose the literal wording — which
+    is why it only happens in folders named with `--distill`, never by default.
     """
     cfg, ledger = _open()
     with ledger:
@@ -685,7 +685,7 @@ def destilar(
                     continue
                 hechos = [h.strip() for h in (d.get("hechos") or []) if str(h).strip()]
                 if not hechos:
-                    ledger.set_status(d["doc_id"], "skipped", error="destilado sin hechos")
+                    ledger.set_status(d["doc_id"], "skipped", error="distilled with no facts")
                     omitidos += 1
                     continue
                 # Los hechos se guardan como los fragmentos del documento: de
@@ -708,15 +708,15 @@ def destilar(
                 ledger.set_status(d["doc_id"], "classified")
                 hechos_total += len(hechos)
             console.print(
-                f"destilar --apply: {hechos_total} hecho(s) en {len(datos.get('documents', []))} "
-                f"documento(s), {omitidos} sin contenido"
+                f"distill --apply: {hechos_total} fact(s) across {len(datos.get('documents', []))} "
+                f"document(s), {omitidos} with no content"
             )
-            console.print("siguiente paso: [bold]brain ingest-graph[/bold]")
+            console.print("next: [bold]brain ingest-graph[/bold]")
             return
 
         pendientes = [f for f in ledger.by_status("por-destilar")]
         if not pendientes:
-            console.print("no hay documentos por destilar")
+            console.print("nothing to distill")
             return
         salida = cfg.work_dir / f"destilar-{_lote()}.json"
         docs = []
@@ -749,8 +749,8 @@ def destilar(
             ),
             encoding="utf-8",
         )
-        console.print(f"manifiesto de destilado: [bold]{salida}[/bold]")
-        console.print(f"{len(docs)} documento(s). {DESTILAR_INSTRUCCIONES}")
+        console.print(f"distill manifest: [bold]{salida}[/bold]")
+        console.print(f"{len(docs)} document(s). {DESTILAR_INSTRUCCIONES}")
 
 
 # -- status ------------------------------------------------------------------

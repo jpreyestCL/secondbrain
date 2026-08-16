@@ -183,8 +183,8 @@ def test_add_sobre_carpeta_ya_ingerida_lo_dice(cfg, ledger, tmp_path, monkeypatc
             ledger.set_status(fila.doc_id, "ingested")
 
     res = runner.invoke(app, ["--tenant", cfg.tenant, "add", str(carpeta)])
-    assert "ya están en tu memoria" in res.stdout
-    assert "--rehacer" in res.stdout
+    assert "already in your memory" in res.stdout
+    assert "--redo" in res.stdout
 
 
 def test_reintenta_al_leer_un_archivo_que_baja_de_la_nube(tmp_path, monkeypatch):
@@ -265,8 +265,8 @@ def test_no_dice_que_esta_todo_si_algun_archivo_no_se_pudo_leer(
             ledger.set_status(fila.doc_id, "ingested")
 
     res = runner.invoke(app, ["--tenant", cfg.tenant, "add", str(carpeta)])
-    assert "NO está completa" in res.stdout
-    assert "no hay nada nuevo que enviar" not in res.stdout
+    assert "NOT complete" in res.stdout
+    assert "nothing new to send" not in res.stdout
 
 
 def test_excluir_salta_carpetas_completas(cfg, tmp_path, monkeypatch):
@@ -294,7 +294,7 @@ def test_excluir_salta_carpetas_completas(cfg, tmp_path, monkeypatch):
          "--excluir", "_Duplicados", "--excluir", "oferta venta"],
     )
     assert "1 new" in res.stdout
-    assert "2 archivo(s) omitidos por --excluir" in res.stdout
+    assert "2 file(s) skipped by --exclude" in res.stdout
 
 
 def test_un_archivo_vacio_no_es_un_error(tmp_path):
@@ -305,4 +305,4 @@ def test_un_archivo_vacio_no_es_un_error(tmp_path):
     p.touch()
     with pytest.raises(SkipFile) as exc:
         extract_file(p)
-    assert "vacío" in str(exc.value)
+    assert "empty" in str(exc.value)

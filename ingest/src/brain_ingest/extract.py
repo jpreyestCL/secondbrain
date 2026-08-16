@@ -77,10 +77,10 @@ def extract_file(path: Path) -> tuple[str, str]:
     """
     ext = path.suffix.lower()
     if es_temporal_de_office(path):
-        raise SkipFile("archivo temporal de Office (~$), no es un documento")
+        raise SkipFile("Office lock file (~$), not a document")
     if esta_en_la_nube(path):
         raise SkipFile(
-            "está en iCloud y no en el disco; descárgalo (brctl download) y vuelve a correr"
+            "in iCloud, not on disk; download it (brctl download) and run again"
         )
     try:
         tam = path.stat().st_size
@@ -89,7 +89,7 @@ def extract_file(path: Path) -> tuple[str, str]:
     if tam == 0:
         # Un archivo vacio no esta corrupto: no tiene nada. Sin esto, PyMuPDF
         # respondia "Failed to open file as type pdf" y parecia dañado.
-        raise SkipFile("el archivo está vacío (0 bytes)")
+        raise SkipFile("the file is empty (0 bytes)")
     if ext in CODE_EXTS:
         raise SkipFile(CODE_SKIP_REASON)
     if ext in TEXT_EXTS:
@@ -157,13 +157,13 @@ def _extract_pdf(path: Path) -> str:
     if not firma.startswith(b"%PDF"):
         if firma.startswith(b"PK"):
             raise ExtractError(
-                "no es un PDF: es un zip (probablemente un .docx/.xlsx renombrado)"
+                "not a PDF: it is a zip (likely a renamed .docx/.xlsx)"
             )
         if firma[:5].lower() in (b"<html", b"<!doc"):
-            raise ExtractError("no es un PDF: es un documento HTML renombrado")
+            raise ExtractError("not a PDF: it is a renamed HTML document")
         if firma.startswith(b"\xd0\xcf\x11\xe0"):
-            raise ExtractError("no es un PDF: es un documento de Office antiguo (OLE2)")
-        raise ExtractError(f"no es un PDF: empieza por {firma[:4]!r}")
+            raise ExtractError("not a PDF: it is an old Office document (OLE2)")
+        raise ExtractError(f"not a PDF: it starts with {firma[:4]!r}")
 
     parts: list[str] = []
     with fitz.open(path) as doc:
@@ -349,7 +349,7 @@ def _extract_html_tables(path: Path) -> str:
     parser.feed(texto)
     if not parser.tablas:
         raise ExtractError(
-            "el .xls no es OLE2 ni zip ni trae tablas HTML; formato desconocido"
+            "the .xls is neither OLE2 nor zip nor HTML tables; unknown format"
         )
     sheets = [
         {

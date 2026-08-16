@@ -357,7 +357,7 @@ class Ledger:
         """
         cur = self.conn.cursor()
         cur.execute(
-            "UPDATE files SET status='skipped', error='excluido por --excluir'"
+            "UPDATE files SET status='skipped', error='skipped by --exclude'"
             " WHERE path = ? AND superseded = 0 AND status NOT IN ('skipped','ingested')",
             (path,),
         )
