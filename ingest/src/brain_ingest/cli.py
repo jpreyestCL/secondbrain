@@ -837,3 +837,95 @@ def version() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("next-batch")
+def next_batch(
+    limit: int = typer.Option(10, "--limit", "--limite", help="How many documents to hand over"),
+    max_chars: int = typer.Option(
+        60000, "--max-chars", help="Truncate each document's text at this many characters"
+    ),
+    folder: Optional[str] = typer.Option(
+        None, "--folder", "--carpeta", help="Only documents under this path"
+    ),
+) -> None:
+    """Hand the next pending documents to Claude, text included, as JSON.
+
+    This is the fast path: Claude reads the ALREADY EXTRACTED text (no OCR, no
+    re-reading PDFs), pulls out the facts and calls the `add_facts` MCP tool,
+    which costs ~0.3 s per document on the server and no LLM there at all.
+    The slow path (`ingest-graph`) sends raw text and lets the server extract:
+    ~110 s per 4 KB chunk.
+
+    Nothing is marked here. Claude calls `mark-done` per document once the
+    server confirms, so an interrupted batch simply reappears in the next one.
+    """
+    import json as _json
+
+    cfg, ledger = _open()
+    with ledger:
+        filas = [f for f in ledger.by_status("classified") if not f.superseded]
+        if folder:
+            raiz = str(Path(folder).expanduser().resolve()).rstrip("/") + "/"
+            filas = [f for f in filas if f.path.startswith(raiz)]
+
+        salida = []
+        for fila in filas:
+            if len(salida) >= limit:
+                break
+            origen = cfg.extracted_dir / f"{fila.doc_id}.txt"
+            if not origen.exists():
+                origen = cfg.extracted_dir / f"{fila.doc_id}.json"
+            if not origen.exists():
+                continue
+            texto = origen.read_text(encoding="utf-8", errors="replace")
+            salida.append(
+                {
+                    "doc_id": fila.doc_id,
+                    "documento": Path(fila.path).name,
+                    "ruta": fila.path,
+                    # La fecha que detecto `classify --auto`. Es una heuristica:
+                    # si el texto la contradice, manda el texto (regla de oro 1).
+                    "fecha_detectada": fila.doc_date,
+                    "dominio": fila.domain or "personal",
+                    "tipo_documento": fila.doc_type or "documento",
+                    "sensibilidad": fila.sensitivity or [],
+                    "truncado": len(texto) > max_chars,
+                    "texto": texto[:max_chars],
+                }
+            )
+
+        pendientes = len(filas)
+
+    typer.echo(
+        _json.dumps(
+            {"documentos": salida, "entregados": len(salida), "pendientes_totales": pendientes},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("mark-done")
+def mark_done(
+    doc_id: str = typer.Argument(..., help="Document id from next-batch"),
+    episode: str = typer.Option(..., "--episode", "--episodio", help="uuid returned by add_facts"),
+) -> None:
+    """Record that a document was ingested via `add_facts`.
+
+    Kept separate from `next-batch` ON PURPOSE: only the caller knows whether
+    the server actually confirmed. Marking on hand-over would lose documents
+    whenever a batch is interrupted — and a lost document is silent, which is
+    the expensive kind of failure.
+    """
+    cfg, ledger = _open()
+    with ledger:
+        fila = ledger.get(doc_id)
+        if fila is None:
+            typer.echo(f"unknown doc_id: {doc_id}", err=True)
+            raise typer.Exit(1)
+        # chunk_idx = 0: with add_facts the whole document is ONE episode, so
+        # there are no chunks to number.
+        ledger.record_episode(episode, doc_id, 0, cfg.tenant, fila.domain)
+        ledger.set_status(doc_id, "ingested")
+    typer.echo(f"ok {Path(fila.path).name}")

@@ -306,3 +306,128 @@ def test_un_archivo_vacio_no_es_un_error(tmp_path):
     with pytest.raises(SkipFile) as exc:
         extract_file(p)
     assert "empty" in str(exc.value)
+
+
+# -- next-batch / mark-done: el camino rapido (Claude extrae, add_facts guarda) --
+
+
+def _preparar(tmp_path, n=3):
+    """Deja n documentos en estado `classified`, listos para entregar."""
+    import json as _json
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for i in range(n):
+        (docs / f"doc{i}.md").write_text(f"# Doc {i}\n\nContenido {i}", encoding="utf-8")
+    runner.invoke(app, ["scan", str(docs)])
+    runner.invoke(app, ["extract"])
+    runner.invoke(app, ["classify", "--auto"])
+    return docs
+
+
+def test_next_batch_entrega_el_texto_ya_extraido(brain_home, tmp_path):
+    """El punto entero: Claude lee el .txt, no el PDF.
+
+    Sin OCR y sin volver a abrir el original, que es lo caro.
+    """
+    import json as _json
+
+    _preparar(tmp_path, 3)
+
+    r = runner.invoke(app, ["next-batch", "--limit", "2"])
+    assert r.exit_code == 0, r.output
+    datos = _json.loads(r.output)
+
+    assert datos["entregados"] == 2
+    assert datos["pendientes_totales"] == 3
+    d = datos["documentos"][0]
+    for campo in ("doc_id", "documento", "fecha_detectada", "dominio", "texto"):
+        assert campo in d, f"falta {campo}"
+    assert "Contenido" in d["texto"], "no llego el texto extraido"
+
+
+def test_next_batch_no_marca_nada(brain_home, tmp_path):
+    """Marcar al entregar perderia documentos cada vez que una tanda se corta,
+    y un documento perdido es silencioso."""
+    import json as _json
+
+    _preparar(tmp_path, 2)
+
+    runner.invoke(app, ["next-batch", "--limit", "2"])
+    otra = _json.loads(runner.invoke(app, ["next-batch", "--limit", "2"]).output)
+
+    assert otra["entregados"] == 2, "la tanda no debe consumirse al entregarla"
+
+
+def test_mark_done_saca_el_documento_de_la_cola(brain_home, tmp_path):
+    import json as _json
+
+    _preparar(tmp_path, 2)
+    primera = _json.loads(runner.invoke(app, ["next-batch", "--limit", "2"]).output)
+    doc = primera["documentos"][0]
+
+    r = runner.invoke(app, ["mark-done", doc["doc_id"], "--episode", "ep-uuid-1"])
+    assert r.exit_code == 0, r.output
+
+    despues = _json.loads(runner.invoke(app, ["next-batch", "--limit", "5"]).output)
+    ids = [d["doc_id"] for d in despues["documentos"]]
+    assert doc["doc_id"] not in ids, "el documento marcado sigue en la cola"
+    assert despues["pendientes_totales"] == 1
+
+
+def test_mark_done_guarda_el_episodio_para_poder_rastrearlo(brain_home, tmp_path):
+    import json as _json
+
+    from brain_ingest.cli import _open
+
+    _preparar(tmp_path, 1)
+    doc = _json.loads(runner.invoke(app, ["next-batch"]).output)["documentos"][0]
+
+    runner.invoke(app, ["mark-done", doc["doc_id"], "--episode", "ep-abc"])
+
+    _, ledger = _open()
+    with ledger:
+        episodios = ledger.episodes_for_doc(doc["doc_id"])
+    assert [e["episode_uuid"] for e in episodios] == ["ep-abc"]
+
+
+def test_mark_done_con_doc_id_inventado_falla(brain_home, tmp_path):
+    """Fallar fuerte: un doc_id que no existe significa que quien llama perdio
+    el hilo, y seguir en silencio deja el ledger mintiendo."""
+    _preparar(tmp_path, 1)
+    r = runner.invoke(app, ["mark-done", "no-existe", "--episode", "ep-x"])
+    assert r.exit_code == 1
+
+
+def test_next_batch_filtra_por_carpeta(brain_home, tmp_path):
+    import json as _json
+
+    _preparar(tmp_path, 2)
+    otra = tmp_path / "otra"
+    otra.mkdir()
+    (otra / "z.md").write_text("# Z\n\notro", encoding="utf-8")
+    runner.invoke(app, ["scan", str(otra)])
+    runner.invoke(app, ["extract"])
+    runner.invoke(app, ["classify", "--auto"])
+
+    datos = _json.loads(
+        runner.invoke(app, ["next-batch", "--folder", str(otra), "--limit", "10"]).output
+    )
+    assert datos["entregados"] == 1
+    assert datos["documentos"][0]["documento"] == "z.md"
+
+
+def test_el_texto_se_trunca_y_se_avisa(brain_home, tmp_path):
+    """Un documento enorme no puede reventar el contexto sin avisar."""
+    import json as _json
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "largo.md").write_text("# L\n\n" + ("palabra " * 50000), encoding="utf-8")
+    runner.invoke(app, ["scan", str(docs)])
+    runner.invoke(app, ["extract"])
+    runner.invoke(app, ["classify", "--auto"])
+
+    d = _json.loads(runner.invoke(app, ["next-batch", "--max-chars", "500"]).output)["documentos"][0]
+    assert len(d["texto"]) == 500
+    assert d["truncado"] is True
