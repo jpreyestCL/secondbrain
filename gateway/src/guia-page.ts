@@ -73,13 +73,13 @@ const TOOLS: Tool[] = [
 ];
 
 const CLI_COMMANDS: Array<[string, string]> = [
-  ["add &lt;carpeta&gt;", "Todo el proceso en un comando. Con --review se detiene antes de enviar."],
-  ["login &lt;url&gt;", "Vincula este equipo con tu cuenta del servidor. Se hace una vez."],
+  ["add <carpeta>", "Todo el proceso en un comando. Con --review se detiene antes de enviar."],
+  ["login <url>", "Vincula este equipo con tu cuenta del servidor. Se hace una vez."],
   ["status", "Muestra en qué etapa va cada documento."],
-  ["scan &lt;carpeta&gt;", "Solo registra los archivos en el ledger."],
+  ["scan <carpeta>", "Solo registra los archivos en el ledger."],
   ["extract", "Solo saca el texto (OCR incluido si hace falta)."],
   ["classify --auto", "Solo asigna dominio, tipo y fecha real. Sin LLM."],
-  ["classify --apply &lt;archivo&gt;", "Aplica un manifiesto que revisaste a mano."],
+  ["classify --apply <archivo>", "Aplica un manifiesto que revisaste a mano."],
   ["chunk", "Solo trocea en secciones del tamaño que el grafo digiere."],
   ["ingest-graph", "Solo envía al grafo (flags --doc-id y --force)."],
   ["expire", "Marca documentos como caducados (--all para todos)."],

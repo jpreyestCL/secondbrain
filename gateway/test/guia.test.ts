@@ -157,4 +157,15 @@ describe("guía de uso", () => {
     expect(html).toContain('href="#conectar"');
     expect(html).toContain('id="conectar"');
   });
+
+  it("la tabla de comandos muestra los marcadores, no entidades HTML crudas", async () => {
+    // Los comandos venian ya escapados en el dato Y la plantilla los volvia a
+    // escapar, asi que la pagina mostraba literalmente "add &lt;carpeta&gt;".
+    // El escape es responsabilidad de la plantilla; el dato va en crudo.
+    const res = await fetch(`${baseUrl}/guia`);
+    const html = await res.text();
+    expect(html).not.toContain("&amp;lt;");
+    expect(html).not.toContain("&amp;gt;");
+    expect(html).toContain("add &lt;carpeta&gt;");
+  });
 });
