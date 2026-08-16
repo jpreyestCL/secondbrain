@@ -12,6 +12,7 @@
  * carpeta con el CLI `brain` (el camino para quien tiene terminal). Todo lo que
  * aparece aquí está verificado contra el servidor real.
  */
+import type { Idioma } from "./i18n.js";
 import { escapeHtml } from "./html.js";
 import { dashboardShell, type DashboardSessionView } from "./dashboard-layout.js";
 
@@ -126,6 +127,9 @@ export interface GuiaPageOptions {
   baseUrl?: string;
   /** Sesión del navegador, o null si se está viendo sin iniciar sesión. */
   session?: DashboardSessionView | null;
+  /** Idioma actual y URL, para el selector de la barra. */
+  idioma?: Idioma;
+  url?: string;
   /** Slug del tenant de quien mira; con él los ejemplos salen listos para usar. */
   tenant?: string | null;
 }
@@ -373,6 +377,8 @@ ${cliRows}
     title: "Guía de uso",
     active: "guia",
     session: opts.session ?? null,
+    idioma: opts.idioma,
+    url: opts.url,
     body,
   });
 }

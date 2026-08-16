@@ -9,6 +9,7 @@
  * un botón para revocar cada cosa y un enlace para descargar toda su memoria.
  */
 import { constelacionSvg } from "./constelacion.js";
+import type { Idioma } from "./i18n.js";
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
 import { dashboardShell } from "./dashboard-layout.js";
@@ -75,6 +76,9 @@ export interface CuentaPageOptions {
   csrf: string;
   /** Mensaje de resultado de una acción previa (ya en español). */
   notice?: string | null;
+  /** Idioma actual y URL, para el selector de la barra. */
+  idioma?: Idioma;
+  url?: string;
 }
 
 function fmtDate(value: string): string {
@@ -401,6 +405,8 @@ ${clientCards}
     title: "Tu cuenta",
     active: "cuenta",
     session: { email: opts.email, csrf: opts.csrf },
+    idioma: opts.idioma,
+    url: opts.url,
     body: body + guionBuscador,
   });
 }

@@ -46,6 +46,7 @@ import {
 } from "./cuenta-page.js";
 import { CSRF_FIELD, csrfToken, verifyCsrfToken, isSameOrigin } from "./csrf.js";
 import { exportGraph, panelMemoria } from "./export.js";
+import { COOKIE_IDIOMA, idiomaDe, type Idioma } from "./i18n.js";
 import { guiaPageHtml } from "./guia-page.js";
 import {
   REGISTRO_COOKIE_NAME,
@@ -937,6 +938,8 @@ export function buildApp(
       : { resumen: null, datos: [], entidades: [], constelacion: null };
     return c.html(
       cuentaPageHtml({
+        idioma: idiomaDeC(c),
+        url: c.req.path + (c.req.url.includes("?") ? "?" + c.req.url.split("?")[1] : ""),
         resumen: panel.resumen,
         constelacion: panel.constelacion,
         busqueda: consulta
@@ -1010,6 +1013,30 @@ export function buildApp(
     );
   });
 
+  /**
+   * Idioma de la petición, y se recuerda en cookie.
+   *
+   * Sin la cookie, cambiar de idioma solo duraría esa página: cada enlace
+   * interno volvería al español y el selector parecería roto.
+   */
+  const idiomaDeC = (c: Context): Idioma => {
+    const query = c.req.query("lang") ?? null;
+    const idioma = idiomaDe({
+      query,
+      cookie: getCookie(c, COOKIE_IDIOMA) ?? null,
+      acceptLanguage: c.req.header("accept-language") ?? null,
+    });
+    if (query && query === idioma) {
+      setCookie(c, COOKIE_IDIOMA, idioma, {
+        path: "/",
+        httpOnly: false,
+        sameSite: "Lax",
+        maxAge: 60 * 60 * 24 * 365,
+      });
+    }
+    return idioma;
+  };
+
   app.get("/guia", async (c) => {
     const session = await requireSession(c);
     const entrada = session
@@ -1017,6 +1044,8 @@ export function buildApp(
       : null;
     return c.html(
       guiaPageHtml({
+        idioma: idiomaDeC(c),
+        url: c.req.path + (c.req.url.includes("?") ? "?" + c.req.url.split("?")[1] : ""),
         baseUrl: config.baseUrl,
         // Con sesion, los ejemplos salen con el tenant real ya escrito. El slug
         // guardado manda; el derivado del correo es el respaldo para los mapeos

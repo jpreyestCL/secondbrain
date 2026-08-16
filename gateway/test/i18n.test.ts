@@ -67,3 +67,19 @@ describe("cambio de idioma", () => {
     expect(selectorIdioma("/guia", "es")).toContain('hreflang="en"');
   });
 });
+
+describe("selector en las páginas", () => {
+  it("la guía lo muestra y apunta al otro idioma conservando la URL", async () => {
+    const { guiaPageHtml } = await import("../src/guia-page.js");
+    const html = guiaPageHtml({ idioma: "es", url: "/guia?x=1" });
+    expect(html).toContain('class="idioma"');
+    expect(html).toContain(">English<");
+    expect(html).toContain("lang=en");
+    expect(html).toContain("x=1");
+  });
+
+  it("sin idioma no se dibuja el selector (páginas que aún no lo soportan)", async () => {
+    const { guiaPageHtml } = await import("../src/guia-page.js");
+    expect(guiaPageHtml({})).not.toContain('class="idioma"');
+  });
+});

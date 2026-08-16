@@ -14,6 +14,7 @@
  * /guia es PÚBLICA: cuando no hay sesión la barra muestra «Iniciar sesión» en
  * vez del correo y del botón de salir, pero el resto del shell es idéntico.
  */
+import { selectorIdioma, type Idioma } from "./i18n.js";
 import { CONSTELACION_CSS } from "./constelacion.js";
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
@@ -42,6 +43,10 @@ export interface DashboardShellOptions {
   session: DashboardSessionView | null;
   /** HTML del contenido (una o más `<section>`), ya escapado por quien lo genera. */
   body: string;
+  /** Idioma actual y URL de la petición, para el selector. Omitido = sin selector. */
+  idioma?: Idioma;
+  /** URL de la petición, para poder volver aquí en el otro idioma. */
+  url?: string;
 }
 
 /** Grano analógico: el mismo SVG embebido de la landing, sin peticiones externas. */
@@ -424,6 +429,11 @@ export function dashboardShell(opts: DashboardShellOptions): string {
     animation: giro 1s linear infinite; }
   @keyframes giro { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .giro { animation: none; } }
+  .idioma { font-family: var(--mono); font-size: .68rem; letter-spacing: .12em;
+    text-transform: uppercase; text-decoration: none; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 2px; padding: .25rem .6rem;
+    margin-right: .6rem; white-space: nowrap; transition: color .2s, border-color .2s; }
+  .idioma:hover { color: var(--accent-text); border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -434,6 +444,7 @@ export function dashboardShell(opts: DashboardShellOptions): string {
     <nav class="nav" aria-label="Secciones">
       ${navHtml(opts.active)}
     </nav>
+    ${opts.idioma ? selectorIdioma(opts.url ?? "/", opts.idioma) : ""}
     ${sessionHtml(opts.session)}
   </div>
 </header>
