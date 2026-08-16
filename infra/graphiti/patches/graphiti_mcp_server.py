@@ -32,6 +32,7 @@ from models.response_types import (
     StatusResponse,
     SuccessResponse,
 )
+import hechos as hechos_directos
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from services.queue_service import QueueService
 from utils.formatting import format_fact_result
@@ -401,6 +402,80 @@ def _owned_by_tenant(obj) -> bool:
     """
     gid = getattr(obj, 'group_id', None)
     return gid is None or gid == _tenant_group_id()
+
+
+@mcp.tool()
+async def add_facts(
+    documento: str,
+    entidades: list[dict],
+    hechos: list[dict],
+    fecha: str | None = None,
+    dominio: str = 'personal',
+    tipo_documento: str = 'documento',
+    origen: str = '',
+    sensibilidad: str = '',
+    texto_fuente: str = '',
+) -> dict[str, Any] | ErrorResponse:
+    """Guarda hechos YA EXTRAIDOS, sin usar el LLM del servidor.
+
+    Es la via rapida: quien llama (Claude, leyendo el documento) ya hizo la
+    extraccion, asi que el servidor solo deduplica, embebe en un lote y
+    escribe. Un documento entero cuesta 1 llamada de embeddings y ~4 consultas
+    al grafo, frente a ~8 llamadas de LLM + ~22 embeddings + ~70 consultas POR
+    TROZO del camino `add_memory`.
+
+    Usalo cuando puedas leer el documento tu mismo. Si solo tienes texto crudo
+    y quieres que el servidor extraiga, usa `add_memory`.
+
+    Args:
+        documento: nombre del archivo o del hecho ("escritura Lote 11.pdf").
+        entidades: [{nombre, tipo, resumen?}]. `tipo` sale de SCHEMA.md
+            (Persona, Organizacion, Lugar, Documento, Cuenta, Activo,
+            Obligacion, Evento, Condicion, Credencial). DECLARA TODA entidad
+            que menciones en `hechos`.
+        hechos: [{sujeto, relacion, objeto, hecho?, desde?, hasta?}]. `sujeto`
+            y `objeto` son nombres de `entidades`. `desde`/`hasta` son la
+            vigencia del hecho, en ISO.
+        fecha: fecha REAL del documento en ISO. NO la de hoy salvo que el
+            hecho sea genuinamente de hoy: un grafo temporal con fechas de
+            ingesta es inutil. Sin fecha, no se invalida nada.
+        dominio: personal | salud | finanzas | trabajo | proyectos | legal.
+        sensibilidad: medical | financial | pii, si aplica.
+        texto_fuente: fragmento original, para poder rastrear el hecho.
+
+    NUNCA mandes secretos en claro (contrasenas, tokens, PIN, frases semilla):
+    redactalos y guarda solo la referencia.
+    """
+    if graphiti_client is None:
+        return ErrorResponse(error='Graphiti client not initialized')
+
+    problemas = hechos_directos.validar(entidades, hechos)
+    if problemas:
+        return ErrorResponse(error='Entrada invalida: ' + '; '.join(problemas[:10]))
+
+    try:
+        ingesta = hechos_directos.IngestaDirecta(
+            graphiti_client.driver, graphiti_client.embedder, _tenant_group_id()
+        )
+        resultado = await ingesta.ingerir(
+            documento=documento,
+            entidades=entidades,
+            hechos=hechos,
+            fecha_documento=fecha,
+            dominio=dominio,
+            doc_type=tipo_documento,
+            origen=origen,
+            sensibilidad=sensibilidad,
+            texto_fuente=texto_fuente,
+        )
+        logger.info(
+            f"add_facts: {documento} -> {resultado['entidades_nuevas']} entidades nuevas, "
+            f"{resultado['hechos']} hechos, {resultado['hechos_invalidados']} invalidados"
+        )
+        return resultado
+    except Exception as e:
+        logger.error(f'add_facts fallo en {documento}: {e}')
+        return ErrorResponse(error=f'No se pudo guardar: {e}')
 
 
 @mcp.tool()
