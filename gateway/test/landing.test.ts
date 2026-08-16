@@ -144,3 +144,86 @@ describe("landing", () => {
     expect(evil).toContain(escapeHtml('https://x.test/"><script>alert(1)</script>/mcp'));
   });
 });
+
+describe("landing bilingüe", () => {
+  const en = landingPageHtml("https://mybrain.rlz.cl", "open", { idioma: "en", url: "/" });
+  const es = landingPageHtml("https://mybrain.rlz.cl", "open", { idioma: "es", url: "/" });
+
+  it("sin idioma la página sigue en español y sin selector", () => {
+    expect(html).toContain('<html lang="es">');
+    expect(html).toContain("Cómo funciona");
+    expect(html).not.toContain('class="idioma"');
+  });
+
+  it('con idioma "en" el documento se declara en inglés', () => {
+    expect(en).toContain('<html lang="en">');
+    expect(es).toContain('<html lang="es">');
+  });
+
+  it("el inglés no deja texto español a la vista", () => {
+    for (const frase of [
+      "Cómo funciona",
+      "Qué le preguntas",
+      "Tu memoria no se sobrescribe",
+      "Le hablas a Claude",
+      "Guarda cosas sensibles",
+      "Tres pasos, una sola vez",
+      "Ya tengo cuenta",
+      "Todavía no había registro",
+      "tu grafo",
+    ]) {
+      expect(en).not.toContain(frase);
+    }
+    for (const frase of [
+      "How it works",
+      "What you ask it",
+      "Your memory isn't overwritten",
+      "You talk to Claude",
+      "It stores sensitive things",
+      "Three steps, once",
+      "I already have an account",
+      "No record yet",
+      "your graph",
+    ]) {
+      expect(en).toContain(frase);
+    }
+  });
+
+  it("el selector de idioma va en la barra, sin JavaScript", () => {
+    expect(en).toContain('<a class="idioma" href="/?lang=es"');
+    expect(es).toContain('<a class="idioma" href="/?lang=en"');
+    expect(en).toContain(">Español</a>");
+    expect(es).toContain(">English</a>");
+    // Es un enlace normal: nada de onclick ni de cambio por script.
+    expect(en).not.toContain('onclick="');
+  });
+
+  it("las tres tarjetas de registro se traducen", () => {
+    for (const modo of ["open", "invite", "closed"] as const) {
+      const pagina = landingPageHtml("https://x.test", modo, { idioma: "en" });
+      expect(pagina).not.toContain("Ya tengo cuenta");
+      expect(pagina).toContain("I already have an account");
+    }
+    expect(landingPageHtml("https://x.test", "closed", { idioma: "en" })).toContain(
+      "Signups closed for now",
+    );
+    expect(landingPageHtml("https://x.test", "invite", { idioma: "en" })).toContain(
+      "Access is by invitation",
+    );
+  });
+
+  it("los textos que usa el script van como literales JS válidos", () => {
+    expect(en).toContain('stamp.textContent = active.to === null ? "current" : "archived"');
+    expect(en).toContain('aval.textContent = "No record yet"');
+    expect(en).toContain('flash("Copy it by hand", false)');
+    expect(en).toContain('copyBtn.textContent = "Copy";');
+  });
+
+  it("no se traducen los identificadores técnicos ni la dirección MCP", () => {
+    expect(en).toContain("add_memory");
+    expect(en).toContain("search_memory_facts");
+    expect(en).toContain("https://mybrain.rlz.cl/mcp");
+    expect(en).toContain("MCP · OAuth 2.1 + PKCE");
+    expect(en).toContain("Banco Santander · 789-012-345");
+  });
+});

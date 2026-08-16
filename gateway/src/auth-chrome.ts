@@ -12,7 +12,14 @@
  * dashboard (papel, tinta, verde «vigente») y el guion que aplica el tema
  * guardado ANTES del primer pintado. Las tres páginas son formularios cortos
  * centrados, así que comparten también el estilo de la tarjeta.
+ *
+ * Y como ninguna de estas páginas pasa por `dashboardShell`, el selector de
+ * idioma vive también aquí: `paginaAuth` lo pinta arriba a la derecha y fija el
+ * `lang` del `<html>`. Así basta con que cada página reenvíe `idioma` y `url`
+ * para quedar bilingüe, sin repetir el `<head>` cuatro veces.
  */
+import { escapeHtml } from "./html.js";
+import { selectorIdioma, traductor, type Idioma, type Textos } from "./i18n.js";
 
 /**
  * Aplica el tema almacenado antes de pintar. Va en el `<head>`, sin `defer`:
@@ -73,10 +80,18 @@ export const AUTH_STYLE = `
 
   * { box-sizing: border-box; }
   body {
-    font-family: var(--display); margin: 0; min-height: 100vh;
+    font-family: var(--display); margin: 0; min-height: 100vh; position: relative;
     display: grid; place-items: center; padding: 1.5rem 1rem;
     background: var(--paper); color: var(--text); -webkit-font-smoothing: antialiased;
   }
+  /* El selector va fuera del flujo para no descolocar la tarjeta centrada:
+     estas páginas no tienen barra superior donde colgarlo. */
+  .idiomas { position: absolute; top: .9rem; right: 1rem; }
+  .idioma { font-family: var(--mono); font-size: .68rem; letter-spacing: .12em;
+    text-transform: uppercase; text-decoration: none; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 2px; padding: .25rem .6rem;
+    white-space: nowrap; transition: color .2s, border-color .2s; }
+  .idioma:hover { color: var(--accent-text); border-color: var(--accent); }
   main, form {
     background: var(--surface); border: 1px solid var(--line); border-radius: 3px;
     padding: 2rem 1.9rem; width: min(92vw, 24rem); display: grid; gap: .8rem;
@@ -133,3 +148,110 @@ export const AUTH_STYLE = `
   code { font-family: var(--mono); font-size: .85em; word-break: break-all; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
+
+/** Opciones comunes de toda página de autenticación. */
+export interface PaginaAuthOptions {
+  /** Título de la pestaña (se escapa aquí). */
+  title: string;
+  /** Cuerpo del `<body>`, ya escapado por quien lo genera. */
+  body: string;
+  /** Idioma actual. Omitido = español y sin selector (salida idéntica a la de antes). */
+  idioma?: Idioma;
+  /** URL de la petición, para volver aquí en el otro idioma. */
+  url?: string;
+}
+
+/**
+ * Documento completo de una página de autenticación: `lang` según el idioma,
+ * tema aplicado antes de pintar, estilo común y el selector de idioma arriba.
+ *
+ * Sin `idioma` no se pinta el selector: así las llamadas que todavía no lo
+ * reenvían siguen dando exactamente el mismo HTML que antes.
+ */
+export function paginaAuth(opts: PaginaAuthOptions): string {
+  const idioma = opts.idioma ?? "es";
+  const selector = opts.idioma
+    ? `<nav class="idiomas" aria-label="${idioma === "en" ? "Language" : "Idioma"}">${selectorIdioma(opts.url ?? "/", opts.idioma)}</nav>\n`
+    : "";
+  return `<!doctype html>
+<html lang="${idioma}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>${escapeHtml(opts.title)}</title>
+${THEME_BOOT}
+<style>${AUTH_STYLE}</style>
+</head>
+<body>
+${selector}${opts.body}
+</body>
+</html>`;
+}
+
+/**
+ * Mensajes de error de los formularios de autenticación.
+ *
+ * Viven aquí, y no en cada página, porque quien los DECIDE es `server.ts`
+ * (validación del alta, del restablecimiento, del código de invitación) y las
+ * páginas solo los pintan. El servidor pasa la CLAVE y la página la traduce al
+ * idioma de la petición; el texto suelto en español sigue aceptándose para no
+ * romper a quien todavía no esté cableado.
+ */
+export type ClaveErrorAuth =
+  | "codigoInvalido"
+  | "correoInvalido"
+  | "correoRegistrado"
+  | "passwordCorta"
+  | "passwordsNoCoinciden"
+  | "altaFallida"
+  | "demasiadosIntentos";
+
+export const TEXTOS_ERROR_AUTH: Textos<ClaveErrorAuth> = {
+  codigoInvalido: {
+    es: "Código de invitación incorrecto.",
+    en: "That invitation code is not valid.",
+  },
+  correoInvalido: { es: "Correo inválido.", en: "Invalid email address." },
+  correoRegistrado: {
+    es: "Ese correo ya está registrado.",
+    en: "That email address is already registered.",
+  },
+  passwordCorta: {
+    es: "La contraseña debe tener al menos 10 caracteres.",
+    en: "Your password must be at least 10 characters long.",
+  },
+  passwordsNoCoinciden: {
+    es: "Las contraseñas no coinciden.",
+    en: "The passwords do not match.",
+  },
+  altaFallida: {
+    es: "No se pudo crear la cuenta. Verifica los datos e inténtalo de nuevo.",
+    en: "We could not create the account. Check the details and try again.",
+  },
+  demasiadosIntentos: {
+    es: "Demasiados intentos. Espera un minuto y vuelve a intentarlo.",
+    en: "Too many attempts. Wait a minute and try again.",
+  },
+};
+
+/** Traduce una clave de error; devuelve "" si no hay error que mostrar. */
+export function textoErrorAuth(
+  clave: ClaveErrorAuth | undefined,
+  idioma: Idioma = "es",
+): string {
+  if (!clave) return "";
+  return traductor(TEXTOS_ERROR_AUTH, idioma)(clave);
+}
+
+/**
+ * Texto a pintar en el hueco de error de un formulario: gana la clave (que sí
+ * se traduce) y, si no la hay, el texto literal que llegue en `error`.
+ */
+export function resuelveError(
+  opts: { error?: string; errorClave?: ClaveErrorAuth },
+  idioma: Idioma = "es",
+): string {
+  if (opts.errorClave) return textoErrorAuth(opts.errorClave, idioma);
+  return opts.error ?? "";
+}

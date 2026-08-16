@@ -13,6 +13,7 @@
 
 import { escapeHtml } from "./html.js";
 import type { RegistrationMode } from "./env.js";
+import { traductor, selectorIdioma, type Idioma, type Textos } from "./i18n.js";
 
 /** Grano analógico: feTurbulence embebido, sin peticiones externas. */
 const GRAIN =
@@ -20,49 +21,330 @@ const GRAIN =
   "%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E" +
   "%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E";
 
+/**
+ * Textos de la landing.
+ *
+ * El inglés no es una traducción literal: reutiliza las frases de `README.en.md`,
+ * que es la voz ya aprobada del proyecto en ese idioma. Lo que NO se traduce:
+ * los nombres de las herramientas MCP (`add_memory`, `search_memory_facts`…),
+ * la dirección del conector y los identificadores técnicos.
+ */
+type Clave =
+  | "docTitulo" | "docDescripcion"
+  | "navComo" | "navUsar" | "navConectar" | "navGuia" | "navCuenta"
+  | "temaAria" | "railAria" | "railEsquema" | "railPrivacidad"
+  | "heroEyebrow" | "heroTituloPre" | "heroTituloEm" | "heroLede"
+  | "ctaConectar" | "ctaCodigo" | "trust1" | "trust2" | "trust3"
+  | "demoPregunta" | "demoArrastra" | "demoHoy" | "demoLineaTiempo" | "demoRegistro"
+  | "comoH2" | "comoLede"
+  | "paso1T" | "paso1P" | "paso2T" | "paso2P"
+  | "paso3T" | "paso3P" | "paso4T" | "paso4P"
+  | "usarH2" | "usarGuardar" | "usarConsultar"
+  | "q1" | "q1tool" | "q2" | "q2tool" | "q3pre" | "q3em" | "q3post" | "q3tool"
+  | "q4" | "q4tool" | "q5" | "q5tool" | "q6" | "q6tool"
+  | "esquemaH2" | "svgAria"
+  | "dgClaude" | "dgMcp" | "dgGateway"
+  | "dgTuProceso" | "dgOtroProceso" | "dgTuGrafo" | "dgOtroGrafo"
+  | "leyenda1B" | "leyenda1P" | "leyenda2B" | "leyenda2P" | "leyenda3B" | "leyenda3P"
+  | "conectarH2" | "paso1Pre" | "paso1F1" | "paso1Med" | "paso1F2"
+  | "pasoPega" | "botonCopiar" | "pasoLogin"
+  | "autoPre" | "autoEnlace" | "autoPost"
+  | "privH2" | "priv1T" | "priv1P" | "priv2T" | "priv2P" | "priv3T" | "priv3P"
+  | "footTag" | "footCodigo" | "footSobre" | "footY"
+  | "regCerradoT" | "regCerradoP" | "regInviteT" | "regInviteP"
+  | "regAbiertoT" | "regAbiertoP"
+  | "btnYaTengo" | "btnCrear" | "btnCrearGratis"
+  | "respVigente" | "respEn" | "vigenteDesde"
+  | "stampVigente" | "stampArchivado" | "sinRegistroValor" | "stampSinRegistro"
+  | "copiado" | "copiaMano";
+
+const T: Textos<Clave> = {
+  docTitulo: {
+    es: "secondbrain — tu memoria, con línea de tiempo",
+    en: "secondbrain — your memory, with a timeline",
+  },
+  docDescripcion: {
+    es: "Un segundo cerebro conversacional: guarda tu información desde Claude, ingiere documentos por chat y consúltala en lenguaje natural. Los hechos nunca se borran: se supersedan con fecha.",
+    en: "A conversational second brain: save your information from Claude, ingest documents over chat and query it in plain language. Facts are never deleted: they are superseded with a date.",
+  },
+
+  navComo: { es: "Cómo funciona", en: "How it works" },
+  navUsar: { es: "Qué le preguntas", en: "What you ask it" },
+  navConectar: { es: "Conectar", en: "Connect" },
+  navGuia: { es: "Guía", en: "Guide" },
+  navCuenta: { es: "Tu cuenta", en: "Your account" },
+  temaAria: {
+    es: "Cambiar entre tema claro y oscuro",
+    en: "Switch between light and dark theme",
+  },
+  railAria: { es: "Índice de la página", en: "Page index" },
+  railEsquema: { es: "Bajo el capó", en: "Under the hood" },
+  railPrivacidad: { es: "Sobre tus datos", en: "About your data" },
+
+  heroEyebrow: {
+    es: "Memoria personal · conector MCP para Claude",
+    en: "Personal memory · MCP connector for Claude",
+  },
+  heroTituloPre: {
+    es: "Tu memoria no se sobrescribe:",
+    en: "Your memory isn't overwritten:",
+  },
+  heroTituloEm: { es: "se fecha", en: "it's dated" },
+  heroLede: {
+    es: "Guardas lo que necesitas recordar hablándole a Claude. Cuando un dato cambia, el anterior no se borra — queda archivado con su periodo de vigencia. Preguntas hoy y te responde hoy; preguntas por el pasado y te lo reconstruye.",
+    en: "You save what you need to remember just by talking to Claude. When something changes, the previous value isn't deleted — it stays on file with the dates it was true. Ask today and you get today's answer; ask about the past and it reconstructs it.",
+  },
+  ctaConectar: { es: "Conectar con Claude", en: "Connect it to Claude" },
+  ctaCodigo: { es: "Ver el código", en: "See the code" },
+  trust1: { es: "un grafo por persona", en: "one graph per person" },
+  trust2: { es: "código abierto", en: "open source" },
+  trust3: { es: "exportable siempre", en: "always exportable" },
+
+  demoPregunta: { es: "¿Cuál es mi cuenta corriente?", en: "What's my checking account?" },
+  demoArrastra: { es: "arrastra el año", en: "drag the year" },
+  demoHoy: { es: "hoy", en: "today" },
+  demoLineaTiempo: { es: "Línea de tiempo", en: "Timeline" },
+  demoRegistro: { es: "Registro completo", en: "Full record" },
+
+  comoH2: {
+    es: "Le hablas a Claude. El resto ocurre solo.",
+    en: "You talk to Claude. The rest happens on its own.",
+  },
+  comoLede: {
+    es: "No hay app que abrir ni formularios que llenar. Conectas una vez y tu cerebro queda disponible en cualquier conversación, en web, escritorio o teléfono.",
+    en: "No new app to open, no forms to fill in. You connect once and your brain is available in any conversation — web, desktop or mobile.",
+  },
+  paso1T: { es: "Le cuentas algo", en: "You tell it something" },
+  paso1P: {
+    es: "“Guarda que mi cuenta del Banco de Chile es la 123-456.” Claude entiende de qué ámbito es y de cuándo data el hecho.",
+    en: "“Remember that my Banco de Chile checking account is 123-456.” Claude works out which domain it belongs to and what date the fact is from.",
+  },
+  paso2T: { es: "O le pasas un documento", en: "Or you hand it a document" },
+  paso2P: {
+    es: "Adjuntas un PDF, una foto o una planilla en el chat. Lo lee —incluso escaneado—, lo ordena y lo archiva por secciones.",
+    en: "Attach a PDF, a photo or a spreadsheet in the chat. It reads it — even scanned — sorts it out and files it section by section.",
+  },
+  paso3T: { es: "Se archiva con fecha", en: "It's filed with a date" },
+  paso3P: {
+    es: "Cada dato entra con la fecha real del hecho, no la de hoy. Si contradice algo anterior, lo cierra en esa fecha en vez de borrarlo.",
+    en: "Every fact goes in with the date it actually happened, not today's. If it contradicts an earlier one, that one is closed on that date instead of deleted.",
+  },
+  paso4T: { es: "Preguntas cuando quieras", en: "You ask whenever you want" },
+  paso4P: {
+    es: "En lenguaje natural. Por defecto responde con lo vigente; si pides historia, te entrega la línea de tiempo.",
+    en: "In plain language. By default it answers with the current facts; ask for the history and you get the timeline.",
+  },
+
+  usarH2: {
+    es: "Lo que hoy vive en capturas de pantalla y correos viejos.",
+    en: "Everything that today lives in screenshots and old email.",
+  },
+  usarGuardar: { es: "Guardar", en: "Save" },
+  usarConsultar: { es: "Consultar", en: "Look up" },
+  q1: {
+    es: "Guarda que el router de la casa es TP-Link y la clave está en 1Password.",
+    en: "Remember that the home router is a TP-Link and the password is in 1Password.",
+  },
+  q1tool: { es: "→ add_memory · dominio personal", en: "→ add_memory · personal domain" },
+  q2: {
+    es: "Anota que en la reunión de hoy decidimos usar Postgres en el proyecto X.",
+    en: "Note that in today's meeting we decided to use Postgres on project X.",
+  },
+  q2tool: { es: "→ add_memory · dominio proyectos", en: "→ add_memory · projects domain" },
+  q3pre: { es: "Ingesta este contrato", en: "Add this contract" },
+  q3em: { es: "(adjunto)", en: "(attached)" },
+  q3post: { es: "a mi second brain.", en: "to my second brain." },
+  q3tool: {
+    es: "→ add_memory × secciones del documento",
+    en: "→ add_memory × document sections",
+  },
+  q4: {
+    es: "¿Con quién tengo acuerdo de confidencialidad?",
+    en: "Who do I have an NDA with?",
+  },
+  q4tool: {
+    es: "→ search_memory_facts · solo vigentes",
+    en: "→ search_memory_facts · current only",
+  },
+  q5: {
+    es: "¿Qué exámenes me hice el 2024 y qué decían?",
+    en: "What tests did I have in 2024 and what did they say?",
+  },
+  q5tool: { es: "→ search_nodes + get_episodes", en: "→ search_nodes + get_episodes" },
+  q6: {
+    es: "Dame el historial de mis cuentas bancarias.",
+    en: "Give me the history of my bank accounts.",
+  },
+  q6tool: {
+    es: "→ search_memory_facts · only_current = false",
+    en: "→ search_memory_facts · only_current = false",
+  },
+
+  esquemaH2: { es: "Cada persona, su propio grafo.", en: "Each person, their own graph." },
+  svgAria: {
+    es: "Claude se conecta por MCP al gateway, que enruta a cada persona a su propio proceso y su propio grafo; el grafo de otra persona queda inalcanzable.",
+    en: "Claude connects over MCP to the gateway, which routes each person to their own process and their own graph; someone else's graph is unreachable.",
+  },
+  dgClaude: {
+    es: "Claude · web · escritorio · móvil",
+    en: "Claude · web · desktop · mobile",
+  },
+  dgMcp: { es: "MCP · OAuth 2.1 + PKCE", en: "MCP · OAuth 2.1 + PKCE" },
+  dgGateway: {
+    es: "gateway · autentica y enruta",
+    en: "gateway · authenticates and routes",
+  },
+  dgTuProceso: { es: "tu proceso", en: "your process" },
+  dgOtroProceso: { es: "otro proceso", en: "another process" },
+  dgTuGrafo: { es: "tu grafo", en: "your graph" },
+  dgOtroGrafo: { es: "otro grafo", en: "another graph" },
+  leyenda1B: { es: "Aislamiento estructural", en: "Structural isolation" },
+  leyenda1P: {
+    es: "Tu información vive en un grafo separado, con su propio usuario de base de datos y su propio proceso. No depende de que un filtro esté bien escrito.",
+    en: "Your information lives in a separate graph, with its own database user and its own process. It doesn't rely on a filter being written correctly.",
+  },
+  leyenda2B: { es: "Qué guarda el grafo", en: "What the graph stores" },
+  leyenda2P: {
+    es: "El texto original de cada documento, las personas y empresas que aparecen en él y cómo se relacionan, y la vigencia de cada dato: desde cuándo y hasta cuándo fue verdad.",
+    en: "The original text of every document, the people and companies that appear in it and how they relate, and the validity of each fact: from when and until when it was true.",
+  },
+  leyenda3B: { es: "Nada se borra", en: "Nothing is deleted" },
+  leyenda3P: {
+    es: "Un dato nuevo que contradice a otro lo cierra con fecha. El anterior sigue ahí, consultable, marcado como histórico.",
+    en: "A new fact that contradicts an older one closes it with a date. The old one is still there, still queryable, marked as historical.",
+  },
+
+  conectarH2: { es: "Tres pasos, una sola vez.", en: "Three steps, once." },
+  paso1Pre: { es: "En Claude, abre", en: "In Claude, open" },
+  paso1F1: { es: "Ajustes → Conectores", en: "Settings → Connectors" },
+  paso1Med: { es: "y elige", en: "and choose" },
+  paso1F2: { es: "Agregar conector personalizado", en: "Add custom connector" },
+  pasoPega: { es: "Pega esta dirección:", en: "Paste this address:" },
+  botonCopiar: { es: "Copiar", en: "Copy" },
+  pasoLogin: {
+    es: "Inicia sesión cuando se abra la ventana. Listo: tu cerebro queda disponible en todas tus conversaciones.",
+    en: "Sign in when the window opens. That's it: your brain is available in every conversation.",
+  },
+  autoPre: {
+    es: "¿Prefieres control total? El proyecto es abierto y puedes",
+    en: "Prefer full control? The project is open source and you can",
+  },
+  autoEnlace: {
+    es: "levantarlo en tu propio servidor",
+    en: "run the whole thing on your own server",
+  },
+  autoPost: { es: ".", en: "." },
+
+  privH2: {
+    es: "Guarda cosas sensibles — con cuidado.",
+    en: "It stores sensitive things — carefully.",
+  },
+  priv1T: { es: "Contraseñas y tokens: no", en: "Passwords and tokens: no" },
+  priv1P: {
+    es: "Claves, tokens y números de tarjeta se detectan y se reemplazan antes de escribir nada. Se guarda que la credencial existe y dónde está, nunca su valor.",
+    en: "Passwords, tokens and card numbers are detected and redacted before anything is written. What gets stored is that the credential exists and where it is, never its value.",
+  },
+  priv2T: { es: "Salud y finanzas: sí", en: "Health and finances: yes" },
+  priv2P: {
+    es: "Exámenes, contratos y cuentas se guardan marcados como sensibles, dentro de tu grafo aislado. Y el código es público: puedes auditar exactamente qué ocurre.",
+    en: "Test results, contracts and accounts are stored flagged as sensitive, inside your isolated graph. And the code is public: you can audit exactly what happens.",
+  },
+  priv3T: { es: "Salida sin fricción", en: "Frictionless exit" },
+  priv3P: {
+    es: "Tu memoria entera se descarga en un archivo cuando quieras: el texto de tus documentos, quiénes aparecen en ellos y cada dato con su vigencia. Sin pedirle permiso a nadie.",
+    en: "Your whole memory downloads to a single file whenever you want: the text of your documents, who appears in them and every fact with its dates. Without asking anyone's permission.",
+  },
+
+  footTag: {
+    es: "secondbrain · memoria temporal para Claude",
+    en: "secondbrain · temporal memory for Claude",
+  },
+  footCodigo: { es: "Código en GitHub", en: "Code on GitHub" },
+  footSobre: { es: "construido sobre", en: "built on" },
+  footY: { es: "y", en: "and" },
+
+  regCerradoT: { es: "Registro cerrado por ahora", en: "Signups closed for now" },
+  regCerradoP: {
+    es: "Esta instancia no está aceptando cuentas nuevas en este momento. Si ya tienes una, puedes entrar; y si quieres tu propio espacio, el proyecto es abierto.",
+    en: "This instance isn't accepting new accounts right now. If you already have one you can sign in; and if you want your own space, the project is open source.",
+  },
+  regInviteT: { es: "¿Todavía no tienes cuenta?", en: "Don't have an account yet?" },
+  regInviteP: {
+    es: "El acceso es por invitación: necesitas un código para crear tu espacio. Si ya lo tienes, regístrate y en el mismo momento se crea tu grafo privado. Si ya tienes cuenta, puedes entrar con Google.",
+    en: "Access is by invitation: you need a code to create your space. If you already have one, sign up and your private graph is created there and then. If you already have an account, you can sign in with Google.",
+  },
+  regAbiertoT: { es: "¿Todavía no tienes cuenta?", en: "Don't have an account yet?" },
+  regAbiertoP: {
+    es: "El registro está abierto: no necesitas código ni invitación de nadie. Crea tu cuenta —con correo o con Google— y en el mismo momento se prepara tu grafo privado. Los cupos de esta instancia son limitados: se atienden por orden de llegada.",
+    en: "Signups are open: no code, no invitation from anyone. Create your account — with email or with Google — and your private graph is prepared there and then. Places on this instance are limited and served first come, first served.",
+  },
+  btnYaTengo: { es: "Ya tengo cuenta", en: "I already have an account" },
+  btnCrear: { es: "Crear cuenta", en: "Sign up" },
+  btnCrearGratis: { es: "Crear cuenta gratis", en: "Sign up free" },
+
+  respVigente: { es: "Respuesta vigente", en: "Current answer" },
+  respEn: { es: "Respuesta en ", en: "Answer in " },
+  vigenteDesde: { es: "vigente desde ", en: "current since " },
+  stampVigente: { es: "vigente", en: "current" },
+  stampArchivado: { es: "archivado", en: "archived" },
+  sinRegistroValor: { es: "Todavía no había registro", en: "No record yet" },
+  stampSinRegistro: { es: "sin registro", en: "no record" },
+  copiado: { es: "Copiado ✓", en: "Copied ✓" },
+  copiaMano: { es: "Copia a mano", en: "Copy it by hand" },
+};
+
+/**
+ * Literal JavaScript seguro para incrustar en el `<script>` de la página.
+ * `JSON.stringify` cita y escapa; el `<` se neutraliza aparte para que un texto
+ * que contuviera `</script>` no cierre el bloque.
+ */
+function litJs(texto: string): string {
+  return JSON.stringify(texto).replace(/</g, "\\u003c");
+}
+
 export function landingPageHtml(
   baseUrl: string,
   registrationMode: RegistrationMode = "open",
+  opts: { idioma?: Idioma; url?: string } = {},
 ): string {
+  const idioma = opts.idioma ?? "es";
+  const t = traductor(T, idioma);
   // baseUrl viene de la configuración, pero se escapa igual: ningún valor
   // interpolado entra crudo en el HTML (defensa en profundidad).
   const mcpUrl = escapeHtml(baseUrl.replace(/\/$/, "") + "/mcp");
+  // El selector solo aparece cuando quien llama resolvió un idioma: sin él la
+  // página se sirve exactamente como antes.
+  const selector = opts.idioma ? selectorIdioma(opts.url ?? "/", opts.idioma) : "";
   // La tarjeta "¿Todavía no tienes cuenta?" cambia con REGISTRATION_MODE: en
   // `open` no se menciona ningún código porque no existe.
   const registroCard =
     registrationMode === "closed"
-      ? `<h3>Registro cerrado por ahora</h3>
-      <p>Esta instancia no está aceptando cuentas nuevas en este momento. Si ya tienes
-        una, puedes entrar; y si quieres tu propio espacio, el proyecto es abierto.</p>
+      ? `<h3>${t("regCerradoT")}</h3>
+      <p>${t("regCerradoP")}</p>
       <div class="cta-row" style="margin-top:.6rem">
-        <a class="btn" href="/login">Ya tengo cuenta</a>
+        <a class="btn" href="/login">${t("btnYaTengo")}</a>
       </div>`
       : registrationMode === "invite"
-        ? `<h3>¿Todavía no tienes cuenta?</h3>
-      <p>El acceso es por invitación: necesitas un código para crear tu espacio. Si ya lo
-        tienes, regístrate y en el mismo momento se crea tu grafo privado. Si ya tienes
-        cuenta, puedes entrar con Google.</p>
+        ? `<h3>${t("regInviteT")}</h3>
+      <p>${t("regInviteP")}</p>
       <div class="cta-row" style="margin-top:.6rem">
-        <a class="btn" href="/registro">Crear cuenta</a>
-        <a class="btn ghost" href="/login">Ya tengo cuenta</a>
+        <a class="btn" href="/registro">${t("btnCrear")}</a>
+        <a class="btn ghost" href="/login">${t("btnYaTengo")}</a>
       </div>`
-        : `<h3>¿Todavía no tienes cuenta?</h3>
-      <p>El registro está abierto: no necesitas código ni invitación de nadie. Crea tu
-        cuenta —con correo o con Google— y en el mismo momento se prepara tu grafo
-        privado. Los cupos de esta instancia son limitados: se atienden por orden de
-        llegada.</p>
+        : `<h3>${t("regAbiertoT")}</h3>
+      <p>${t("regAbiertoP")}</p>
       <div class="cta-row" style="margin-top:.6rem">
-        <a class="btn" href="/registro">Crear cuenta gratis</a>
-        <a class="btn ghost" href="/login">Ya tengo cuenta</a>
+        <a class="btn" href="/registro">${t("btnCrearGratis")}</a>
+        <a class="btn ghost" href="/login">${t("btnYaTengo")}</a>
       </div>`;
 
   return `<!doctype html>
-<html lang="es">
+<html lang="${idioma}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>secondbrain — tu memoria, con línea de tiempo</title>
-<meta name="description" content="Un segundo cerebro conversacional: guarda tu información desde Claude, ingiere documentos por chat y consúltala en lenguaje natural. Los hechos nunca se borran: se supersedan con fecha." />
+<title>${t("docTitulo")}</title>
+<meta name="description" content="${escapeHtml(t("docDescripcion"))}" />
 <script>
   /* Tema antes del primer pintado: sin parpadeo. La clase "js" habilita las animaciones
      de entrada: sin JavaScript el contenido se ve completo desde el inicio. */
@@ -213,6 +495,15 @@ export function landingPageHtml(
   :root[data-theme="dark"] .theme .sun { display: none; }
   :root[data-theme="light"] .theme .sun { display: block; }
   :root[data-theme="light"] .theme .moon { display: none; }
+  /* Selector de idioma: mismo lenguaje visual que en dashboard-layout.ts
+     (monoespaciada en versalitas, marco fino), adaptado a la paleta de papel. */
+  .idioma {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .12em;
+    text-transform: uppercase; text-decoration: none; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 2px; padding: .25rem .6rem;
+    white-space: nowrap; flex: none; transition: color .2s, border-color .2s;
+  }
+  .idioma:hover { color: var(--accent-text); border-color: var(--vigente); }
 
   /* ---------- riel de secciones (la página es una línea de tiempo) ---------- */
   .rail {
@@ -535,66 +826,65 @@ export function landingPageHtml(
   <div class="brand">secondbrain <span>mybrain.rlz.cl</span></div>
   <div class="navright">
     <div class="navlinks">
-      <a class="anchor" href="#como">Cómo funciona</a>
-      <a class="anchor" href="#usar">Qué le preguntas</a>
-      <a class="anchor" href="#conectar">Conectar</a>
-      <a href="/guia">Guía</a>
-      <a href="/cuenta">Tu cuenta</a>
+      <a class="anchor" href="#como">${t("navComo")}</a>
+      <a class="anchor" href="#usar">${t("navUsar")}</a>
+      <a class="anchor" href="#conectar">${t("navConectar")}</a>
+      <a href="/guia">${t("navGuia")}</a>
+      <a href="/cuenta">${t("navCuenta")}</a>
       <a class="sec" href="https://github.com/jpreyestCL/secondbrain">GitHub</a>
     </div>
-    <button class="theme" id="theme" type="button" aria-label="Cambiar entre tema claro y oscuro">
+    ${selector}
+    <button class="theme" id="theme" type="button" aria-label="${t("temaAria")}">
       <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
       <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.3 8.3 0 1 0 20 14.5Z"/></svg>
     </button>
   </div>
 </div></nav>
 
-<nav class="rail" id="rail" aria-label="Índice de la página">
-  <a href="#como"><span class="tick"></span>01<span class="sr"> · Cómo funciona</span></a>
-  <a href="#usar"><span class="tick"></span>02<span class="sr"> · Qué le preguntas</span></a>
-  <a href="#esquema"><span class="tick"></span>03<span class="sr"> · Bajo el capó</span></a>
-  <a href="#conectar"><span class="tick"></span>04<span class="sr"> · Conectar</span></a>
-  <a href="#privacidad"><span class="tick"></span>05<span class="sr"> · Sobre tus datos</span></a>
+<nav class="rail" id="rail" aria-label="${t("railAria")}">
+  <a href="#como"><span class="tick"></span>01<span class="sr"> · ${t("navComo")}</span></a>
+  <a href="#usar"><span class="tick"></span>02<span class="sr"> · ${t("navUsar")}</span></a>
+  <a href="#esquema"><span class="tick"></span>03<span class="sr"> · ${t("railEsquema")}</span></a>
+  <a href="#conectar"><span class="tick"></span>04<span class="sr"> · ${t("navConectar")}</span></a>
+  <a href="#privacidad"><span class="tick"></span>05<span class="sr"> · ${t("railPrivacidad")}</span></a>
 </nav>
 
 <header id="hero"><div class="wrap hero">
   <div class="hero-copy">
-    <p class="eyebrow rv" style="--i:0">Memoria personal · conector MCP para Claude</p>
-    <h1 class="rv" style="--i:1">Tu memoria no se sobrescribe: <em>se fecha</em>.</h1>
+    <p class="eyebrow rv" style="--i:0">${t("heroEyebrow")}</p>
+    <h1 class="rv" style="--i:1">${t("heroTituloPre")} <em>${t("heroTituloEm")}</em>.</h1>
     <p class="lede rv" style="--i:2">
-      Guardas lo que necesitas recordar hablándole a Claude. Cuando un dato cambia,
-      el anterior no se borra — queda archivado con su periodo de vigencia. Preguntas
-      hoy y te responde hoy; preguntas por el pasado y te lo reconstruye.
+      ${t("heroLede")}
     </p>
     <div class="cta-row rv" style="--i:3">
-      <a class="btn" href="#conectar">Conectar con Claude</a>
-      <a class="btn ghost" href="https://github.com/jpreyestCL/secondbrain">Ver el código</a>
+      <a class="btn" href="#conectar">${t("ctaConectar")}</a>
+      <a class="btn ghost" href="https://github.com/jpreyestCL/secondbrain">${t("ctaCodigo")}</a>
     </div>
     <div class="trust rv" style="--i:4">
-      <span>un grafo por persona</span>
-      <span>código abierto</span>
-      <span>exportable siempre</span>
+      <span>${t("trust1")}</span>
+      <span>${t("trust2")}</span>
+      <span>${t("trust3")}</span>
     </div>
   </div>
 
   <div class="demo rv" style="--i:3">
     <div class="demo-head">
-      <span class="demo-q">¿Cuál es mi cuenta corriente?</span>
-      <span class="eyebrow">arrastra el año</span>
+      <span class="demo-q">${t("demoPregunta")}</span>
+      <span class="eyebrow">${t("demoArrastra")}</span>
     </div>
     <div class="demo-body">
       <div class="yearline">
         <div class="year" id="yr">2026</div>
-        <span class="year-tag" id="ytag">hoy</span>
+        <span class="year-tag" id="ytag">${t("demoHoy")}</span>
       </div>
       <div class="answer" aria-live="polite">
-        <span class="label" id="alabel">Respuesta vigente</span>
+        <span class="label" id="alabel">${t("respVigente")}</span>
         <div class="value" id="aval">Banco Santander · 789-012-345</div>
-        <div class="range" id="arange">vigente desde 2024</div>
-        <span class="stamp" id="stamp">vigente</span>
+        <div class="range" id="arange">${t("vigenteDesde")}2024</div>
+        <span class="stamp" id="stamp">${t("stampVigente")}</span>
       </div>
       <div class="slider-wrap">
-        <label class="eyebrow" for="sl">Línea de tiempo</label>
+        <label class="eyebrow" for="sl">${t("demoLineaTiempo")}</label>
         <!-- Sin aria-label: el nombre accesible debe ser la etiqueta visible
              ("Línea de tiempo", WCAG 2.5.3). min=2010 hace alcanzable el
              tramo anterior al primer registro. -->
@@ -606,7 +896,7 @@ export function landingPageHtml(
         <div class="ticks"><span>2010</span><span>2018</span><span>2026</span></div>
       </div>
       <div class="history">
-        <span class="eyebrow">Registro completo</span>
+        <span class="eyebrow">${t("demoRegistro")}</span>
         <div id="recs"></div>
       </div>
     </div>
@@ -615,61 +905,56 @@ export function landingPageHtml(
 
 <section id="como"><div class="wrap">
   <div class="sec-head rv">
-    <p class="eyebrow">Cómo funciona</p>
-    <h2>Le hablas a Claude. El resto ocurre solo.</h2>
-    <p class="lede">No hay app que abrir ni formularios que llenar. Conectas una vez y tu
-      cerebro queda disponible en cualquier conversación, en web, escritorio o teléfono.</p>
+    <p class="eyebrow">${t("navComo")}</p>
+    <h2>${t("comoH2")}</h2>
+    <p class="lede">${t("comoLede")}</p>
   </div>
   <div class="flow">
     <div class="step rv" style="--i:0">
-      <h3>Le cuentas algo</h3>
-      <p>“Guarda que mi cuenta del Banco de Chile es la 123-456.” Claude entiende de qué
-        ámbito es y de cuándo data el hecho.</p>
+      <h3>${t("paso1T")}</h3>
+      <p>${t("paso1P")}</p>
     </div>
     <div class="step rv" style="--i:1">
-      <h3>O le pasas un documento</h3>
-      <p>Adjuntas un PDF, una foto o una planilla en el chat. Lo lee —incluso escaneado—,
-        lo ordena y lo archiva por secciones.</p>
+      <h3>${t("paso2T")}</h3>
+      <p>${t("paso2P")}</p>
     </div>
     <div class="step rv" style="--i:2">
-      <h3>Se archiva con fecha</h3>
-      <p>Cada dato entra con la fecha real del hecho, no la de hoy. Si contradice algo
-        anterior, lo cierra en esa fecha en vez de borrarlo.</p>
+      <h3>${t("paso3T")}</h3>
+      <p>${t("paso3P")}</p>
     </div>
     <div class="step rv" style="--i:3">
-      <h3>Preguntas cuando quieras</h3>
-      <p>En lenguaje natural. Por defecto responde con lo vigente; si pides historia,
-        te entrega la línea de tiempo.</p>
+      <h3>${t("paso4T")}</h3>
+      <p>${t("paso4P")}</p>
     </div>
   </div>
 </div></section>
 
 <section id="usar"><div class="wrap">
   <div class="sec-head rv">
-    <p class="eyebrow">Qué le preguntas</p>
-    <h2>Lo que hoy vive en capturas de pantalla y correos viejos.</h2>
+    <p class="eyebrow">${t("navUsar")}</p>
+    <h2>${t("usarH2")}</h2>
   </div>
   <div class="grid c2">
     <div class="card rv" style="--i:0">
-      <h3>Guardar</h3>
+      <h3>${t("usarGuardar")}</h3>
       <div class="asklist">
-        <div class="quote">Guarda que el router de la casa es TP-Link y la clave está en 1Password.
-          <span class="tool">→ add_memory · dominio personal</span></div>
-        <div class="quote">Anota que en la reunión de hoy decidimos usar Postgres en el proyecto X.
-          <span class="tool">→ add_memory · dominio proyectos</span></div>
-        <div class="quote">Ingesta este contrato <em>(adjunto)</em> a mi second brain.
-          <span class="tool">→ add_memory × secciones del documento</span></div>
+        <div class="quote">${t("q1")}
+          <span class="tool">${t("q1tool")}</span></div>
+        <div class="quote">${t("q2")}
+          <span class="tool">${t("q2tool")}</span></div>
+        <div class="quote">${t("q3pre")} <em>${t("q3em")}</em> ${t("q3post")}
+          <span class="tool">${t("q3tool")}</span></div>
       </div>
     </div>
     <div class="card rv" style="--i:1">
-      <h3>Consultar</h3>
+      <h3>${t("usarConsultar")}</h3>
       <div class="asklist">
-        <div class="quote">¿Con quién tengo acuerdo de confidencialidad?
-          <span class="tool">→ search_memory_facts · solo vigentes</span></div>
-        <div class="quote">¿Qué exámenes me hice el 2024 y qué decían?
-          <span class="tool">→ search_nodes + get_episodes</span></div>
-        <div class="quote">Dame el historial de mis cuentas bancarias.
-          <span class="tool">→ search_memory_facts · only_current = false</span></div>
+        <div class="quote">${t("q4")}
+          <span class="tool">${t("q4tool")}</span></div>
+        <div class="quote">${t("q5")}
+          <span class="tool">${t("q5tool")}</span></div>
+        <div class="quote">${t("q6")}
+          <span class="tool">${t("q6tool")}</span></div>
       </div>
     </div>
   </div>
@@ -677,37 +962,37 @@ export function landingPageHtml(
 
 <section id="esquema"><div class="wrap">
   <div class="sec-head rv">
-    <p class="eyebrow">Bajo el capó</p>
-    <h2>Cada persona, su propio grafo.</h2>
+    <p class="eyebrow">${t("railEsquema")}</p>
+    <h2>${t("esquemaH2")}</h2>
   </div>
   <div class="diagram">
     <div class="diagram-frame rv">
-      <svg viewBox="0 0 560 290" role="img" aria-label="Claude se conecta por MCP al gateway, que enruta a cada persona a su propio proceso y su propio grafo; el grafo de otra persona queda inalcanzable.">
+      <svg viewBox="0 0 560 290" role="img" aria-label="${escapeHtml(t("svgAria"))}">
         <rect class="dg-box" x="150" y="8" width="260" height="40" rx="3"/>
-        <text class="dg-t" x="280" y="33" text-anchor="middle">Claude · web · escritorio · móvil</text>
+        <text class="dg-t" x="280" y="33" text-anchor="middle">${t("dgClaude")}</text>
 
         <path class="dg-line live" d="M280 48 L280 94"/>
         <path class="dg-line" d="M274 88 L280 96 L286 88"/>
-        <text class="dg-t acc" x="292" y="76">MCP · OAuth 2.1 + PKCE</text>
+        <text class="dg-t acc" x="292" y="76">${t("dgMcp")}</text>
 
         <rect class="dg-box mine" x="150" y="96" width="260" height="42" rx="3"/>
-        <text class="dg-t" x="280" y="122" text-anchor="middle">gateway · autentica y enruta</text>
+        <text class="dg-t" x="280" y="122" text-anchor="middle">${t("dgGateway")}</text>
 
         <path class="dg-line live" d="M240 138 L240 168 L150 168 L150 196"/>
         <path class="dg-line" d="M320 138 L320 168 L410 168 L410 196"/>
 
         <rect class="dg-box mine" x="45" y="196" width="210" height="38" rx="3"/>
-        <text class="dg-t" x="150" y="220" text-anchor="middle">tu proceso</text>
+        <text class="dg-t" x="150" y="220" text-anchor="middle">${t("dgTuProceso")}</text>
         <rect class="dg-box other" x="305" y="196" width="210" height="38" rx="3"/>
-        <text class="dg-t dim" x="410" y="220" text-anchor="middle">otro proceso</text>
+        <text class="dg-t dim" x="410" y="220" text-anchor="middle">${t("dgOtroProceso")}</text>
 
         <path class="dg-line live" d="M150 234 L150 252"/>
         <path class="dg-line" d="M410 234 L410 252"/>
 
         <rect class="dg-box mine" x="45" y="252" width="210" height="34" rx="3"/>
-        <text class="dg-t" x="150" y="274" text-anchor="middle">tu grafo</text>
+        <text class="dg-t" x="150" y="274" text-anchor="middle">${t("dgTuGrafo")}</text>
         <rect class="dg-box other" x="305" y="252" width="210" height="34" rx="3"/>
-        <text class="dg-t dim" x="410" y="274" text-anchor="middle">otro grafo</text>
+        <text class="dg-t dim" x="410" y="274" text-anchor="middle">${t("dgOtroGrafo")}</text>
 
         <path class="dg-x" stroke-dasharray="4 4" d="M255 269 L305 269"/>
         <path class="dg-x" d="M273 262 L287 276 M287 262 L273 276"/>
@@ -715,20 +1000,16 @@ export function landingPageHtml(
     </div>
     <div class="legend rv" style="--i:1">
       <div>
-        <b>Aislamiento estructural</b>
-        <p>Tu información vive en un grafo separado, con su propio usuario de base de datos
-          y su propio proceso. No depende de que un filtro esté bien escrito.</p>
+        <b>${t("leyenda1B")}</b>
+        <p>${t("leyenda1P")}</p>
       </div>
       <div>
-        <b>Qué guarda el grafo</b>
-        <p>El texto original de cada documento, las personas y empresas que aparecen en él
-          y cómo se relacionan, y la vigencia de cada dato: desde cuándo y hasta cuándo fue
-          verdad.</p>
+        <b>${t("leyenda2B")}</b>
+        <p>${t("leyenda2P")}</p>
       </div>
       <div>
-        <b>Nada se borra</b>
-        <p>Un dato nuevo que contradice a otro lo cierra con fecha. El anterior sigue ahí,
-          consultable, marcado como histórico.</p>
+        <b>${t("leyenda3B")}</b>
+        <p>${t("leyenda3P")}</p>
       </div>
     </div>
   </div>
@@ -736,63 +1017,58 @@ export function landingPageHtml(
 
 <section id="conectar"><div class="wrap">
   <div class="sec-head rv">
-    <p class="eyebrow">Conectar</p>
-    <h2>Tres pasos, una sola vez.</h2>
+    <p class="eyebrow">${t("navConectar")}</p>
+    <h2>${t("conectarH2")}</h2>
   </div>
   <div class="grid c2">
     <div class="card rv" style="--i:0">
       <div class="steps">
-        <div class="stepline"><div>En Claude, abre <strong>Ajustes → Conectores</strong> y elige
-          <strong>Agregar conector personalizado</strong>.</div></div>
-        <div class="stepline"><div>Pega esta dirección:
-          <span class="copy"><code id="mcp">${mcpUrl}</code><button type="button" id="copy" hidden>Copiar</button></span></div></div>
-        <div class="stepline"><div>Inicia sesión cuando se abra la ventana. Listo: tu cerebro
-          queda disponible en todas tus conversaciones.</div></div>
+        <div class="stepline"><div>${t("paso1Pre")} <strong>${t("paso1F1")}</strong> ${t("paso1Med")}
+          <strong>${t("paso1F2")}</strong>.</div></div>
+        <div class="stepline"><div>${t("pasoPega")}
+          <span class="copy"><code id="mcp">${mcpUrl}</code><button type="button" id="copy" hidden>${t("botonCopiar")}</button></span></div></div>
+        <div class="stepline"><div>${t("pasoLogin")}</div></div>
       </div>
     </div>
     <div class="card rv" style="--i:1">
       ${registroCard}
-      <p style="margin-top:.4rem">¿Prefieres control total? El proyecto es abierto y puedes
-        <a href="https://github.com/jpreyestCL/secondbrain">levantarlo en tu propio servidor</a>.</p>
+      <p style="margin-top:.4rem">${t("autoPre")}
+        <a href="https://github.com/jpreyestCL/secondbrain">${t("autoEnlace")}</a>${t("autoPost")}</p>
     </div>
   </div>
 </div></section>
 
 <section id="privacidad"><div class="wrap">
   <div class="sec-head rv">
-    <p class="eyebrow">Sobre tus datos</p>
-    <h2>Guarda cosas sensibles — con cuidado.</h2>
+    <p class="eyebrow">${t("railPrivacidad")}</p>
+    <h2>${t("privH2")}</h2>
   </div>
   <div class="ledger">
     <div class="row rv" style="--i:0">
       <span class="mark no" aria-hidden="true">✕</span>
-      <h3>Contraseñas y tokens: no</h3>
-      <p>Claves, tokens y números de tarjeta se detectan y se reemplazan antes de escribir
-        nada. Se guarda que la credencial existe y dónde está, nunca su valor.</p>
+      <h3>${t("priv1T")}</h3>
+      <p>${t("priv1P")}</p>
     </div>
     <div class="row rv" style="--i:1">
       <span class="mark yes" aria-hidden="true">✓</span>
-      <h3>Salud y finanzas: sí</h3>
-      <p>Exámenes, contratos y cuentas se guardan marcados como sensibles, dentro de tu
-        grafo aislado. Y el código es público: puedes auditar exactamente qué ocurre.</p>
+      <h3>${t("priv2T")}</h3>
+      <p>${t("priv2P")}</p>
     </div>
     <div class="row rv" style="--i:2">
       <span class="mark yes" aria-hidden="true">↓</span>
-      <h3>Salida sin fricción</h3>
-      <p>Tu memoria entera se descarga en un archivo cuando quieras: el texto de tus
-        documentos, quiénes aparecen en ellos y cada dato con su vigencia. Sin pedirle
-        permiso a nadie.</p>
+      <h3>${t("priv3T")}</h3>
+      <p>${t("priv3P")}</p>
     </div>
   </div>
 </div></section>
 
 <footer><div class="wrap foot-row">
-  <span>secondbrain · memoria temporal para Claude</span>
+  <span>${t("footTag")}</span>
   <span>
-    <a href="/guia">Guía</a> ·
-    <a href="/cuenta">Tu cuenta</a> ·
-    <a href="https://github.com/jpreyestCL/secondbrain">Código en GitHub</a> ·
-    construido sobre <a href="https://github.com/getzep/graphiti">Graphiti</a> y
+    <a href="/guia">${t("navGuia")}</a> ·
+    <a href="/cuenta">${t("navCuenta")}</a> ·
+    <a href="https://github.com/jpreyestCL/secondbrain">${t("footCodigo")}</a> ·
+    ${t("footSobre")} <a href="https://github.com/getzep/graphiti">Graphiti</a> ${t("footY")}
     <a href="https://www.falkordb.com/">FalkorDB</a>
   </span>
 </div></footer>
@@ -886,13 +1162,13 @@ export function landingPageHtml(
         copyBtn.textContent = label;
         copyBtn.classList.toggle("done", ok);
         setTimeout(function () {
-          copyBtn.textContent = "Copiar";
+          copyBtn.textContent = ${litJs(t("botonCopiar"))};
           copyBtn.classList.remove("done");
         }, 1800);
       };
       navigator.clipboard.writeText(text).then(
-        function () { flash("Copiado ✓", true); },
-        function () { flash("Copia a mano", false); }
+        function () { flash(${litJs(t("copiado"))}, true); },
+        function () { flash(${litJs(t("copiaMano"))}, false); }
       );
     });
   }
@@ -921,7 +1197,7 @@ export function landingPageHtml(
   function pct(y) { return ((y - MIN) / (MAX - MIN)) * 100; }
 
   function fmt(r) {
-    return r.to === null ? "vigente desde " + r.from : r.from + " — " + r.to;
+    return r.to === null ? ${litJs(t("vigenteDesde"))} + r.from : r.from + " — " + r.to;
   }
 
   /* Barra de vigencias: cada registro ocupa su tramo real del eje. */
@@ -961,13 +1237,13 @@ export function landingPageHtml(
     if (active) {
       aval.textContent = active.txt;
       arange.textContent = fmt(active);
-      alabel.textContent = (y >= MAX) ? "Respuesta vigente" : "Respuesta en " + y;
-      stamp.textContent = active.to === null ? "vigente" : "archivado";
+      alabel.textContent = (y >= MAX) ? ${litJs(t("respVigente"))} : ${litJs(t("respEn"))} + y;
+      stamp.textContent = active.to === null ? ${litJs(t("stampVigente"))} : ${litJs(t("stampArchivado"))};
     } else {
-      aval.textContent = "Todavía no había registro";
+      aval.textContent = ${litJs(t("sinRegistroValor"))};
       arange.textContent = "—";
-      alabel.textContent = "Respuesta en " + y;
-      stamp.textContent = "sin registro";
+      alabel.textContent = ${litJs(t("respEn"))} + y;
+      stamp.textContent = ${litJs(t("stampSinRegistro"))};
     }
 
     var html = "";

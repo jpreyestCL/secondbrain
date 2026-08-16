@@ -39,6 +39,7 @@ import { lastDelivery } from "./mailer.js";
 import { VERIFY_CALLBACK_PATH, RESET_PASSWORD_PATH } from "./auth.js";
 import { createRateLimiter, clientIpFrom } from "./rate-limit.js";
 import { consentPageHtml } from "./consent-page.js";
+import { textoErrorAuth, type ClaveErrorAuth } from "./auth-chrome.js";
 import {
   cuentaPageHtml,
   type CuentaClientView,
@@ -46,7 +47,7 @@ import {
 } from "./cuenta-page.js";
 import { CSRF_FIELD, csrfToken, verifyCsrfToken, isSameOrigin } from "./csrf.js";
 import { exportGraph, panelMemoria } from "./export.js";
-import { COOKIE_IDIOMA, idiomaDe, type Idioma } from "./i18n.js";
+import { COOKIE_IDIOMA, idiomaDe, traductor, type Idioma, type Textos } from "./i18n.js";
 import { guiaPageHtml } from "./guia-page.js";
 import {
   REGISTRO_COOKIE_NAME,
@@ -448,10 +449,14 @@ export function buildApp(
         showRegisterLink: registrationEnabled(),
         openRegistration: mode === "open",
         showGoogle: googleEnabled,
+        ...i18n(c),
       }),
     ),
   );
-  app.get("/", (c) => c.html(landingPageHtml(config.baseUrl, mode)));
+  /** Idioma + URL actual, que es lo que toda página necesita para el selector. */
+  const i18n = (c: Context) => ({ idioma: idiomaDeC(c), url: c.req.path + (c.req.url.includes("?") ? "?" + c.req.url.split("?")[1] : "") });
+
+  app.get("/", (c) => c.html(landingPageHtml(config.baseUrl, mode, i18n(c))));
   app.get("/health", (c) => c.json({ ok: true }));
 
   // --- VÁLVULA DE SEGURIDAD: tope duro de tenants (MAX_TENANTS) --------------
@@ -475,13 +480,13 @@ export function buildApp(
     console.warn(
       `[registro] RECHAZADO por capacidad (MAX_TENANTS=${config.maxTenants}): ${who}`,
     );
-    return c.html(registroCapacidadHtml(), 503);
+    return c.html(registroCapacidadHtml(i18n(c)), 503);
   };
 
   // --- Registro self-service (/registro) ---
   app.get("/registro", (c) =>
     c.html(
-      registroPageHtml({ mode, showGoogle: googleEnabled }),
+      registroPageHtml({ mode, showGoogle: googleEnabled, ...i18n(c) }),
       mode === "closed" ? 403 : 200,
     ),
   );
@@ -513,10 +518,10 @@ export function buildApp(
   app.post("/registro", async (c) => {
     const ip = clientIpFrom(c.req.raw.headers);
     if (!registroLimiter.ok(ip)) {
-      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+      return c.text(textoErrorAuth("demasiadosIntentos", idiomaDeC(c)), 429);
     }
     if (mode === "closed") {
-      return c.html(registroPageHtml({ mode: "closed" }), 403);
+      return c.html(registroPageHtml({ mode: "closed", ...i18n(c) }), 403);
     }
 
     const body = await c.req.parseBody();
@@ -525,15 +530,15 @@ export function buildApp(
     const confirm = String(body["confirm"] ?? "");
     const code = String(body["code"] ?? "");
 
-    const fail = (error: string, status: 400 | 403 = 400) =>
-      c.html(registroPageHtml({ mode, error, email, showGoogle: googleEnabled }), status);
+    const fail = (errorClave: ClaveErrorAuth, status: 400 | 403 = 400) =>
+      c.html(registroPageHtml({ mode, errorClave, email, showGoogle: googleEnabled, ...i18n(c) }), status);
 
     if (mode === "invite" && !safeEquals(code, config.registrationCode)) {
-      return fail("Código de invitación incorrecto.", 403);
+      return fail("codigoInvalido", 403);
     }
-    if (!EMAIL_RE.test(email)) return fail("Correo inválido.");
-    if (password.length < 10) return fail("La contraseña debe tener al menos 10 caracteres.");
-    if (password !== confirm) return fail("Las contraseñas no coinciden.");
+    if (!EMAIL_RE.test(email)) return fail("correoInvalido");
+    if (password.length < 10) return fail("passwordCorta");
+    if (password !== confirm) return fail("passwordsNoCoinciden");
 
     // Tope de capacidad ANTES de tocar la base: ni usuario ni tenant.
     if (atCapacity()) return refuseForCapacity(c, email);
@@ -554,7 +559,7 @@ export function buildApp(
       // Mensaje NEUTRO: no distinguir "correo ya registrado" de otros fallos
       // para no permitir enumeración de cuentas. El detalle queda en el log.
       console.error(`[registro] fallo creando usuario ${email}:`, err);
-      return fail("No se pudo crear la cuenta. Verifica los datos e inténtalo de nuevo.");
+      return fail("altaFallida");
     }
 
     // 2) Aprovisionar su tenant (slug + puerto + contenedor) y mapearlo.
@@ -575,7 +580,7 @@ export function buildApp(
             (delivery?.error ? `: ${delivery.error}` : " (correo deshabilitado)"),
         );
       }
-      return c.html(registroExitoHtml(config.baseUrl, email, verification));
+      return c.html(registroExitoHtml(config.baseUrl, email, verification, i18n(c)));
     } catch (err) {
       console.error(`[registro] fallo aprovisionando tenant para ${email}:`, err);
       // Rollback: la cuenta recién creada se borra para no dejar un usuario
@@ -586,7 +591,7 @@ export function buildApp(
       } catch (cleanupErr) {
         console.error(`[registro] rollback FALLÓ para ${email}:`, cleanupErr);
       }
-      return c.html(registroErrorProvisionHtml(email), 500);
+      return c.html(registroErrorProvisionHtml(email, i18n(c)), 500);
     }
   });
 
@@ -655,7 +660,7 @@ export function buildApp(
    */
   app.post("/reenviar-verificacion", async (c) => {
     if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
-      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+      return c.text(textoErrorAuth("demasiadosIntentos", idiomaDeC(c)), 429);
     }
     const body = await c.req.parseBody();
     const email = String(body["email"] ?? "").trim().toLowerCase();
@@ -669,20 +674,20 @@ export function buildApp(
         console.warn(`[mail] reenvío de verificación sin efecto para ${email}:`, err);
       }
     }
-    return c.html(reenvioVerificacionHtml());
+    return c.html(reenvioVerificacionHtml(i18n(c)));
   });
 
   // --- Recuperación de contraseña --------------------------------------------
-  app.get("/olvide-password", (c) => c.html(olvidePasswordHtml()));
+  app.get("/olvide-password", (c) => c.html(olvidePasswordHtml(i18n(c))));
 
   app.post("/olvide-password", async (c) => {
     if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
-      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+      return c.text(textoErrorAuth("demasiadosIntentos", idiomaDeC(c)), 429);
     }
     const body = await c.req.parseBody();
     const email = String(body["email"] ?? "").trim().toLowerCase();
     if (!EMAIL_RE.test(email)) {
-      return c.html(olvidePasswordHtml({ error: "Correo inválido.", email }), 400);
+      return c.html(olvidePasswordHtml({ errorClave: "correoInvalido", email, ...i18n(c) }), 400);
     }
     try {
       await auth.api.requestPasswordReset({
@@ -693,7 +698,7 @@ export function buildApp(
       // ni devolver un 500: queda en el log y la respuesta es la misma.
       console.error(`[mail] fallo pidiendo recuperación para ${email}:`, err);
     }
-    return c.html(olvidePasswordEnviadoHtml());
+    return c.html(olvidePasswordEnviadoHtml(i18n(c)));
   });
 
   app.get(RESET_PASSWORD_PATH, (c) => {
@@ -701,20 +706,20 @@ export function buildApp(
     // Better Auth redirige aquí con ?error=INVALID_TOKEN cuando el enlace ya no
     // vale; sin token no hay nada que hacer tampoco.
     if (c.req.query("error") || !token) {
-      return c.html(restablecerTokenInvalidoHtml(), 400);
+      return c.html(restablecerTokenInvalidoHtml(i18n(c)), 400);
     }
-    return c.html(restablecerPasswordHtml({ token }));
+    return c.html(restablecerPasswordHtml({ token, ...i18n(c) }));
   });
 
   app.post(RESET_PASSWORD_PATH, async (c) => {
     if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
-      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+      return c.text(textoErrorAuth("demasiadosIntentos", idiomaDeC(c)), 429);
     }
     const body = await c.req.parseBody();
     const token = String(body["token"] ?? "");
     const password = String(body["password"] ?? "");
     const confirm = String(body["confirm"] ?? "");
-    if (!token) return c.html(restablecerTokenInvalidoHtml(), 400);
+    if (!token) return c.html(restablecerTokenInvalidoHtml(i18n(c)), 400);
     if (password.length < 10) {
       return c.html(
         restablecerPasswordHtml({
@@ -726,7 +731,7 @@ export function buildApp(
     }
     if (password !== confirm) {
       return c.html(
-        restablecerPasswordHtml({ token, error: "Las contraseñas no coinciden." }),
+        restablecerPasswordHtml({ token, errorClave: "passwordsNoCoinciden", ...i18n(c) }),
         400,
       );
     }
@@ -734,10 +739,10 @@ export function buildApp(
       await auth.api.resetPassword({ body: { token, newPassword: password } });
     } catch (err) {
       console.warn("[mail] restablecimiento rechazado:", err);
-      return c.html(restablecerTokenInvalidoHtml(), 400);
+      return c.html(restablecerTokenInvalidoHtml(i18n(c)), 400);
     }
     console.log("[cuenta] contraseña restablecida con un enlace de correo");
-    return c.html(restablecerOkHtml());
+    return c.html(restablecerOkHtml(i18n(c)));
   });
 
   /** Cierra la sesión actual y devuelve `html` con `status` (cookies borradas). */
@@ -788,14 +793,14 @@ export function buildApp(
     // Registro cerrado: nadie nuevo entra por Google.
     if (mode === "closed") {
       console.warn(`[google] sesión sin tenant con registro cerrado: ${email} — cerrando sesión`);
-      return signOutWith(c, registroPageHtml({ mode: "closed" }), 403);
+      return signOutWith(c, registroPageHtml({ mode: "closed", ...i18n(c) }), 403);
     }
 
     // Alta de un usuario nuevo por Google: mismo rate limit por IP que /registro.
     const ip = clientIpFrom(c.req.raw.headers);
     if (!registroLimiter.ok(ip)) {
       console.warn(`[google] rate limit alcanzado en el alta por Google desde ${ip}`);
-      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+      return c.text(textoErrorAuth("demasiadosIntentos", idiomaDeC(c)), 429);
     }
 
     // En modo `invite` sigue haciendo falta la cookie `registro_ok`; en `open`
@@ -808,7 +813,7 @@ export function buildApp(
     if (!invited) {
       // Sin cookie válida: NO aprovisionar. Cierra la sesión y explica.
       console.warn(`[google] sesión sin tenant ni invitación válida: ${email} — cerrando sesión`);
-      return signOutWith(c, googleSinInvitacionHtml(), 403);
+      return signOutWith(c, googleSinInvitacionHtml(i18n(c)), 403);
     }
 
     // Tope de capacidad: se comprueba también aquí (misma válvula que /registro).
@@ -816,7 +821,7 @@ export function buildApp(
       console.warn(
         `[google] alta RECHAZADA por capacidad (MAX_TENANTS=${config.maxTenants}): ${email}`,
       );
-      return signOutWith(c, registroCapacidadHtml(), 503);
+      return signOutWith(c, registroCapacidadHtml(i18n(c)), 503);
     }
 
     try {
@@ -837,7 +842,7 @@ export function buildApp(
       } catch (cleanupErr) {
         console.error(`[google] rollback FALLÓ para ${email}:`, cleanupErr);
       }
-      return c.html(registroErrorProvisionHtml(email), 500);
+      return c.html(registroErrorProvisionHtml(email, i18n(c)), 500);
     }
   });
 
@@ -958,16 +963,37 @@ export function buildApp(
     );
   };
 
-  const NOTICES: Record<string, string> = {
-    "cliente-revocado": "Aplicación revocada: se borraron su consentimiento y sus tokens.",
-    "sesiones-cerradas": "Se cerraron todas las demás sesiones.",
-    "verificacion-enviada":
-      "Te enviamos un correo de verificación. Revisa la bandeja de entrada y el spam.",
-    "verificacion-fallo":
-      "No pudimos enviar el correo de verificación ahora mismo. Vuelve a intentarlo en unos minutos.",
+  // Bilingües como los errores de auth: son el texto que el usuario ve DESPUÉS
+  // de actuar, y salían en español encima de la página en inglés.
+  const NOTICES: Textos<
+    "cliente-revocado" | "sesiones-cerradas" | "verificacion-enviada" | "verificacion-fallo"
+  > = {
+    "cliente-revocado": {
+      es: "Aplicación revocada: se borraron su consentimiento y sus tokens.",
+      en: "App revoked: its consent and its tokens were deleted.",
+    },
+    "sesiones-cerradas": {
+      es: "Se cerraron todas las demás sesiones.",
+      en: "All other sessions were signed out.",
+    },
+    "verificacion-enviada": {
+      es: "Te enviamos un correo de verificación. Revisa la bandeja de entrada y el spam.",
+      en: "We sent you a verification email. Check your inbox and your spam folder.",
+    },
+    "verificacion-fallo": {
+      es: "No pudimos enviar el correo de verificación ahora mismo. Vuelve a intentarlo en unos minutos.",
+      en: "We could not send the verification email right now. Try again in a few minutes.",
+    },
   };
 
-  app.get("/cuenta", (c) => renderCuenta(c, NOTICES[c.req.query("ok") ?? ""] ?? null));
+  /** Texto del aviso en el idioma de la petición, o null si no hay aviso. */
+  const avisoDe = (c: Context): string | null => {
+    const clave = c.req.query("ok") ?? "";
+    if (!(clave in NOTICES)) return null;
+    return traductor(NOTICES, idiomaDeC(c))(clave as keyof typeof NOTICES);
+  };
+
+  app.get("/cuenta", (c) => renderCuenta(c, avisoDe(c)));
 
   // La guía es PÚBLICA: es documentación (todo está en el repo público) y se
   // enlaza desde la landing, así que exigir sesión solo rebotaba al login a
@@ -1106,7 +1132,7 @@ export function buildApp(
     if ("error" in guard) return guard.error;
     const email = guard.session.user.email;
     if (!mailLimiter.ok(clientIpFrom(c.req.raw.headers))) {
-      return c.text("Demasiados intentos. Espera un minuto y vuelve a intentarlo.", 429);
+      return c.text(textoErrorAuth("demasiadosIntentos", idiomaDeC(c)), 429);
     }
     if (guard.session.user.emailVerified) return c.redirect("/cuenta", 302);
     try {

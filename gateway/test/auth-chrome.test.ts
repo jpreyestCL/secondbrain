@@ -6,9 +6,24 @@
  */
 import { describe, it, expect } from "vitest";
 import { loginPageHtml } from "../src/login-page.js";
-import { registroPageHtml } from "../src/registro-page.js";
+import {
+  registroPageHtml,
+  registroCapacidadHtml,
+  registroExitoHtml,
+  registroErrorProvisionHtml,
+  googleSinInvitacionHtml,
+} from "../src/registro-page.js";
+import {
+  verificadoPageHtml,
+  reenvioVerificacionHtml,
+  olvidePasswordHtml,
+  olvidePasswordEnviadoHtml,
+  restablecerPasswordHtml,
+  restablecerTokenInvalidoHtml,
+  restablecerOkHtml,
+} from "../src/mail-pages.js";
 import { consentPageHtml } from "../src/consent-page.js";
-import { AUTH_STYLE } from "../src/auth-chrome.js";
+import { AUTH_STYLE, textoErrorAuth } from "../src/auth-chrome.js";
 
 const PAGES: Array<[string, string]> = [
   ["login", loginPageHtml({ showRegisterLink: true, showGoogle: true })],
@@ -69,5 +84,118 @@ describe("cromo de las páginas de autenticación", () => {
       expect(html, name).not.toMatch(/url\(\s*["']?https?:/);
       expect(html, name).not.toMatch(/<script[^>]+src=/);
     }
+  });
+});
+
+/**
+ * Estas páginas no pasan por `dashboardShell`, así que el selector de idioma
+ * vive en el cromo. Sin `idioma` la salida debe seguir siendo la de siempre.
+ */
+describe("idioma de las páginas de autenticación", () => {
+  const enIngles = (url = "/x"): Array<[string, string]> => [
+    ["login", loginPageHtml({ showRegisterLink: true, showGoogle: true, idioma: "en", url })],
+    ["registro", registroPageHtml({ mode: "invite", showGoogle: true, idioma: "en", url })],
+    ["registro-cerrado", registroPageHtml({ mode: "closed", idioma: "en", url })],
+    ["capacidad", registroCapacidadHtml({ idioma: "en", url })],
+    ["sin-invitacion", googleSinInvitacionHtml({ idioma: "en", url })],
+    ["exito", registroExitoHtml("https://b.dev", "a@b.dev", "enviado", { idioma: "en", url })],
+    ["provision", registroErrorProvisionHtml("a@b.dev", { idioma: "en", url })],
+    ["olvide", olvidePasswordHtml({ idioma: "en", url })],
+    ["olvide-enviado", olvidePasswordEnviadoHtml({ idioma: "en", url })],
+    ["restablecer", restablecerPasswordHtml({ token: "t", idioma: "en", url })],
+    ["token-invalido", restablecerTokenInvalidoHtml({ idioma: "en", url })],
+    ["restablecida", restablecerOkHtml({ idioma: "en", url })],
+    ["reenvio", reenvioVerificacionHtml({ idioma: "en", url })],
+    [
+      "consentimiento",
+      consentPageHtml({
+        clientName: "Claude",
+        redirectOrigin: "https://claude.ai",
+        userEmail: "a@b.dev",
+        scopes: ["openid"],
+        csrf: "c".repeat(64),
+        params: {},
+        idioma: "en",
+        url,
+      }),
+    ],
+  ];
+
+  it("sin idioma, la salida es la de siempre: español y sin selector", () => {
+    for (const [name, html] of PAGES) {
+      expect(html, name).toContain('<html lang="es">');
+      expect(html, name).not.toContain('class="idiomas"');
+    }
+  });
+
+  it("con idioma=en, el documento va en inglés y trae el selector al español", () => {
+    for (const [name, html] of enIngles()) {
+      expect(html, name).toContain('<html lang="en">');
+      expect(html, name).toContain('class="idiomas"');
+      expect(html, name).toContain("lang=es");
+      expect(html, name).toContain(">Español</a>");
+    }
+  });
+
+  it("el selector vuelve a la MISMA página, no a la portada", () => {
+    const html = restablecerPasswordHtml({ token: "t", idioma: "en", url: "/restablecer-password?token=t" });
+    expect(html).toContain('href="/restablecer-password?');
+    expect(html).toContain("lang=es");
+  });
+
+  it("en inglés no queda texto español de cara al usuario", () => {
+    const marcas = [
+      "Iniciar sesión",
+      "Crear cuenta",
+      "Contraseña",
+      "Correo</label>",
+      "Volver al inicio",
+      "Autorizar el acceso",
+      "Revisa tu correo",
+      "Enlace no válido",
+    ];
+    for (const [name, html] of enIngles()) {
+      for (const marca of marcas) expect(html, `${name}: ${marca}`).not.toContain(marca);
+    }
+  });
+
+  it("el consentimiento explica en inglés QUÉ se autoriza", () => {
+    const html = consentPageHtml({
+      clientName: "Claude",
+      redirectOrigin: "https://claude.ai",
+      userEmail: "a@b.dev",
+      scopes: ["openid"],
+      csrf: "c".repeat(64),
+      params: {},
+      idioma: "en",
+    });
+    expect(html).toContain("read and write your entire memory");
+    expect(html).toContain("Authorize");
+    expect(html).toContain("Cancel");
+    // Y el correo de la sesión sigue interpolado (y escapado) en la frase.
+    expect(html).toContain("<strong>a@b.dev</strong>");
+  });
+
+  it("la página de verificación reenvía el idioma al shell del dashboard", () => {
+    const ok = verificadoPageHtml({ session: null, idioma: "en", url: "/verificado" });
+    expect(ok).toContain("Email verified");
+    expect(ok).toContain("lang=es");
+    const mal = verificadoPageHtml({ session: null, error: "TOKEN_EXPIRED", idioma: "en" });
+    expect(mal).toContain("The link has expired.");
+    expect(mal).not.toContain("El enlace caducó.");
+    // Sin idioma sigue en español, como hoy.
+    expect(verificadoPageHtml({ session: null, error: "TOKEN_EXPIRED" })).toContain(
+      "El enlace caducó.",
+    );
+  });
+
+  it("los errores de formulario se traducen por clave", () => {
+    expect(textoErrorAuth("correoInvalido", "es")).toBe("Correo inválido.");
+    expect(textoErrorAuth("correoInvalido", "en")).toBe("Invalid email address.");
+    // La clave gana al texto literal; sin clave, se pinta el literal tal cual.
+    expect(
+      registroPageHtml({ mode: "open", errorClave: "passwordsNoCoinciden", idioma: "en" }),
+    ).toContain("The passwords do not match.");
+    expect(olvidePasswordHtml({ error: "Correo inválido." })).toContain("Correo inválido.");
   });
 });

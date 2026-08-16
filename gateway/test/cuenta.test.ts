@@ -339,3 +339,208 @@ describe("constelación de una entidad", () => {
     expect(html).not.toContain("<img onerror=x>");
   });
 });
+
+describe("panel de cuenta bilingüe", () => {
+  const resumen = {
+    documentos: 17,
+    fragmentos: 47,
+    personasYEmpresas: 124,
+    datosActuales: 137,
+    datosQueCambiaron: 3,
+    porDominio: { finanzas: 12 },
+    ultimos: [
+      { documento: "Escritura.pdf", dominio: "finanzas", guardado: "2026-08-13T01:00:00Z" },
+    ],
+  };
+  const base = {
+    email: "a@b.cl",
+    emailVerified: false,
+    upstream: "http://x/mcp",
+    mcpUrl: "https://y/mcp",
+    tenant: "ana",
+    sessions: [],
+    clients: [],
+    csrf: "t",
+    resumen,
+  };
+  const en = cuentaPageHtml({ ...base, idioma: "en", url: "/cuenta" });
+
+  it("sin idioma la página entera sigue en español", () => {
+    const es = cuentaPageHtml(base);
+    expect(es).toContain("Tu cuenta");
+    expect(es).toContain("Tu espacio");
+    expect(es).toContain("Qué tienes guardado");
+    expect(es).toContain("Buscar en tu memoria");
+    expect(es).toContain("Sesiones activas");
+    expect(es).toContain("Aplicaciones autorizadas");
+    expect(es).toContain("Descargar mi memoria (JSON)");
+  });
+
+  it("en inglés traduce cabecera, resumen, buscador, export y accesos", () => {
+    expect(en).toContain("Your account");
+    expect(en).toContain("Your space");
+    expect(en).toContain("What you’ve saved");
+    expect(en).toContain("documents saved");
+    expect(en).toContain("Search your memory");
+    expect(en).toContain("Active sessions");
+    expect(en).toContain("Authorized applications");
+    expect(en).toContain("Download my memory (JSON)");
+    // Y nada del español se cuela.
+    expect(en).not.toContain("Tu cuenta");
+    expect(en).not.toContain("Tu espacio");
+    expect(en).not.toContain("Sesiones activas");
+    expect(en).not.toContain("Descargar mi memoria");
+  });
+
+  it("en inglés habla de documentos, no de episodios ni entidades", () => {
+    expect(en).toContain("documents saved");
+    expect(en).toContain("things I know about you");
+    expect(en).toContain("people, companies and places");
+    expect(en.toLowerCase()).not.toContain("episode");
+    expect(en.toLowerCase()).not.toContain("entities");
+    expect(en.toLowerCase()).not.toContain("current facts");
+  });
+
+  it("traduce el aviso de correo sin verificar y su botón", () => {
+    expect(en).toContain("Your email is not verified yet");
+    expect(en).toContain("Resend verification");
+    expect(en).not.toContain("Reenviar verificación");
+  });
+
+  it("traduce el buscador: marcador, botón, espera y «sin resultados»", () => {
+    const vacio = cuentaPageHtml({
+      ...base,
+      idioma: "en",
+      busqueda: { consulta: "bank", datos: [] },
+    });
+    expect(vacio).toContain('placeholder="what is my bank account?"');
+    expect(vacio).toContain(">Search</button>");
+    expect(vacio).toContain("Searching your memory…");
+    expect(vacio).toContain('btn.textContent = "Copy"');
+    expect(vacio).toContain("I found nothing for &ldquo;bank&rdquo;");
+    expect(vacio).not.toContain("No encontré nada");
+  });
+
+  it("traduce la vigencia de los datos encontrados", () => {
+    const html = cuentaPageHtml({
+      ...base,
+      idioma: "en",
+      busqueda: {
+        consulta: "cuenta",
+        datos: [
+          { texto: "Account 123", desde: "2024-03-10", hasta: "2026-08-01" },
+          { texto: "Account 456", desde: "2026-08-01", hasta: null },
+        ],
+        entidades: [{ nombre: "Banco", uuid: "u-1", resumen: "" }],
+      },
+    });
+    expect(html).toContain("— no longer current since");
+    expect(html).toContain("— since");
+    expect(html).toContain("People, companies and places");
+    expect(html).not.toContain("ya no vigente desde");
+  });
+
+  it("traduce la constelación: relaciones, vigencia del SVG y texto alternativo", () => {
+    const cons = {
+      entidad: "Invest Andes LP",
+      uuid: "u-centro",
+      relaciones: [
+        { con: "Linets SpA", uuid: "u-1", dato: "posee", desde: "2022-10-31", hasta: "" },
+        { con: "Banco", uuid: "u-2", dato: "tuvo cuenta", desde: "2023-01-01", hasta: "2026-08-01" },
+      ],
+    };
+    const html = cuentaPageHtml({ ...base, idioma: "en", constelacion: cons });
+    expect(html).toContain("Connections of Invest Andes LP");
+    expect(html).toContain("1 current connection");
+    expect(html).toContain("that already changed");
+    expect(html).toContain("Click any name to follow the thread");
+    expect(html).toContain("since Oct 2022");
+    expect(html).toContain("until Aug 2026");
+    expect(html).toContain("← back to the summary");
+    expect(html).not.toContain("Relaciones de");
+    expect(html).not.toContain("ago 2026");
+
+    // Y en español todo sigue igual que siempre.
+    const es = cuentaPageHtml({ ...base, constelacion: cons });
+    expect(es).toContain("Relaciones de Invest Andes LP");
+    expect(es).toContain("1 relación vigente");
+    expect(es).toContain("desde oct 2022");
+    expect(es).toContain("hasta ago 2026");
+  });
+
+  it("una entidad aislada lo dice también en inglés", () => {
+    const html = cuentaPageHtml({
+      ...base,
+      idioma: "en",
+      constelacion: { entidad: "Algo", uuid: "u-0", relaciones: [] },
+    });
+    expect(html).toContain("Nothing is connected to this yet.");
+    expect(html).not.toContain("Todavía no hay nada conectado");
+  });
+
+  it("con la memoria vacía invita a guardar en inglés, con la carpeta traducida", () => {
+    const html = cuentaPageHtml({
+      ...base,
+      idioma: "en",
+      resumen: { ...resumen, documentos: 0, ultimos: [] },
+    });
+    expect(html).toContain("You haven’t saved anything yet");
+    expect(html).toContain("brain add &lt;folder&gt;");
+    // El diccionario guarda `<folder>` en crudo: quien escapa es la plantilla.
+    expect(html).not.toContain("&amp;lt;");
+  });
+
+  it("traduce las sesiones y el nombre del dispositivo", () => {
+    const html = cuentaPageHtml({
+      ...base,
+      idioma: "en",
+      sessions: [
+        {
+          id: "s1",
+          createdAt: "2026-08-01T00:00:00Z",
+          lastUsed: "2026-08-02T00:00:00Z",
+          ipAddress: "1.2.3.4",
+          userAgent: null,
+          current: true,
+        },
+        {
+          id: "s2",
+          createdAt: "2026-08-01T00:00:00Z",
+          lastUsed: "2026-08-02T00:00:00Z",
+          ipAddress: null,
+          userAgent: "curl/8.4",
+          current: false,
+        },
+      ],
+    });
+    expect(html).toContain(">Last used</th>");
+    expect(html).toContain(">Browser</th>");
+    expect(html).toContain("this session");
+    expect(html).toContain("Unknown");
+    expect(html).toContain("Command-line client");
+    expect(html).toContain("Sign out of all other sessions (1)");
+    expect(html).not.toContain("esta sesión");
+  });
+
+  it("traduce las aplicaciones autorizadas y el caso sin ninguna", () => {
+    expect(en).toContain("You haven’t authorized any application yet.");
+    const conApp = cuentaPageHtml({
+      ...base,
+      idioma: "en",
+      clients: [
+        {
+          clientId: "c1",
+          name: "Claude",
+          redirectOrigins: ["https://claude.ai"],
+          authorizedAt: "2026-08-01T00:00:00Z",
+          activeTokens: 2,
+        },
+      ],
+    });
+    expect(conApp).toContain("Redirects back to");
+    expect(conApp).toContain("Authorized on");
+    expect(conApp).toContain("active token(s)");
+    expect(conApp).toContain(">Revoke</button>");
+    expect(conApp).not.toContain(">Revocar</button>");
+  });
+});

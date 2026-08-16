@@ -13,6 +13,7 @@ import { createAuth, migrate } from "../src/auth.js";
 import { buildApp } from "../src/server.js";
 import { createTenantRegistry } from "../src/tenants.js";
 import { listen, closeServer } from "./helpers.js";
+import { exportGraph } from "../src/export.js";
 
 const PASSWORD = "supersecret-123";
 const EMAIL = "export@test.dev";
@@ -158,5 +159,61 @@ describe("GET /export", () => {
     const res = await fetch(`${baseUrl}/export`, { headers: { cookie: otherCookie } });
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("sin_tenant");
+  });
+});
+
+describe("idioma de los avisos del export", () => {
+  /** Un upstream que nunca contesta: fuerza el aviso de conexión. */
+  const fetchRoto: typeof fetch = async () => {
+    throw new Error("sin ruta");
+  };
+
+  it("por defecto los avisos van en español", async () => {
+    const out = await exportGraph(
+      "http://127.0.0.1:1/mcp",
+      { id: "u", email: "a@b.cl" },
+      { fetchImpl: fetchRoto },
+    );
+    expect(out.warnings[0]).toContain("No se pudo conectar con tu servidor de memoria");
+  });
+
+  it("con idioma inglés los avisos van en inglés y no en español", async () => {
+    const out = await exportGraph(
+      "http://127.0.0.1:1/mcp",
+      { id: "u", email: "a@b.cl" },
+      { fetchImpl: fetchRoto, idioma: "en" },
+    );
+    expect(out.warnings[0]).toContain("Could not connect to your memory server");
+    expect(out.warnings[0]).not.toContain("No se pudo conectar");
+  });
+
+  /** Abre la sesión MCP pero hace fallar toda herramienta: así salen las etiquetas. */
+  const fetchToolsRotas: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String((init as RequestInit).body));
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const result =
+      body.method === "initialize"
+        ? { result: { protocolVersion: "2025-06-18", capabilities: {} } }
+        : { result: { content: [{ type: "text", text: JSON.stringify({ error: "boom" }) }] } };
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...result }), {
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  it("las etiquetas inglesas hablan de documentos, no de episodios", async () => {
+    const out = await exportGraph(
+      "http://interno/mcp",
+      { id: "u", email: "a@b.cl" },
+      { fetchImpl: fetchToolsRotas, idioma: "en" },
+    );
+    expect(out.warnings.join(" ")).toContain("documents: boom");
+    expect(out.warnings.join(" ")).not.toContain("episodios");
+    // Y en español se mantiene el texto de siempre.
+    const es = await exportGraph(
+      "http://interno/mcp",
+      { id: "u", email: "a@b.cl" },
+      { fetchImpl: fetchToolsRotas },
+    );
+    expect(es.warnings.join(" ")).toContain("episodios: boom");
   });
 });

@@ -20,7 +20,26 @@
  * de un episodio y todos los episodios se exportan.
  */
 
+import { traductor, type Idioma, type Textos } from "./i18n.js";
+
 const PROTOCOL_VERSION = "2025-06-18";
+
+/**
+ * Lo único de este módulo que lee una persona: los avisos que viajan en
+ * `warnings` dentro del archivo descargado. Los nombres de las herramientas MCP
+ * (`get_episodes`, `search_nodes`, …) y las claves del JSON exportado
+ * (`episodes`, `entities`, `facts`) son contrato con el servidor y NO se
+ * traducen. Las etiquetas sí, y en el vocabulario del usuario.
+ */
+const T: Textos<"sinConexion" | "etqDocumentos" | "etqPersonas" | "etqDatos"> = {
+  sinConexion: {
+    es: "No se pudo conectar con tu servidor de memoria:",
+    en: "Could not connect to your memory server:",
+  },
+  etqDocumentos: { es: "episodios", en: "documents" },
+  etqPersonas: { es: "entidades", en: "people and companies" },
+  etqDatos: { es: "hechos", en: "data" },
+};
 /** Consulta amplia para arrastrar el máximo de nodos/hechos en la búsqueda híbrida. */
 // La búsqueda es SEMÁNTICA: un comodín ("*") no devuelve nada (verificado en
 // vivo: 0 nodos). Para exportar todo se lanzan varias consultas amplias —
@@ -86,6 +105,8 @@ export interface GraphExport {
 export interface ExportOptions {
   maxEpisodes?: number;
   maxNodes?: number;
+  /** Idioma de los avisos que viajan en el archivo descargado. */
+  idioma?: Idioma;
   /** Inyectable para tests. */
   fetchImpl?: typeof fetch;
 }
@@ -145,7 +166,7 @@ export class McpHttpClient {
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      throw new Error(`upstream MCP respondió ${res.status}`);
+      throw new Error(`the memory server replied ${res.status}`);
     }
     return res;
   }
@@ -169,7 +190,7 @@ async function readRpcResult(res: Response): Promise<unknown> {
     message = JSON.parse(text);
   }
   const rpc = message as { result?: unknown; error?: { message?: string } };
-  if (rpc?.error) throw new Error(rpc.error.message ?? "error JSON-RPC del upstream");
+  if (rpc?.error) throw new Error(rpc.error.message ?? "JSON-RPC error from the memory server");
   return rpc?.result ?? null;
 }
 
@@ -228,6 +249,7 @@ export async function exportGraph(
 ): Promise<GraphExport> {
   const maxEpisodes = opts.maxEpisodes ?? 1000;
   const maxNodes = opts.maxNodes ?? 500;
+  const t = traductor(T, opts.idioma ?? "es");
   const client = new McpHttpClient(upstreamUrl, opts.fetchImpl ?? fetch);
   const out: GraphExport = {
     exportedAt: new Date().toISOString(),
@@ -242,7 +264,7 @@ export async function exportGraph(
   try {
     await client.initialize();
   } catch (err) {
-    out.warnings.push(`No se pudo conectar con tu servidor de memoria: ${String(err)}`);
+    out.warnings.push(`${t("sinConexion")} ${String(err)}`);
     return out;
   }
 
@@ -266,18 +288,25 @@ export async function exportGraph(
     }
   };
 
-  out.episodes = await grab("episodios", "get_episodes", { max_episodes: maxEpisodes }, "episodes");
+  out.episodes = await grab(
+    t("etqDocumentos"),
+    "get_episodes",
+    { max_episodes: maxEpisodes },
+    "episodes",
+  );
   const queries = [...SEED_QUERIES, ...derivedQueries(out.episodes)];
   const nodeLists: unknown[][] = [];
   for (const q of queries) {
-    nodeLists.push(await grab("entidades", "search_nodes", { query: q, max_nodes: maxNodes }, "nodes"));
+    nodeLists.push(
+      await grab(t("etqPersonas"), "search_nodes", { query: q, max_nodes: maxNodes }, "nodes"),
+    );
   }
   out.entities = unionByUuid(nodeLists).slice(0, maxNodes);
   const factLists: unknown[][] = [];
   for (const q of queries) {
     factLists.push(
       await grab(
-        "hechos",
+        t("etqDatos"),
         "search_memory_facts",
         { query: q, max_facts: maxNodes, only_current: false },
         "facts",

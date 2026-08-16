@@ -15,6 +15,23 @@
  * que la gente hace de verdad — "¿qué tiene que ver con esto?".
  */
 import { escapeHtml } from "./html.js";
+import { traductor, type Idioma, type Textos } from "./i18n.js";
+
+/**
+ * Lo poco que el dibujo dice con palabras: la vigencia de cada arista y el
+ * texto alternativo del SVG. Los nombres de las entidades son datos del grafo
+ * del usuario y se pintan tal cual.
+ */
+const T: Textos<"desde" | "hasta" | "alt"> = {
+  desde: { es: "desde", en: "since" },
+  hasta: { es: "hasta", en: "until" },
+  alt: { es: "Relaciones de", en: "Connections of" },
+};
+
+const MESES: Record<Idioma, string[]> = {
+  es: ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"],
+  en: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+};
 
 export interface Relacion {
   con: string;
@@ -41,11 +58,10 @@ function recorta(texto: string, max: number): string {
   return (espacio > max * 0.6 ? corte.slice(0, espacio) : corte).trimEnd() + "…";
 }
 
-function anio(fecha: string): string {
+function anio(fecha: string, idioma: Idioma): string {
   const m = /^(\d{4})-(\d{2})/.exec(fecha || "");
   if (!m) return "";
-  const meses = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-  return `${meses[Number(m[2]) - 1] ?? ""} ${m[1]}`;
+  return `${MESES[idioma][Number(m[2]) - 1] ?? ""} ${m[1]}`;
 }
 
 /**
@@ -72,7 +88,8 @@ function posiciones(n: number): Array<{ x: number; y: number; angulo: number; ca
   });
 }
 
-export function constelacionSvg(datos: Constelacion, base = ""): string {
+export function constelacionSvg(datos: Constelacion, base = "", idioma: Idioma = "es"): string {
+  const t = traductor(T, idioma);
   const cx = ANCHO / 2;
   const cy = ALTO / 2;
   const rels = datos.relaciones.slice(0, 18);
@@ -100,9 +117,9 @@ export function constelacionSvg(datos: Constelacion, base = ""): string {
       const vigente = !r.hasta;
       const vigencia = vigente
         ? r.desde
-          ? `desde ${anio(r.desde)}`
+          ? `${t("desde")} ${anio(r.desde, idioma)}`
           : ""
-        : `hasta ${anio(r.hasta)}`;
+        : `${t("hasta")} ${anio(r.hasta, idioma)}`;
       const cuerpo = `<g class="nodo ${vigente ? "viva" : "historica"}" style="--i:${i}"
        transform="translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})">
       <title>${escapeHtml(r.dato || r.con)}</title>
@@ -125,7 +142,7 @@ export function constelacionSvg(datos: Constelacion, base = ""): string {
     .join("\n");
 
   return `<svg class="constelacion" viewBox="0 0 ${ANCHO} ${ALTO}"
-     role="img" aria-label="Relaciones de ${escapeHtml(datos.entidad)}">
+     role="img" aria-label="${escapeHtml(t("alt"))} ${escapeHtml(datos.entidad)}">
   <g class="aristas">
 ${aristas}
   </g>

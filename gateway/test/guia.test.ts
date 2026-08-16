@@ -12,6 +12,7 @@ import { createAuth, migrate } from "../src/auth.js";
 import { buildApp } from "../src/server.js";
 import { createTenantRegistry } from "../src/tenants.js";
 import { listen, closeServer } from "./helpers.js";
+import { guiaPageHtml } from "../src/guia-page.js";
 
 const PASSWORD = "supersecret-123";
 const EMAIL = "guia@test.dev";
@@ -167,5 +168,89 @@ describe("guía de uso", () => {
     expect(html).not.toContain("&amp;lt;");
     expect(html).not.toContain("&amp;gt;");
     expect(html).toContain("add &lt;carpeta&gt;");
+  });
+});
+
+describe("guía de uso en inglés", () => {
+  const en = () => guiaPageHtml({ idioma: "en", url: "/guia?lang=en" });
+
+  it("sin idioma sigue en español", () => {
+    const html = guiaPageHtml();
+    expect(html).toContain("Guía de uso");
+    expect(html).toContain("Conversar con el cerebro");
+    expect(html).toContain("Ingesta masiva de una carpeta");
+    expect(html).not.toContain("Talk to your brain");
+  });
+
+  it("traduce las secciones y no deja español suelto", () => {
+    const html = en();
+    for (const texto of [
+      "User guide",
+      "Connect your Claude",
+      "Talk to your brain",
+      "The 9 MCP tools",
+      "Bulk ingestion of a folder",
+      "Export and revoke access",
+      "Settings → Connectors",
+      "Add custom connector",
+    ]) {
+      expect(html).toContain(texto);
+    }
+    for (const texto of [
+      "Guía de uso",
+      "Conversar con el cerebro",
+      "Las 9 herramientas MCP",
+      "Ingesta masiva",
+      "Exportar y cerrar accesos",
+      "Ajustes",
+    ]) {
+      expect(html).not.toContain(texto);
+    }
+  });
+
+  it("traduce las descripciones de las 9 herramientas pero no sus nombres", () => {
+    const html = en();
+    for (const tool of TOOLS) expect(html).toContain(tool);
+    expect(html).toContain("Saves a fact or a chunk of a document into your memory.");
+    expect(html).toContain("Deletes ALL your memory. There is no undo.");
+    expect(html).not.toContain("Guarda un dato o un trozo de documento");
+    // Los parámetros son identificadores: iguales en los dos idiomas.
+    expect(html).toContain("name, episode_body, source, source_description");
+  });
+
+  it("traduce la tabla del CLI y sus marcadores, no los comandos", () => {
+    const html = en();
+    expect(html).toContain("add &lt;folder&gt;");
+    expect(html).toContain("classify --apply &lt;file&gt;");
+    expect(html).not.toContain("&lt;carpeta&gt;");
+    expect(html).toContain("The whole process in one command. With --review it stops before sending.");
+    // Los flags y subcomandos no se traducen.
+    for (const cmd of ["brain add", "classify --auto", "ingest-graph", "expire", "--tenant"]) {
+      expect(html).toContain(cmd);
+    }
+  });
+
+  it("traduce los comentarios del bloque de entorno sin tocar los comandos", () => {
+    const html = en();
+    expect(html).toContain("ssh -f -N -L 16380:127.0.0.1:6380");
+    expect(html).toContain("EMBEDDER_DIMENSIONS=4096");
+    expect(html).toContain("The local port CANNOT be 6379");
+    expect(html).not.toContain("El puerto local NO puede ser 6379");
+    // La advertencia crítica de embeddings sigue destacada, en inglés.
+    expect(html).toMatch(/class="warn"[^>]*>[\s\S]*?nv-embed-v1/);
+    expect(html).toContain("MUST match the server's");
+  });
+
+  it("no reintroduce el doble escape en inglés", () => {
+    const html = en();
+    expect(html).not.toContain("&amp;lt;");
+    expect(html).not.toContain("&amp;gt;");
+  });
+
+  it("rellena el espacio del usuario también en inglés", () => {
+    const html = guiaPageHtml({ idioma: "en", tenant: "jpreyest" });
+    expect(html).toContain("The examples already carry your space");
+    expect(html).toContain("<code>jpreyest</code>");
+    expect(html).not.toContain("Los ejemplos ya vienen con tu espacio");
   });
 });

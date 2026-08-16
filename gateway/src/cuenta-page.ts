@@ -9,10 +9,207 @@
  * un botón para revocar cada cosa y un enlace para descargar toda su memoria.
  */
 import { constelacionSvg } from "./constelacion.js";
-import type { Idioma } from "./i18n.js";
+import { traductor, type Idioma, type Textos } from "./i18n.js";
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
 import { dashboardShell } from "./dashboard-layout.js";
+
+/**
+ * Textos del panel. El vocabulario es deliberadamente el del usuario en los dos
+ * idiomas: "documentos"/"documents", "lo que has guardado"/"what you've saved".
+ * Nada de "episodios", "entidades" ni "hechos vigentes" — nadie fuera del
+ * proyecto sabe qué son, y en inglés pasa exactamente lo mismo.
+ */
+const T: Textos<
+  | "titulo"
+  | "eyebrowPanel"
+  | "kCorreo"
+  | "kVerificacion"
+  | "kEspacio"
+  | "kConector"
+  | "verificado"
+  | "pendiente"
+  | "sinServidor"
+  | "usaloEn"
+  | "sinIdentificar"
+  | "avisoNoVerificado"
+  | "reenviarVerificacion"
+  | "figSesiones"
+  | "figApps"
+  | "primeraVez"
+  | "guiaDeUso"
+  | "eyebrowMemoria"
+  | "vacioTitulo"
+  | "vacioAntes"
+  | "vacioDespues"
+  | "comandoAdd"
+  | "resumenTitulo"
+  | "figDocumentos"
+  | "figDatos"
+  | "figPersonas"
+  | "figCambiaron"
+  | "porTema"
+  | "ultimoTitulo"
+  | "thDocumento"
+  | "thTema"
+  | "thGuardado"
+  | "eyebrowConsultar"
+  | "buscarTitulo"
+  | "buscarIntro"
+  | "buscarPlaceholder"
+  | "buscarBoton"
+  | "buscando"
+  | "buscandoBoton"
+  | "sinResultados"
+  | "yaNoVigente"
+  | "desdeFecha"
+  | "entidadesTitulo"
+  | "entidadesIntro"
+  | "eyebrowRelaciones"
+  | "sinRelaciones"
+  | "relacionSingular"
+  | "relacionPlural"
+  | "queCambiaron"
+  | "seguirHilo"
+  | "volverResumen"
+  | "eyebrowPortabilidad"
+  | "exportarTitulo"
+  | "exportarIntro"
+  | "exportarBoton"
+  | "eyebrowAccesos"
+  | "sesionesTitulo"
+  | "sesionesIntro"
+  | "thUltimoUso"
+  | "thInicio"
+  | "thIP"
+  | "thNavegador"
+  | "estaSesion"
+  | "cerrarDemas"
+  | "sinOtrasSesiones"
+  | "eyebrowConectores"
+  | "appsTitulo"
+  | "appsIntro"
+  | "devuelveA"
+  | "autorizadaEl"
+  | "tokensActivos"
+  | "revocar"
+  | "sinApps"
+  | "dispDesconocido"
+  | "dispConsola"
+  | "dispNavegador"
+> = {
+  titulo: { es: "Tu cuenta", en: "Your account" },
+  eyebrowPanel: { es: "Panel personal", en: "Personal panel" },
+  kCorreo: { es: "Correo", en: "Email" },
+  kVerificacion: { es: "Verificación", en: "Verification" },
+  kEspacio: { es: "Tu espacio", en: "Your space" },
+  kConector: { es: "Conector", en: "Connector" },
+  verificado: { es: "verificado", en: "verified" },
+  pendiente: { es: "pendiente", en: "pending" },
+  sinServidor: { es: "sin servidor asignado todavía", en: "no server assigned yet" },
+  usaloEn: { es: "úsalo en", en: "use it in" },
+  sinIdentificar: { es: "sin identificar", en: "not identified" },
+  avisoNoVerificado: {
+    es: "Tu correo todavía no está verificado. Hasta que lo confirmes no podrás iniciar sesión con Google usando esta misma cuenta.",
+    en: "Your email is not verified yet. Until you confirm it you won’t be able to sign in with Google using this same account.",
+  },
+  reenviarVerificacion: { es: "Reenviar verificación", en: "Resend verification" },
+  figSesiones: { es: "sesiones abiertas", en: "open sessions" },
+  figApps: { es: "apps autorizadas", en: "authorized apps" },
+  primeraVez: { es: "¿Primera vez por aquí? Empieza por la", en: "First time here? Start with the" },
+  guiaDeUso: { es: "guía de uso", en: "user guide" },
+  eyebrowMemoria: { es: "Tu memoria", en: "Your memory" },
+  vacioTitulo: { es: "Todavía no has guardado nada", en: "You haven’t saved anything yet" },
+  vacioAntes: {
+    es: "Adjunta un documento en Claude y pídele que lo guarde, o usa",
+    en: "Attach a document in Claude and ask it to save it, or run",
+  },
+  comandoAdd: { es: "brain add <carpeta>", en: "brain add <folder>" },
+  vacioDespues: { es: "desde la terminal.", en: "from the terminal." },
+  resumenTitulo: { es: "Qué tienes guardado", en: "What you’ve saved" },
+  figDocumentos: { es: "documentos guardados", en: "documents saved" },
+  figDatos: { es: "datos que sé de ti", en: "things I know about you" },
+  figPersonas: { es: "personas, empresas y lugares", en: "people, companies and places" },
+  figCambiaron: { es: "datos que cambiaron", en: "things that changed" },
+  porTema: { es: "Por tema:", en: "By topic:" },
+  ultimoTitulo: { es: "Lo último que guardaste", en: "The last thing you saved" },
+  thDocumento: { es: "Documento", en: "Document" },
+  thTema: { es: "Tema", en: "Topic" },
+  thGuardado: { es: "Guardado", en: "Saved" },
+  eyebrowConsultar: { es: "Consultar", en: "Look up" },
+  buscarTitulo: { es: "Buscar en tu memoria", en: "Search your memory" },
+  buscarIntro: {
+    es: "Lo mismo que le preguntarías a Claude, sin salir de aquí.",
+    en: "The same thing you would ask Claude, without leaving this page.",
+  },
+  buscarPlaceholder: { es: "¿cuál es mi cuenta bancaria?", en: "what is my bank account?" },
+  buscarBoton: { es: "Buscar", en: "Search" },
+  buscando: {
+    es: "Buscando en tu memoria… puede tardar unos segundos.",
+    en: "Searching your memory… this can take a few seconds.",
+  },
+  buscandoBoton: { es: "Buscando…", en: "Searching…" },
+  sinResultados: { es: "No encontré nada para", en: "I found nothing for" },
+  yaNoVigente: { es: "— ya no vigente desde", en: "— no longer current since" },
+  desdeFecha: { es: "— desde", en: "— since" },
+  entidadesTitulo: { es: "Personas, empresas y lugares", en: "People, companies and places" },
+  entidadesIntro: {
+    es: "Pincha uno para ver con qué se relaciona.",
+    en: "Click one to see what it is connected to.",
+  },
+  eyebrowRelaciones: { es: "Relaciones", en: "Connections" },
+  sinRelaciones: {
+    es: "Todavía no hay nada conectado con esto.",
+    en: "Nothing is connected to this yet.",
+  },
+  relacionSingular: { es: "relación vigente", en: "current connection" },
+  relacionPlural: { es: "relaciones vigentes", en: "current connections" },
+  queCambiaron: { es: "que ya cambió", en: "that already changed" },
+  seguirHilo: {
+    es: "Pincha cualquier nombre para seguir el hilo.",
+    en: "Click any name to follow the thread.",
+  },
+  volverResumen: { es: "← volver al resumen", en: "← back to the summary" },
+  eyebrowPortabilidad: { es: "Portabilidad", en: "Portability" },
+  exportarTitulo: { es: "Exportar todo", en: "Export everything" },
+  exportarIntro: {
+    es: "Descarga un archivo con toda tu memoria: el texto original de cada documento, las personas y empresas que aparecen, y cada dato con la fecha desde la que vale y hasta cuándo valió. Nada se queda dentro. Puede tardar unos segundos.",
+    en: "Download a file with your whole memory: the original text of every document, the people and companies that appear in them, and every piece of data with the date it started being true and the date it stopped. Nothing stays behind. It can take a few seconds.",
+  },
+  exportarBoton: { es: "Descargar mi memoria (JSON)", en: "Download my memory (JSON)" },
+  eyebrowAccesos: { es: "Accesos", en: "Access" },
+  sesionesTitulo: { es: "Sesiones activas", en: "Active sessions" },
+  sesionesIntro: {
+    es: "Cada navegador donde iniciaste sesión. Si ves uno que no reconoces, ciérralos todos y cambia tu contraseña.",
+    en: "Every browser where you signed in. If you see one you don’t recognize, close them all and change your password.",
+  },
+  thUltimoUso: { es: "Último uso", en: "Last used" },
+  thInicio: { es: "Inicio", en: "Started" },
+  thIP: { es: "IP", en: "IP" },
+  thNavegador: { es: "Navegador", en: "Browser" },
+  estaSesion: { es: "esta sesión", en: "this session" },
+  cerrarDemas: { es: "Cerrar todas las demás sesiones", en: "Sign out of all other sessions" },
+  sinOtrasSesiones: { es: "No hay otras sesiones abiertas.", en: "There are no other sessions open." },
+  eyebrowConectores: { es: "Conectores", en: "Connectors" },
+  appsTitulo: { es: "Aplicaciones autorizadas", en: "Authorized applications" },
+  appsIntro: {
+    es: "Revocar corta el acceso: se borran sus tokens y se te volverá a pedir permiso la próxima vez que la app intente conectarse.",
+    en: "Revoking cuts off access: its tokens are deleted and you will be asked for permission again the next time the app tries to connect.",
+  },
+  devuelveA: { es: "Devuelve a", en: "Redirects back to" },
+  autorizadaEl: { es: "Autorizada el", en: "Authorized on" },
+  tokensActivos: { es: "token(s) activo(s)", en: "active token(s)" },
+  revocar: { es: "Revocar", en: "Revoke" },
+  sinApps: {
+    es: "Todavía no has autorizado ninguna aplicación.",
+    en: "You haven’t authorized any application yet.",
+  },
+  dispDesconocido: { es: "Desconocido", en: "Unknown" },
+  dispConsola: { es: "Cliente de consola", en: "Command-line client" },
+  dispNavegador: { es: "Navegador", en: "Browser" },
+};
+
+type Traductor = (clave: keyof typeof T) => string;
 
 export interface CuentaSessionView {
   id: string;
@@ -92,16 +289,16 @@ function fmtDate(value: string): string {
  * la tabla de sesiones se pueda leer de un vistazo. La cadena completa sigue
  * mostrándose debajo: es la que sirve para reconocer un acceso raro.
  */
-function deviceLabel(ua: string | null): string {
-  if (!ua) return "Desconocido";
+function deviceLabel(ua: string | null, t: Traductor): string {
+  if (!ua) return t("dispDesconocido");
   const browser =
     /Edg\//.test(ua) ? "Edge"
     : /OPR\/|Opera/.test(ua) ? "Opera"
     : /Firefox\//.test(ua) ? "Firefox"
     : /Chrome\//.test(ua) ? "Chrome"
     : /Safari\//.test(ua) ? "Safari"
-    : /curl|python|node|Go-http/i.test(ua) ? "Cliente de consola"
-    : "Navegador";
+    : /curl|python|node|Go-http/i.test(ua) ? t("dispConsola")
+    : t("dispNavegador");
   const os =
     /iPhone|iPad|iOS/.test(ua) ? "iOS"
     : /Android/.test(ua) ? "Android"
@@ -113,6 +310,11 @@ function deviceLabel(ua: string | null): string {
 }
 
 export function cuentaPageHtml(opts: CuentaPageOptions): string {
+  const idioma = opts.idioma ?? "es";
+  const t = traductor(T, idioma);
+  // Las comillas también son idioma: «…» en un texto inglés canta tanto como
+  // una palabra sin traducir.
+  const comillas = idioma === "en" ? ["&ldquo;", "&rdquo;"] : ["«", "»"];
   const notice = opts.notice
     ? `\n    <p class="notice">${escapeHtml(opts.notice)}</p>`
     : "";
@@ -120,10 +322,12 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
   const sessionRows = opts.sessions
     .map(
       (s) => `      <tr>
-        <td class="when">${fmtDate(s.lastUsed)}${s.current ? ' <span class="tag">esta sesión</span>' : ""}</td>
+        <td class="when">${fmtDate(s.lastUsed)}${
+          s.current ? ` <span class="tag">${escapeHtml(t("estaSesion"))}</span>` : ""
+        }</td>
         <td class="when">${fmtDate(s.createdAt)}</td>
         <td class="when">${escapeHtml(s.ipAddress ?? "—")}</td>
-        <td class="ua">${escapeHtml(deviceLabel(s.userAgent))}<small>${escapeHtml(s.userAgent ?? "—")}</small></td>
+        <td class="ua">${escapeHtml(deviceLabel(s.userAgent, t))}<small>${escapeHtml(s.userAgent ?? "—")}</small></td>
       </tr>`,
     )
     .join("\n");
@@ -133,9 +337,9 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
     otherSessions > 0
       ? `    <form method="post" action="/cuenta/cerrar-sesiones">
       <input type="hidden" name="${CSRF_FIELD}" value="${escapeHtml(opts.csrf)}">
-      <button type="submit">Cerrar todas las demás sesiones (${otherSessions})</button>
+      <button type="submit">${escapeHtml(t("cerrarDemas"))} (${otherSessions})</button>
     </form>`
-      : `    <p class="muted">No hay otras sesiones abiertas.</p>`;
+      : `    <p class="muted">${escapeHtml(t("sinOtrasSesiones"))}</p>`;
 
   const clientCards = opts.clients.length
     ? opts.clients
@@ -143,26 +347,30 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
           (c) => `    <div class="item">
       <div>
         <strong>${escapeHtml(c.name)}</strong>
-        <p class="muted">Devuelve a ${escapeHtml(c.redirectOrigins.join(", ") || "—")}</p>
-        <p class="muted">Autorizada el ${escapeHtml(c.authorizedAt ? fmtDate(c.authorizedAt) : "—")}
-          · ${c.activeTokens} token(s) activo(s)</p>
+        <p class="muted">${escapeHtml(t("devuelveA"))} ${escapeHtml(c.redirectOrigins.join(", ") || "—")}</p>
+        <p class="muted">${escapeHtml(t("autorizadaEl"))} ${escapeHtml(c.authorizedAt ? fmtDate(c.authorizedAt) : "—")}
+          · ${c.activeTokens} ${escapeHtml(t("tokensActivos"))}</p>
       </div>
       <form method="post" action="/cuenta/revocar-cliente">
         <input type="hidden" name="${CSRF_FIELD}" value="${escapeHtml(opts.csrf)}">
         <input type="hidden" name="client_id" value="${escapeHtml(c.clientId)}">
-        <button type="submit" class="danger">Revocar</button>
+        <button type="submit" class="danger">${escapeHtml(t("revocar"))}</button>
       </form>
     </div>`,
         )
         .join("\n")
-    : `    <p class="muted">Todavía no has autorizado ninguna aplicación.</p>`;
+    : `    <p class="muted">${escapeHtml(t("sinApps"))}</p>`;
 
   const r = opts.resumen;
   const fmtFecha = (v: string) => {
     const d = new Date(v);
     return Number.isNaN(d.getTime())
       ? ""
-      : d.toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+      : d.toLocaleDateString(idioma === "en" ? "en-GB" : "es-CL", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        });
   };
 
   // Deliberadamente en el vocabulario del usuario: "documentos" y "datos", no
@@ -173,28 +381,28 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
     : r.documentos === 0
       ? `
   <section>
-    <p class="eyebrow">Tu memoria</p>
-    <h2>Todavía no has guardado nada</h2>
-    <p class="muted">Adjunta un documento en Claude y pídele que lo guarde, o usa
-      <code>brain add &lt;carpeta&gt;</code> desde la terminal.</p>
+    <p class="eyebrow">${escapeHtml(t("eyebrowMemoria"))}</p>
+    <h2>${escapeHtml(t("vacioTitulo"))}</h2>
+    <p class="muted">${escapeHtml(t("vacioAntes"))}
+      <code>${escapeHtml(t("comandoAdd"))}</code> ${escapeHtml(t("vacioDespues"))}</p>
   </section>`
       : `
   <section>
-    <p class="eyebrow">Tu memoria</p>
-    <h2>Qué tienes guardado</h2>
+    <p class="eyebrow">${escapeHtml(t("eyebrowMemoria"))}</p>
+    <h2>${escapeHtml(t("resumenTitulo"))}</h2>
     <div class="figures">
-      <div class="fig"><b>${r.documentos}</b><span>documentos guardados</span></div>
-      <div class="fig"><b>${r.datosActuales}</b><span>datos que sé de ti</span></div>
-      <div class="fig"><b>${r.personasYEmpresas}</b><span>personas, empresas y lugares</span></div>${
+      <div class="fig"><b>${r.documentos}</b><span>${escapeHtml(t("figDocumentos"))}</span></div>
+      <div class="fig"><b>${r.datosActuales}</b><span>${escapeHtml(t("figDatos"))}</span></div>
+      <div class="fig"><b>${r.personasYEmpresas}</b><span>${escapeHtml(t("figPersonas"))}</span></div>${
         r.datosQueCambiaron > 0
           ? `
-      <div class="fig"><b>${r.datosQueCambiaron}</b><span>datos que cambiaron</span></div>`
+      <div class="fig"><b>${r.datosQueCambiaron}</b><span>${escapeHtml(t("figCambiaron"))}</span></div>`
           : ""
       }
     </div>${
       Object.keys(r.porDominio).length
         ? `
-    <p class="muted">Por tema: ${Object.entries(r.porDominio)
+    <p class="muted">${escapeHtml(t("porTema"))} ${Object.entries(r.porDominio)
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => `<strong>${escapeHtml(k)}</strong> ${v}`)
       .join(" · ")}</p>`
@@ -202,9 +410,11 @@ export function cuentaPageHtml(opts: CuentaPageOptions): string {
     }${
       r.ultimos.length
         ? `
-    <h3>Lo último que guardaste</h3>
+    <h3>${escapeHtml(t("ultimoTitulo"))}</h3>
     <div class="scroll"><table>
-      <thead><tr><th>Documento</th><th>Tema</th><th>Guardado</th></tr></thead>
+      <thead><tr><th>${escapeHtml(t("thDocumento"))}</th><th>${escapeHtml(
+        t("thTema"),
+      )}</th><th>${escapeHtml(t("thGuardado"))}</th></tr></thead>
       <tbody>
 ${r.ultimos
   .map(
@@ -221,17 +431,19 @@ ${r.ultimos
   </section>
 
   <section>
-    <p class="eyebrow">Consultar</p>
-    <h2>Buscar en tu memoria</h2>
-    <p class="muted">Lo mismo que le preguntarías a Claude, sin salir de aquí.</p>
+    <p class="eyebrow">${escapeHtml(t("eyebrowConsultar"))}</p>
+    <h2>${escapeHtml(t("buscarTitulo"))}</h2>
+    <p class="muted">${escapeHtml(t("buscarIntro"))}</p>
     <form method="get" action="/cuenta" class="buscador" data-buscador>
-      <input type="search" name="q" placeholder="¿cuál es mi cuenta bancaria?"
-             value="${escapeHtml(opts.busqueda?.consulta ?? "")}" aria-label="Buscar">
-      <button type="submit">Buscar</button>
+      <input type="search" name="q" placeholder="${escapeHtml(t("buscarPlaceholder"))}"
+             value="${escapeHtml(opts.busqueda?.consulta ?? "")}" aria-label="${escapeHtml(
+               t("buscarBoton"),
+             )}">
+      <button type="submit">${escapeHtml(t("buscarBoton"))}</button>
     </form>
     <p class="buscando" data-buscando hidden role="status">
       <span class="giro" aria-hidden="true"></span>
-      Buscando en tu memoria… puede tardar unos segundos.
+      ${escapeHtml(t("buscando"))}
     </p>${
       opts.busqueda
         ? opts.busqueda.datos.length
@@ -241,21 +453,21 @@ ${r.ultimos
         (d) =>
           `<li>${escapeHtml(d.texto)}${
             d.hasta
-              ? ` <span class="pend">— ya no vigente desde ${escapeHtml(fmtFecha(d.hasta))}</span>`
+              ? ` <span class="pend">${escapeHtml(t("yaNoVigente"))} ${escapeHtml(fmtFecha(d.hasta))}</span>`
               : d.desde
-                ? ` <span class="muted">— desde ${escapeHtml(fmtFecha(d.desde))}</span>`
+                ? ` <span class="muted">${escapeHtml(t("desdeFecha"))} ${escapeHtml(fmtFecha(d.desde))}</span>`
                 : ""
           }</li>`,
       )
       .join("")}</ul>`
           : `
-    <p class="muted">No encontré nada para «${escapeHtml(opts.busqueda.consulta)}».</p>`
+    <p class="muted">${escapeHtml(t("sinResultados"))} ${comillas[0]}${escapeHtml(opts.busqueda.consulta)}${comillas[1]}.</p>`
         : ""
     }${
       opts.busqueda?.entidades?.length
         ? `
-    <h3>Personas, empresas y lugares</h3>
-    <p class="muted">Pincha uno para ver con qué se relaciona.</p>
+    <h3>${escapeHtml(t("entidadesTitulo"))}</h3>
+    <p class="muted">${escapeHtml(t("entidadesIntro"))}</p>
     <ul class="hallazgos">${opts.busqueda.entidades
       .map(
         (e) =>
@@ -272,25 +484,24 @@ ${r.ultimos
   // 127.0.0.1:<puerto> del servidor no le sirve a nadie y expone topologia.
   const upstream = opts.upstream
     ? `<span class="live">${escapeHtml(opts.mcpUrl ?? "")}</span>`
-    : "sin servidor asignado todavía";
+    : escapeHtml(t("sinServidor"));
 
   const espacio = opts.tenant
-    ? `<code>${escapeHtml(opts.tenant)}</code> — úsalo en ` +
+    ? `<code>${escapeHtml(opts.tenant)}</code> — ${escapeHtml(t("usaloEn"))} ` +
       `<code>brain --tenant ${escapeHtml(opts.tenant)}</code>`
-    : "sin identificar";
+    : escapeHtml(t("sinIdentificar"));
 
   const verificacion = opts.emailVerified
-    ? `<span class="ok">verificado</span>`
-    : `<span class="pend">pendiente</span>`;
+    ? `<span class="ok">${escapeHtml(t("verificado"))}</span>`
+    : `<span class="pend">${escapeHtml(t("pendiente"))}</span>`;
 
   const reenviar = opts.emailVerified
     ? ""
     : `
-    <p class="warn">Tu correo todavía no está verificado. Hasta que lo confirmes no
-      podrás iniciar sesión con Google usando esta misma cuenta.</p>
+    <p class="warn">${escapeHtml(t("avisoNoVerificado"))}</p>
     <form method="post" action="/cuenta/reenviar-verificacion">
       <input type="hidden" name="${CSRF_FIELD}" value="${escapeHtml(opts.csrf)}">
-      <button type="submit">Reenviar verificación</button>
+      <button type="submit">${escapeHtml(t("reenviarVerificacion"))}</button>
     </form>`;
 
   const cons = opts.constelacion;
@@ -300,33 +511,33 @@ ${r.ultimos
     ? ""
     : `
   <section>
-    <p class="eyebrow">Relaciones</p>
+    <p class="eyebrow">${escapeHtml(t("eyebrowRelaciones"))}</p>
     <h2>${escapeHtml(cons.entidad)}</h2>
     <p class="muted">${
       cons.relaciones.length === 0
-        ? "Todavía no hay nada conectado con esto."
-        : `${vivas} relación${vivas === 1 ? "" : "es"} vigente${vivas === 1 ? "" : "s"}${
-            cambiadas ? ` · ${cambiadas} que ya cambió` : ""
-          }. Pincha cualquier nombre para seguir el hilo.`
+        ? escapeHtml(t("sinRelaciones"))
+        : `${vivas} ${escapeHtml(t(vivas === 1 ? "relacionSingular" : "relacionPlural"))}${
+            cambiadas ? ` · ${cambiadas} ${escapeHtml(t("queCambiaron"))}` : ""
+          }. ${escapeHtml(t("seguirHilo"))}`
     }</p>${
       cons.relaciones.length
         ? `
-    ${constelacionSvg(cons, "/cuenta")}
+    ${constelacionSvg(cons, "/cuenta", idioma)}
     <ul class="hallazgos">${cons.relaciones
       .map(
         (r) =>
           `<li>${escapeHtml(r.dato || r.con)}${
             r.hasta
-              ? ` <span class="pend">— ya no vigente desde ${escapeHtml(fmtFecha(r.hasta))}</span>`
+              ? ` <span class="pend">${escapeHtml(t("yaNoVigente"))} ${escapeHtml(fmtFecha(r.hasta))}</span>`
               : r.desde
-                ? ` <span class="muted">— desde ${escapeHtml(fmtFecha(r.desde))}</span>`
+                ? ` <span class="muted">${escapeHtml(t("desdeFecha"))} ${escapeHtml(fmtFecha(r.desde))}</span>`
                 : ""
           }</li>`,
       )
       .join("")}</ul>`
         : ""
     }
-    <p><a href="/cuenta">← volver al resumen</a></p>
+    <p><a href="/cuenta">${escapeHtml(t("volverResumen"))}</a></p>
   </section>`;
 
   // La busqueda va al servidor MCP y tarda segundos. Sin señal, el usuario
@@ -339,7 +550,9 @@ ${r.ultimos
     if (!form || !aviso) return;
     form.addEventListener("submit", function () {
       var boton = form.querySelector("button");
-      if (boton) { boton.disabled = true; boton.textContent = "Buscando…"; }
+      if (boton) { boton.disabled = true; boton.textContent = ${JSON.stringify(
+        t("buscandoBoton"),
+      )}; }
       aviso.hidden = false;
     });
     // Lo mismo al abrir una constelación: es otra consulta al servidor.
@@ -353,39 +566,40 @@ ${r.ultimos
 </script>`;
 
   const body = `  <section class="head">
-    <p class="eyebrow">Panel personal</p>
-    <h1>Tu cuenta</h1>${notice}
+    <p class="eyebrow">${escapeHtml(t("eyebrowPanel"))}</p>
+    <h1>${escapeHtml(t("titulo"))}</h1>${notice}
     <div class="plate">
-      <div><span class="k">Correo</span><span class="v">${escapeHtml(opts.email)}</span></div>
-      <div><span class="k">Verificación</span><span class="v">${verificacion}</span></div>
-      <div><span class="k">Tu espacio</span><span class="v">${espacio}</span></div>
-      <div><span class="k">Conector</span><span class="v">${upstream}</span></div>
+      <div><span class="k">${escapeHtml(t("kCorreo"))}</span><span class="v">${escapeHtml(opts.email)}</span></div>
+      <div><span class="k">${escapeHtml(t("kVerificacion"))}</span><span class="v">${verificacion}</span></div>
+      <div><span class="k">${escapeHtml(t("kEspacio"))}</span><span class="v">${espacio}</span></div>
+      <div><span class="k">${escapeHtml(t("kConector"))}</span><span class="v">${upstream}</span></div>
     </div>
     <div class="figures">
-      <div class="fig"><b>${opts.sessions.length}</b><span>sesiones abiertas</span></div>
-      <div class="fig"><b>${opts.clients.length}</b><span>apps autorizadas</span></div>
+      <div class="fig"><b>${opts.sessions.length}</b><span>${escapeHtml(t("figSesiones"))}</span></div>
+      <div class="fig"><b>${opts.clients.length}</b><span>${escapeHtml(t("figApps"))}</span></div>
     </div>${reenviar}
-    <p class="muted">¿Primera vez por aquí? Empieza por la <a href="/guia">guía de uso</a>.</p>
+    <p class="muted">${escapeHtml(t("primeraVez"))} <a href="/guia">${escapeHtml(
+      t("guiaDeUso"),
+    )}</a>.</p>
   </section>
 
 ${seccionConstelacion}${seccionResumen}
 
   <section>
-    <p class="eyebrow">Portabilidad</p>
-    <h2>Exportar todo</h2>
-    <p class="muted">Descarga un archivo con toda tu memoria: el texto original de cada
-      documento, las personas y empresas que aparecen, y cada dato con la fecha desde la
-      que vale y hasta cuándo valió. Nada se queda dentro. Puede tardar unos segundos.</p>
-    <p><a class="btn" href="/export">Descargar mi memoria (JSON)</a></p>
+    <p class="eyebrow">${escapeHtml(t("eyebrowPortabilidad"))}</p>
+    <h2>${escapeHtml(t("exportarTitulo"))}</h2>
+    <p class="muted">${escapeHtml(t("exportarIntro"))}</p>
+    <p><a class="btn" href="/export">${escapeHtml(t("exportarBoton"))}</a></p>
   </section>
 
   <section>
-    <p class="eyebrow">Accesos</p>
-    <h2>Sesiones activas (${opts.sessions.length})</h2>
-    <p class="muted">Cada navegador donde iniciaste sesión. Si ves uno que no reconoces,
-      ciérralos todos y cambia tu contraseña.</p>
+    <p class="eyebrow">${escapeHtml(t("eyebrowAccesos"))}</p>
+    <h2>${escapeHtml(t("sesionesTitulo"))} (${opts.sessions.length})</h2>
+    <p class="muted">${escapeHtml(t("sesionesIntro"))}</p>
     <div class="scroll"><table class="sesiones">
-      <thead><tr><th>Último uso</th><th>Inicio</th><th>IP</th><th>Navegador</th></tr></thead>
+      <thead><tr><th>${escapeHtml(t("thUltimoUso"))}</th><th>${escapeHtml(
+        t("thInicio"),
+      )}</th><th>${escapeHtml(t("thIP"))}</th><th>${escapeHtml(t("thNavegador"))}</th></tr></thead>
       <tbody>
 ${sessionRows}
       </tbody>
@@ -394,15 +608,14 @@ ${closeOthers}
   </section>
 
   <section>
-    <p class="eyebrow">Conectores</p>
-    <h2>Aplicaciones autorizadas (${opts.clients.length})</h2>
-    <p class="muted">Revocar corta el acceso: se borran sus tokens y se te volverá a
-      pedir permiso la próxima vez que la app intente conectarse.</p>
+    <p class="eyebrow">${escapeHtml(t("eyebrowConectores"))}</p>
+    <h2>${escapeHtml(t("appsTitulo"))} (${opts.clients.length})</h2>
+    <p class="muted">${escapeHtml(t("appsIntro"))}</p>
 ${clientCards}
   </section>`;
 
   return dashboardShell({
-    title: "Tu cuenta",
+    title: t("titulo"),
     active: "cuenta",
     session: { email: opts.email, csrf: opts.csrf },
     idioma: opts.idioma,

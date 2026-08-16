@@ -237,3 +237,54 @@ describe("shell del dashboard", () => {
     expect(still.status).toBe(200);
   });
 });
+
+describe("shell bilingüe", () => {
+  const enIngles = cuentaPageHtml({
+    email: EMAIL,
+    emailVerified: true,
+    upstream: UPSTREAM,
+    sessions: [],
+    clients: [],
+    csrf: "c".repeat(64),
+    idioma: "en",
+    url: "/cuenta",
+  });
+
+  it("sin idioma la barra sigue en español, letra por letra", () => {
+    expect(CUENTA).toContain(">Cuenta</a>");
+    expect(CUENTA).toContain(">Guía</a>");
+    expect(CUENTA).toContain(">Exportar</a>");
+    expect(CUENTA).toContain("Cerrar sesión");
+    expect(CUENTA).toContain('<html lang="es">');
+  });
+
+  it("con idioma inglés traduce la barra y el shell entero", () => {
+    expect(enIngles).toContain('<html lang="en">');
+    expect(enIngles).toContain('<a href="/cuenta" aria-current="page">Account</a>');
+    expect(enIngles).toContain(">Guide</a>");
+    expect(enIngles).toContain(">Export</a>");
+    expect(enIngles).toContain("Sign out");
+    expect(enIngles).not.toContain("Cerrar sesión");
+    expect(enIngles).not.toContain(">Cuenta</a>");
+    // Las etiquetas que el CSS pinta con `content:` también son texto visible.
+    expect(enIngles).toContain('content: "archive"');
+    expect(enIngles).toContain('content: "caution"');
+    // Y el botón de copiar del script.
+    expect(enIngles).toContain('btn.textContent = "Copy"');
+    expect(enIngles).not.toContain('btn.textContent = "Copiar"');
+  });
+
+  it("sin sesión y en inglés la barra ofrece «Sign in»", () => {
+    const anon = guiaPageHtml();
+    expect(anon).toContain("Iniciar sesión");
+    // El shell traduce el enlace en cuanto recibe idioma (lo comprueba /cuenta,
+    // que es la página de este agente; /guia lo hereda igual).
+    expect(enIngles).not.toContain("Iniciar sesión");
+  });
+
+  it("el selector de idioma aparece solo cuando la página lo pide", () => {
+    expect(CUENTA).not.toContain('class="idioma"');
+    expect(enIngles).toContain('class="idioma"');
+    expect(enIngles).toContain("lang=es");
+  });
+});

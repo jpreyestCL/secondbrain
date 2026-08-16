@@ -14,7 +14,7 @@
  * /guia es PÚBLICA: cuando no hay sesión la barra muestra «Iniciar sesión» en
  * vez del correo y del botón de salir, pero el resto del shell es idéntico.
  */
-import { selectorIdioma, type Idioma } from "./i18n.js";
+import { selectorIdioma, traductor, type Idioma, type Textos } from "./i18n.js";
 import { CONSTELACION_CSS } from "./constelacion.js";
 import { escapeHtml } from "./html.js";
 import { CSRF_FIELD } from "./csrf.js";
@@ -22,10 +22,44 @@ import { CSRF_FIELD } from "./csrf.js";
 /** Secciones del dashboard, en el orden en que salen en la barra. */
 export type DashboardSection = "cuenta" | "guia" | "export";
 
-const NAV: Array<{ id: DashboardSection; href: string; label: string }> = [
-  { id: "cuenta", href: "/cuenta", label: "Cuenta" },
-  { id: "guia", href: "/guia", label: "Guía" },
-  { id: "export", href: "/export", label: "Exportar" },
+/**
+ * Textos propios del shell. Todo lo demás (el cuerpo de cada página) lo traduce
+ * quien lo genera; aquí solo viven la barra, el botón de tema y las dos
+ * etiquetas que el CSS pinta con `content:` (el sello de la marca y el rótulo
+ * de los avisos), que son texto de cara al usuario aunque vivan en la hoja.
+ */
+const T: Textos<
+  | "navCuenta"
+  | "navGuia"
+  | "navExport"
+  | "secciones"
+  | "iniciarSesion"
+  | "cerrarSesion"
+  | "tema"
+  | "copiar"
+  | "copiado"
+  | "selloMarca"
+  | "rotuloAviso"
+> = {
+  navCuenta: { es: "Cuenta", en: "Account" },
+  navGuia: { es: "Guía", en: "Guide" },
+  navExport: { es: "Exportar", en: "Export" },
+  secciones: { es: "Secciones", en: "Sections" },
+  iniciarSesion: { es: "Iniciar sesión", en: "Sign in" },
+  cerrarSesion: { es: "Cerrar sesión", en: "Sign out" },
+  tema: { es: "Cambiar entre tema claro y oscuro", en: "Switch between light and dark theme" },
+  copiar: { es: "Copiar", en: "Copy" },
+  copiado: { es: "Copiado", en: "Copied" },
+  selloMarca: { es: "archivo", en: "archive" },
+  rotuloAviso: { es: "cuidado", en: "caution" },
+};
+
+type Traductor = (clave: keyof typeof T) => string;
+
+const NAV: Array<{ id: DashboardSection; href: string; clave: keyof typeof T }> = [
+  { id: "cuenta", href: "/cuenta", clave: "navCuenta" },
+  { id: "guia", href: "/guia", clave: "navGuia" },
+  { id: "export", href: "/export", clave: "navExport" },
 ];
 
 export interface DashboardSessionView {
@@ -60,7 +94,8 @@ const GRAIN =
  * `dashboard-layout` comprueba que ambas páginas emitan exactamente el mismo
  * bloque, una sola vez cada una).
  */
-const STYLE = `
+function estilos(t: Traductor): string {
+  return `
   :root {
     /* El navegador pinta sus propias superficies (barras de desplazamiento, el
        lienzo antes de aplicar el CSS) según esto: sin declararlo, forzar el tema
@@ -133,7 +168,7 @@ const STYLE = `
   .topbar { background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: blur(10px) saturate(1.2); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 50; }
   .topbar-inner { width: min(94vw, 62rem); margin-inline: auto; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.1rem; padding: .75rem 0; }
   .brand { font-size: 1.08rem; letter-spacing: -.01em; text-decoration: none; color: inherit; white-space: nowrap; display: inline-flex; align-items: baseline; gap: .45rem; }
-  .brand::after { content: "archivo"; font-family: var(--mono); font-size: .58rem; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); }
+  .brand::after { content: "${t("selloMarca")}"; font-family: var(--mono); font-size: .58rem; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); }
   .nav { display: flex; flex-wrap: wrap; gap: .2rem .1rem; margin-right: auto; font-family: var(--sans); }
   .nav a { position: relative; font-size: .86rem; text-decoration: none; color: var(--muted); padding: .3rem .7rem; white-space: nowrap; transition: color .2s ease; }
   .nav a::after { content: ""; position: absolute; left: .7rem; right: .7rem; bottom: .05rem; height: 1px; background: var(--accent); transform: scaleX(0); transform-origin: left; transition: transform .35s var(--ease); }
@@ -181,7 +216,7 @@ const STYLE = `
   .notice, .warn { position: relative; border-radius: 3px; padding: .85rem 1rem .9rem; font-size: .93rem; }
   .notice { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent); color: var(--text); }
   .warn { background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); color: var(--text); }
-  .warn::before { content: "cuidado"; font-family: var(--mono); font-size: .6rem; letter-spacing: .18em; text-transform: uppercase; color: var(--danger); display: block; margin-bottom: .35rem; }
+  .warn::before { content: "${t("rotuloAviso")}"; font-family: var(--mono); font-size: .6rem; letter-spacing: .18em; text-transform: uppercase; color: var(--danger); display: block; margin-bottom: .35rem; }
 
   /* Datos de la cuenta: filas de ficha, no lista de definición apretada. */
   .plate { display: grid; gap: 0; border-top: 1px solid var(--line-soft); }
@@ -282,9 +317,11 @@ const STYLE = `
     .js section { opacity: 1; transform: none; }
   }
 `;
+}
 
 /** Script común: tema, progreso de lectura, entrada de secciones, índice y copiar. */
-const SCRIPT = `
+function guion(t: Traductor): string {
+  return `
 (function () {
   var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -350,12 +387,12 @@ const SCRIPT = `
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = "copy";
-      btn.textContent = "Copiar";
+      btn.textContent = ${JSON.stringify(t("copiar"))};
       btn.addEventListener("click", function () {
         navigator.clipboard.writeText(pre.textContent).then(function () {
-          btn.textContent = "Copiado";
+          btn.textContent = ${JSON.stringify(t("copiado"))};
           btn.classList.add("done");
-          setTimeout(function () { btn.textContent = "Copiar"; btn.classList.remove("done"); }, 1800);
+          setTimeout(function () { btn.textContent = ${JSON.stringify(t("copiar"))}; btn.classList.remove("done"); }, 1800);
         }, function () {});
       });
       block.appendChild(btn);
@@ -363,37 +400,43 @@ const SCRIPT = `
   }
 })();
 `;
+}
 
-const THEME_BUTTON = `<button class="theme" id="theme" type="button" aria-label="Cambiar entre tema claro y oscuro">
+const botonTema = (t: Traductor) =>
+  `<button class="theme" id="theme" type="button" aria-label="${escapeHtml(t("tema"))}">
       <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
       <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.3 8.3 0 1 0 20 14.5Z"/></svg>
     </button>`;
 
-function navHtml(active: DashboardSection): string {
+function navHtml(active: DashboardSection, t: Traductor): string {
   return NAV.map((item) => {
     const current = item.id === active ? ' aria-current="page"' : "";
-    return `<a href="${item.href}"${current}>${item.label}</a>`;
+    return `<a href="${item.href}"${current}>${escapeHtml(t(item.clave))}</a>`;
   }).join("\n      ");
 }
 
-function sessionHtml(session: DashboardSessionView | null): string {
+function sessionHtml(session: DashboardSessionView | null, t: Traductor): string {
   if (!session) {
-    return `<div class="session"><a class="linkbtn" href="/login">Iniciar sesión</a>${THEME_BUTTON}</div>`;
+    return `<div class="session"><a class="linkbtn" href="/login">${escapeHtml(
+      t("iniciarSesion"),
+    )}</a>${botonTema(t)}</div>`;
   }
   return `<div class="session">
       <span class="who">${escapeHtml(session.email)}</span>
       <form method="post" action="/cuenta/cerrar-sesion">
         <input type="hidden" name="${CSRF_FIELD}" value="${escapeHtml(session.csrf)}">
-        <button type="submit" class="linkbtn">Cerrar sesión</button>
+        <button type="submit" class="linkbtn">${escapeHtml(t("cerrarSesion"))}</button>
       </form>
-      ${THEME_BUTTON}
+      ${botonTema(t)}
     </div>`;
 }
 
 /** Envuelve el contenido de una página del dashboard en el shell compartido. */
 export function dashboardShell(opts: DashboardShellOptions): string {
+  const idioma = opts.idioma ?? "es";
+  const t = traductor(T, idioma);
   return `<!doctype html>
-<html lang="es">
+<html lang="${idioma}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -409,7 +452,7 @@ export function dashboardShell(opts: DashboardShellOptions): string {
     } catch (e) {}
   })();
 </script>
-<style>${STYLE}
+<style>${estilos(t)}
     .buscador { display: flex; gap: .5rem; margin: .75rem 0 1rem; max-width: 34rem; }
     .buscador input { flex: 1; padding: .55rem .7rem; font: inherit;
       border: 1px solid var(--linea, #d9d4c7); border-radius: 2px; background: transparent;
@@ -441,17 +484,17 @@ export function dashboardShell(opts: DashboardShellOptions): string {
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="/">Second Brain</a>
-    <nav class="nav" aria-label="Secciones">
-      ${navHtml(opts.active)}
+    <nav class="nav" aria-label="${escapeHtml(t("secciones"))}">
+      ${navHtml(opts.active, t)}
     </nav>
     ${opts.idioma ? selectorIdioma(opts.url ?? "/", opts.idioma) : ""}
-    ${sessionHtml(opts.session)}
+    ${sessionHtml(opts.session, t)}
   </div>
 </header>
 <main>
 ${opts.body}
 </main>
-<script>${SCRIPT}</script>
+<script>${guion(t)}</script>
 </body>
 </html>`;
 }
