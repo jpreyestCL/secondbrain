@@ -542,67 +542,135 @@ class DatabaseDriverFactory:
 
 
 # ---------------------------------------------------------------------------
-# PATCH (secondbrain): embeddings por lote en la escritura masiva
+# PATCH (secondbrain): escritura al grafo serializada + embeddings por lote
 # ---------------------------------------------------------------------------
 #
-# `add_episode` termina en `add_nodes_and_edges_bulk`, y la funcion de
-# transaccion que hay debajo genera los embeddings que falten con un bucle
-# SECUENCIAL: `for node in entity_nodes: await node.generate_name_embedding()`.
-# Es una ida y vuelta HTTP por nodo y otra por arista.
+# Los dos viven aqui porque son el mismo punto del codigo —
+# `add_nodes_and_edges_bulk`, donde `add_episode` acaba escribiendo— y porque
+# el segundo NO es seguro sin el primero.
 #
-# Medido en produccion: **34 llamadas de embedding por episodio**, con una
-# mediana de 0,43 s entre ellas — unos 15 s por episodio esperando a la red, y
-# el chat consumiendo solo el 13% del tiempo de los workers. El proveedor no
-# estaba saturado (23% del limite de tokens): simplemente se le hablaba de a
-# uno.
+# EL PROBLEMA. Varios workers extraen en paralelo y escriben en el MISMO grafo
+# a la vez. FalkorDB tiene THREAD_COUNT=8 compartido entre todos los tenants de
+# la maquina y venia con TIMEOUT=0: una consulta atascada retenia un hilo para
+# siempre. Con el grafo creciendo, las consultas se ralentizaron de 292ms a
+# 759ms de media, la contencion subio sola y el grafo termino trabandose —
+# `PING` respondia, `GRAPH.QUERY` se colgaba, y la ingesta se paraba en seco
+# sin un solo error en el log. Paso tres veces la noche del 2026-08-16.
 #
-# Graphiti YA trae los helpers por lote y los usa en otros caminos; el de
-# `add_episode` no pasa por ellos. Asi que aqui se generan por adelantado, en
-# lotes, y la funcion original se encuentra el trabajo hecho: su bucle no llama
-# a nadie porque ya no falta ningun embedding. No se reimplementa la escritura,
-# solo se precalienta.
+# LA SOLUCION. Extraer con varios workers (que es donde se gana: son minutos
+# de LLM y de red por episodio) pero escribir de a uno. La escritura es la
+# parte corta —decimas de segundo— asi que serializarla casi no cuesta
+# rendimiento, y a cambio elimina la contencion que tumbaba el servicio.
 #
-# Verificado contra NVIDIA `nv-embed-v1` antes de escribir esto: un lote de 4
-# devuelve 4 vectores, en orden, de 4096 dimensiones, y **bit a bit identicos**
-# a pedirlos sueltos (diferencia maxima 0,00e+00). Importa: cambiar el valor de
-# los embeddings corromperia la busqueda del grafo que ya existe.
+# El `TIMEOUT` de FalkorDB queda igualmente puesto en falkordb.conf, pero como
+# red de seguridad: esto evita el atasco, aquello lo desatasca si aparece por
+# otro camino.
 
+import asyncio as _asyncio
 import logging as _logging
 import os as _os
 
-_log_lote = _logging.getLogger(__name__)
+_log_parche = _logging.getLogger(__name__)
 
-#: Textos por peticion, y interruptor: 0 = apagado (por defecto).
+#: Serializar la escritura al grafo. Se puede apagar (=0) para medir, pero
+#: apagarlo es volver al estado que trababa el grafo.
+BRAIN_ESCRITURA_SERIAL = (_os.environ.get('BRAIN_ESCRITURA_SERIAL', '1') or '1') != '0'
+
+#: Textos por peticion de embeddings; 0 = apagado.
 #:
-#: APAGADO A PROPOSITO, con la medicion delante. El lote hace lo que promete
-#: —20 llamadas de embedding por episodio pasan a 2— pero al quitar esos ~15 s
-#: de espera por episodio, los 5 workers dejan de estar escalonados y golpean
-#: FalkorDB a la vez. Medido en produccion (2026-08-16):
+#: `add_episode` genera los embeddings que faltan en un bucle SECUENCIAL: una
+#: ida y vuelta HTTP por nodo y otra por arista. Medido: 20 llamadas por
+#: episodio, mediana 0,43s entre ellas — unos 15s por episodio esperando a la
+#: red, con el chat consumiendo solo el 13% del tiempo de los workers.
 #:
-#:   sin lotes, 5 workers: 12 episodios en 200 s, grafo sano 12+ minutos
-#:   con lotes, 5 workers: el grafo `jpreyest` se traba a los 35 s
-#:                         (PING responde, GRAPH.QUERY se cuelga)
+#: Verificado contra `nv-embed-v1` antes de usarlo: un lote devuelve los
+#: vectores en orden y BIT A BIT identicos a pedirlos sueltos (diferencia
+#: 0,00e+00). Importa, porque cambiar el valor de los embeddings corromperia la
+#: busqueda del grafo existente.
 #:
-#: La culpa no es del lote: es que FalkorDB tiene THREAD_COUNT=8 compartido
-#: entre tenants y TIMEOUT=0, asi que una consulta atascada retiene un hilo
-#: para siempre y nadie la desaloja. Antes de encender esto hay que serializar
-#: la escritura al grafo (un lock alrededor de add_nodes_and_edges_bulk) o
-#: ponerle timeout a las consultas. La velocidad sin la escritura resuelta
-#: solo mueve el cuello de botella a un sitio donde tumba el servicio.
-BRAIN_EMBED_LOTE = max(0, int(_os.environ.get('BRAIN_EMBED_LOTE', '0') or 0))
+#: Requiere BRAIN_ESCRITURA_SERIAL. Sin el candado esos ~15s de espera por
+#: episodio actuaban de freno accidental, escalonando a los workers; al
+#: quitarlos, los cinco escribian a la vez y el grafo se trababa en 35s.
+BRAIN_EMBED_LOTE = max(0, int(_os.environ.get('BRAIN_EMBED_LOTE', '64') or 0))
+
+#: Presupuesto de tokens POR PETICION. `nv-embed-v1` corta en 4096 y el limite
+#: es del lote entero, no de cada texto: agrupar de a 64 sin mirar el tamano
+#: reventaba con "Input length 4286 exceeds maximum allowed token size 4096" y
+#: el episodio entero fallaba. Se deja margen porque la estimacion es eso, una
+#: estimacion.
+BRAIN_EMBED_TOKENS = max(256, int(_os.environ.get('BRAIN_EMBED_TOKENS', '3500') or 3500))
+
+
+def _tokens_aprox(texto: str) -> int:
+    """Estimacion barata y CONSERVADORA (por exceso) de tokens.
+
+    Sin tokenizador del proveedor a mano, se cuenta 1 token cada 3 caracteres:
+    en espanol con acentos y nombres propios la cuenta real suele ser mas baja,
+    y equivocarse por exceso solo cuesta una peticion de mas — equivocarse por
+    defecto cuesta un episodio fallido.
+    """
+    return max(1, len(texto) // 3 + 1)
+
+
+def _agrupar(textos: list[str]) -> list[list[int]]:
+    """Indices agrupados respetando el tope de textos Y el de tokens."""
+    grupos: list[list[int]] = []
+    actual: list[int] = []
+    tokens = 0
+    for i, texto in enumerate(textos):
+        t = _tokens_aprox(texto)
+        # Un texto que por si solo no cabe va igualmente solo: el proveedor
+        # decide (lo mismo que hacia el bucle original de a uno).
+        if actual and (len(actual) >= (BRAIN_EMBED_LOTE or 64) or tokens + t > BRAIN_EMBED_TOKENS):
+            grupos.append(actual)
+            actual, tokens = [], 0
+        actual.append(i)
+        tokens += t
+    if actual:
+        grupos.append(actual)
+    return grupos
+
+_candado_escritura: '_asyncio.Lock | None' = None
+
+
+def _lock_escritura() -> '_asyncio.Lock':
+    """Candado unico, creado al primer uso (ya dentro del bucle de eventos)."""
+    global _candado_escritura
+    if _candado_escritura is None:
+        _candado_escritura = _asyncio.Lock()
+    return _candado_escritura
 
 
 async def _en_lotes(embedder, textos: list[str]) -> list[list[float]]:
     """`create_batch` troceado, conservando el orden de entrada."""
-    salida: list[list[float]] = []
-    for i in range(0, len(textos), BRAIN_EMBED_LOTE):
-        salida.extend(await embedder.create_batch(textos[i : i + BRAIN_EMBED_LOTE]))
+    salida: list[list[float]] = [None] * len(textos)  # type: ignore[list-item]
+    for grupo in _agrupar(textos):
+        vectores = await embedder.create_batch([textos[i] for i in grupo])
+        for i, vector in zip(grupo, vectores, strict=True):
+            salida[i] = vector
     return salida
 
 
-def instalar_embeddings_por_lote(logger=_log_lote) -> bool:
-    """Envuelve `add_nodes_and_edges_bulk` para pre-generar los embeddings."""
-    if not BRAIN_EMBED_LOTE:
+async def _pre_embeddings(embedder, entity_nodes, entity_edges) -> None:
+    """Genera por lotes lo que el bucle original pediria de a uno."""
+    nodos = [n for n in entity_nodes if n.name and n.name_embedding is None]
+    if nodos:
+        for nodo, vector in zip(
+            nodos, await _en_lotes(embedder, [n.name for n in nodos]), strict=True
+        ):
+            nodo.name_embedding = vector
+
+    aristas = [e for e in entity_edges if e.fact and e.fact_embedding is None]
+    if aristas:
+        for arista, vector in zip(
+            aristas, await _en_lotes(embedder, [e.fact for e in aristas]), strict=True
+        ):
+            arista.fact_embedding = vector
+
+
+def instalar_parche_escritura(logger=_log_parche) -> bool:
+    """Envuelve `add_nodes_and_edges_bulk`: embeddings por lote + candado."""
+    if not (BRAIN_ESCRITURA_SERIAL or BRAIN_EMBED_LOTE):
         return False
 
     try:
@@ -611,7 +679,7 @@ def instalar_embeddings_por_lote(logger=_log_lote) -> bool:
     except Exception:  # pragma: no cover - sin graphiti no hay nada que envolver
         return False
 
-    if getattr(_bulk.add_nodes_and_edges_bulk, '_secondbrain_lote', False):
+    if getattr(_bulk.add_nodes_and_edges_bulk, '_secondbrain_parche', False):
         return True  # idempotente: importar dos veces no debe anidar wrappers
 
     original = _bulk.add_nodes_and_edges_bulk
@@ -619,39 +687,40 @@ def instalar_embeddings_por_lote(logger=_log_lote) -> bool:
     async def add_nodes_and_edges_bulk(
         driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
     ):
-        try:
-            nodos = [n for n in entity_nodes if n.name and n.name_embedding is None]
-            if nodos:
-                for nodo, vector in zip(
-                    nodos, await _en_lotes(embedder, [n.name for n in nodos]), strict=True
-                ):
-                    nodo.name_embedding = vector
+        # Los embeddings van FUERA del candado: es trabajo de red que puede
+        # solaparse entre workers sin tocar el grafo. Meterlo dentro seria
+        # serializar justo lo que si conviene paralelizar.
+        if BRAIN_EMBED_LOTE:
+            try:
+                await _pre_embeddings(embedder, entity_nodes, entity_edges)
+            except Exception as e:
+                # Nunca romper la ingesta por una optimizacion: si el lote
+                # falla, la funcion original los genera de a uno, como siempre.
+                if logger:
+                    logger.warning(f'Embeddings por lote fallaron ({e}); se sigue de a uno')
 
-            aristas = [e for e in entity_edges if e.fact and e.fact_embedding is None]
-            if aristas:
-                for arista, vector in zip(
-                    aristas, await _en_lotes(embedder, [e.fact for e in aristas]), strict=True
-                ):
-                    arista.fact_embedding = vector
-        except Exception as e:
-            # Nunca romper la ingesta por una optimizacion: si el lote falla, la
-            # funcion original genera los embeddings de a uno, como siempre.
-            if logger:
-                logger.warning(f'Embeddings por lote fallaron ({e}); se sigue de a uno')
+        if not BRAIN_ESCRITURA_SERIAL:
+            return await original(
+                driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
+            )
 
-        return await original(
-            driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
-        )
+        async with _lock_escritura():
+            return await original(
+                driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
+            )
 
-    add_nodes_and_edges_bulk._secondbrain_lote = True
+    add_nodes_and_edges_bulk._secondbrain_parche = True
     # Hay que parchear AMBOS modulos: `graphiti.py` importo el nombre directo
     # (`from ...bulk_utils import add_nodes_and_edges_bulk`), asi que reescribir
     # solo `bulk_utils` dejaria a `add_episode` usando la version vieja.
     _bulk.add_nodes_and_edges_bulk = add_nodes_and_edges_bulk
     _graphiti_mod.add_nodes_and_edges_bulk = add_nodes_and_edges_bulk
     if logger:
-        logger.info(f'PATCH: embeddings por lote activados (lote={BRAIN_EMBED_LOTE})')
+        logger.info(
+            f'PATCH: escritura serializada={BRAIN_ESCRITURA_SERIAL} '
+            f'embeddings por lote={BRAIN_EMBED_LOTE or "off"}'
+        )
     return True
 
 
-instalar_embeddings_por_lote()
+instalar_parche_escritura()

@@ -1,4 +1,4 @@
-"""Pruebas del parche de embeddings por lote (`factories.py`).
+"""Pruebas del parche de escritura al grafo (`factories.py`).
 
 `add_episode` termina en `add_nodes_and_edges_bulk`, cuya funcion de
 transaccion genera los embeddings que falten en un bucle SECUENCIAL: una ida y
@@ -33,11 +33,11 @@ def _cargar_parche():
     la prueba no arrastra `config.schema` ni los clientes de graphiti.
     """
     texto = RUTA.read_text(encoding="utf-8")
-    marca = "# PATCH (secondbrain): embeddings por lote"
+    marca = "# PATCH (secondbrain): escritura al grafo serializada"
     assert marca in texto, "el parche de lotes desaparecio de factories.py"
     cuerpo = texto[texto.index(marca) :]
     # La instalacion real necesita graphiti; aqui solo interesan las funciones.
-    cuerpo = cuerpo.replace("instalar_embeddings_por_lote()", "")
+    cuerpo = cuerpo.replace("instalar_parche_escritura()", "")
     mod = types.ModuleType("parche_lote")
     mod.__dict__["__name__"] = "parche_lote"
     exec(compile(cuerpo, str(RUTA), "exec"), mod.__dict__)
@@ -109,23 +109,10 @@ class Arista:
 
 
 @pytest.fixture(autouse=True)
-def _enciende_el_lote(monkeypatch):
-    """En produccion viene APAGADO (ver el comentario en factories.py); las
-    pruebas lo encienden para poder verificar la logica."""
+def _config_por_defecto(monkeypatch):
     monkeypatch.setattr(parche, "BRAIN_EMBED_LOTE", 64)
-
-
-@pytest.mark.asyncio
-async def test_apagado_por_defecto_no_instala_nada():
-    """El valor por defecto es 0: sin tocar el entorno, no se envuelve nada."""
-    async def original(driver, ep_n, ep_e, ent_n, ent_e, embedder):
-        return "ok"
-
-    bulk = _montar_graphiti_falso(original)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(parche, "BRAIN_EMBED_LOTE", 0)
-        assert parche.instalar_embeddings_por_lote() is False
-    assert bulk.add_nodes_and_edges_bulk is original
+    monkeypatch.setattr(parche, "BRAIN_ESCRITURA_SERIAL", True)
+    monkeypatch.setattr(parche, "_candado_escritura", None)
 
 
 @pytest.mark.asyncio
@@ -192,7 +179,7 @@ async def test_si_el_lote_falla_la_ingesta_sigue():
 
     bulk = _montar_graphiti_falso(original)
 
-    assert parche.instalar_embeddings_por_lote() is True
+    assert parche.instalar_parche_escritura() is True
     envuelta = bulk.add_nodes_and_edges_bulk
 
     resultado = await envuelta(None, [], [], [Nodo("algo")], [Arista("un hecho")],
@@ -214,9 +201,9 @@ async def test_instalar_dos_veces_no_anida_envolturas():
 
     bulk = _montar_graphiti_falso(original)
 
-    parche.instalar_embeddings_por_lote()
+    parche.instalar_parche_escritura()
     primera = bulk.add_nodes_and_edges_bulk
-    parche.instalar_embeddings_por_lote()
+    parche.instalar_parche_escritura()
 
     assert bulk.add_nodes_and_edges_bulk is primera, "se envolvio dos veces"
 
@@ -232,7 +219,7 @@ async def test_los_embeddings_quedan_puestos_antes_de_escribir():
         return "ok"
 
     bulk = _montar_graphiti_falso(original)
-    parche.instalar_embeddings_por_lote()
+    parche.instalar_parche_escritura()
 
     emb = EmbedderFalso()
     await bulk.add_nodes_and_edges_bulk(
@@ -244,3 +231,183 @@ async def test_los_embeddings_quedan_puestos_antes_de_escribir():
     # Dos peticiones: una de nodos y otra de aristas. Antes eran 3 llamadas.
     assert len(emb.peticiones) == 2
     assert emb.peticiones[0] == ["Banco", "Linets"]
+
+
+# --------------------------------------------------------------------------
+# La escritura al grafo va de a una
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dos_escrituras_concurrentes_no_se_solapan():
+    """El fallo que tumbo la ingesta tres veces el 2026-08-16.
+
+    Varios workers escribiendo a la vez en el mismo grafo, con FalkorDB a 8
+    hilos compartidos y TIMEOUT=0, terminaban trabandolo: PING respondia,
+    GRAPH.QUERY se colgaba y la ingesta se paraba sin un solo error en el log.
+    """
+    dentro = 0
+    maximo = 0
+
+    async def original(driver, ep_n, ep_e, ent_n, ent_e, embedder):
+        nonlocal dentro, maximo
+        dentro += 1
+        maximo = max(maximo, dentro)
+        await asyncio.sleep(0.01)  # simula la escritura
+        dentro -= 1
+        return "ok"
+
+    bulk = _montar_graphiti_falso(original)
+    parche.instalar_parche_escritura()
+    escribir = bulk.add_nodes_and_edges_bulk
+
+    await asyncio.gather(*[
+        escribir(None, [], [], [Nodo(f"n{i}")], [], EmbedderFalso()) for i in range(8)
+    ])
+
+    assert maximo == 1, f"hubo {maximo} escrituras simultaneas; deben ser de a una"
+
+
+@pytest.mark.asyncio
+async def test_los_embeddings_si_se_solapan():
+    """El candado protege la ESCRITURA, no la red.
+
+    Si los embeddings quedaran dentro del candado se serializaria justo lo que
+    conviene paralelizar, y el pool de workers no serviria de nada.
+    """
+    embeddings_a_la_vez = 0
+    maximo = 0
+
+    class EmbedderLento(EmbedderFalso):
+        async def create_batch(self, textos):
+            nonlocal embeddings_a_la_vez, maximo
+            embeddings_a_la_vez += 1
+            maximo = max(maximo, embeddings_a_la_vez)
+            await asyncio.sleep(0.01)
+            embeddings_a_la_vez -= 1
+            return [[0.0] for _ in textos]
+
+    async def original(driver, ep_n, ep_e, ent_n, ent_e, embedder):
+        return "ok"
+
+    bulk = _montar_graphiti_falso(original)
+    parche.instalar_parche_escritura()
+    escribir = bulk.add_nodes_and_edges_bulk
+
+    await asyncio.gather(*[
+        escribir(None, [], [], [Nodo(f"n{i}")], [], EmbedderLento()) for i in range(5)
+    ])
+
+    assert maximo > 1, "los embeddings deben poder solaparse entre workers"
+
+
+@pytest.mark.asyncio
+async def test_una_escritura_que_falla_libera_el_candado():
+    """Si la excepcion se llevara el candado puesto, la cola entera se cuelga:
+    todos los demas workers quedarian esperando para siempre."""
+    async def original(driver, ep_n, ep_e, ent_n, ent_e, embedder):
+        raise RuntimeError("FalkorDB dijo que no")
+
+    bulk = _montar_graphiti_falso(original)
+    parche.instalar_parche_escritura()
+    escribir = bulk.add_nodes_and_edges_bulk
+
+    with pytest.raises(RuntimeError):
+        await escribir(None, [], [], [], [], EmbedderFalso())
+
+    assert not parche._lock_escritura().locked(), "el candado quedo tomado"
+
+    async def ok(driver, ep_n, ep_e, ent_n, ent_e, embedder):
+        return "ok"
+
+    bulk.add_nodes_and_edges_bulk._secondbrain_parche = False
+    _montar_graphiti_falso(ok)
+    parche.instalar_parche_escritura()
+    assert await sys.modules["graphiti_core.utils.bulk_utils"].add_nodes_and_edges_bulk(
+        None, [], [], [], [], EmbedderFalso()
+    ) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_se_puede_apagar_la_serializacion(monkeypatch):
+    """Apagarlo es volver al estado que trababa el grafo; existe para medir."""
+    monkeypatch.setattr(parche, "BRAIN_ESCRITURA_SERIAL", False)
+    dentro = 0
+    maximo = 0
+
+    async def original(driver, ep_n, ep_e, ent_n, ent_e, embedder):
+        nonlocal dentro, maximo
+        dentro += 1
+        maximo = max(maximo, dentro)
+        await asyncio.sleep(0.01)
+        dentro -= 1
+        return "ok"
+
+    bulk = _montar_graphiti_falso(original)
+    parche.instalar_parche_escritura()
+    escribir = bulk.add_nodes_and_edges_bulk
+
+    await asyncio.gather(*[
+        escribir(None, [], [], [], [], EmbedderFalso()) for _ in range(4)
+    ])
+
+    assert maximo > 1
+
+
+# --------------------------------------------------------------------------
+# El lote respeta el tope de tokens del proveedor
+# --------------------------------------------------------------------------
+
+
+def test_un_lote_no_supera_el_presupuesto_de_tokens(monkeypatch):
+    """El fallo real: agrupar de a 64 sin mirar el tamano.
+
+    `nv-embed-v1` corta en 4096 tokens POR PETICION, no por texto. Con lotes
+    de 64 aparecio "Input length 4286 exceeds maximum allowed token size 4096"
+    y el episodio entero fallaba.
+    """
+    monkeypatch.setattr(parche, "BRAIN_EMBED_TOKENS", 1000)
+    monkeypatch.setattr(parche, "BRAIN_EMBED_LOTE", 64)
+
+    textos = ["x" * 900 for _ in range(10)]  # ~301 tokens cada uno
+    grupos = parche._agrupar(textos)
+
+    for grupo in grupos:
+        tokens = sum(parche._tokens_aprox(textos[i]) for i in grupo)
+        assert tokens <= 1000, f"un lote se paso: {tokens} tokens"
+    assert sum(len(g) for g in grupos) == 10, "no puede perderse ningun texto"
+
+
+def test_un_texto_gigante_va_solo(monkeypatch):
+    """Si no cabe ni el solo, va solo: el proveedor decide, igual que hacia el
+    bucle original de a uno. Lo que no puede es arrastrar a otros al fallo."""
+    monkeypatch.setattr(parche, "BRAIN_EMBED_TOKENS", 500)
+    textos = ["corto", "y" * 9000, "otro corto"]
+
+    grupos = parche._agrupar(textos)
+
+    gigante = [g for g in grupos if 1 in g][0]
+    assert gigante == [1], "el texto gigante debe ir solo"
+
+
+def test_se_respeta_el_tope_de_cantidad(monkeypatch):
+    monkeypatch.setattr(parche, "BRAIN_EMBED_TOKENS", 10**9)
+    monkeypatch.setattr(parche, "BRAIN_EMBED_LOTE", 4)
+    grupos = parche._agrupar(["t"] * 10)
+    assert [len(g) for g in grupos] == [4, 4, 2]
+
+
+@pytest.mark.asyncio
+async def test_el_orden_sobrevive_al_troceo_por_tokens(monkeypatch):
+    """Con lotes de tamano irregular es facil devolver los vectores cruzados,
+    y un vector en el nodo equivocado no falla: miente."""
+    monkeypatch.setattr(parche, "BRAIN_EMBED_TOKENS", 400)
+    monkeypatch.setattr(parche, "BRAIN_EMBED_LOTE", 64)
+
+    emb = EmbedderFalso()
+    textos = ["a" * 600, "b", "c" * 900, "d", "e" * 300]
+    vectores = await parche._en_lotes(emb, textos)
+
+    assert len(emb.peticiones) > 1, "deberia haber troceado"
+    assert vectores == [[float(len(t)), float(sum(map(ord, t)) % 97)] for t in textos]
+    assert all(v is not None for v in vectores)
