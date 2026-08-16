@@ -539,3 +539,119 @@ class DatabaseDriverFactory:
 
             case _:
                 raise ValueError(f'Unsupported Database provider: {provider}')
+
+
+# ---------------------------------------------------------------------------
+# PATCH (secondbrain): embeddings por lote en la escritura masiva
+# ---------------------------------------------------------------------------
+#
+# `add_episode` termina en `add_nodes_and_edges_bulk`, y la funcion de
+# transaccion que hay debajo genera los embeddings que falten con un bucle
+# SECUENCIAL: `for node in entity_nodes: await node.generate_name_embedding()`.
+# Es una ida y vuelta HTTP por nodo y otra por arista.
+#
+# Medido en produccion: **34 llamadas de embedding por episodio**, con una
+# mediana de 0,43 s entre ellas — unos 15 s por episodio esperando a la red, y
+# el chat consumiendo solo el 13% del tiempo de los workers. El proveedor no
+# estaba saturado (23% del limite de tokens): simplemente se le hablaba de a
+# uno.
+#
+# Graphiti YA trae los helpers por lote y los usa en otros caminos; el de
+# `add_episode` no pasa por ellos. Asi que aqui se generan por adelantado, en
+# lotes, y la funcion original se encuentra el trabajo hecho: su bucle no llama
+# a nadie porque ya no falta ningun embedding. No se reimplementa la escritura,
+# solo se precalienta.
+#
+# Verificado contra NVIDIA `nv-embed-v1` antes de escribir esto: un lote de 4
+# devuelve 4 vectores, en orden, de 4096 dimensiones, y **bit a bit identicos**
+# a pedirlos sueltos (diferencia maxima 0,00e+00). Importa: cambiar el valor de
+# los embeddings corromperia la busqueda del grafo que ya existe.
+
+import logging as _logging
+import os as _os
+
+_log_lote = _logging.getLogger(__name__)
+
+#: Textos por peticion, y interruptor: 0 = apagado (por defecto).
+#:
+#: APAGADO A PROPOSITO, con la medicion delante. El lote hace lo que promete
+#: —20 llamadas de embedding por episodio pasan a 2— pero al quitar esos ~15 s
+#: de espera por episodio, los 5 workers dejan de estar escalonados y golpean
+#: FalkorDB a la vez. Medido en produccion (2026-08-16):
+#:
+#:   sin lotes, 5 workers: 12 episodios en 200 s, grafo sano 12+ minutos
+#:   con lotes, 5 workers: el grafo `jpreyest` se traba a los 35 s
+#:                         (PING responde, GRAPH.QUERY se cuelga)
+#:
+#: La culpa no es del lote: es que FalkorDB tiene THREAD_COUNT=8 compartido
+#: entre tenants y TIMEOUT=0, asi que una consulta atascada retiene un hilo
+#: para siempre y nadie la desaloja. Antes de encender esto hay que serializar
+#: la escritura al grafo (un lock alrededor de add_nodes_and_edges_bulk) o
+#: ponerle timeout a las consultas. La velocidad sin la escritura resuelta
+#: solo mueve el cuello de botella a un sitio donde tumba el servicio.
+BRAIN_EMBED_LOTE = max(0, int(_os.environ.get('BRAIN_EMBED_LOTE', '0') or 0))
+
+
+async def _en_lotes(embedder, textos: list[str]) -> list[list[float]]:
+    """`create_batch` troceado, conservando el orden de entrada."""
+    salida: list[list[float]] = []
+    for i in range(0, len(textos), BRAIN_EMBED_LOTE):
+        salida.extend(await embedder.create_batch(textos[i : i + BRAIN_EMBED_LOTE]))
+    return salida
+
+
+def instalar_embeddings_por_lote(logger=_log_lote) -> bool:
+    """Envuelve `add_nodes_and_edges_bulk` para pre-generar los embeddings."""
+    if not BRAIN_EMBED_LOTE:
+        return False
+
+    try:
+        from graphiti_core import graphiti as _graphiti_mod
+        from graphiti_core.utils import bulk_utils as _bulk
+    except Exception:  # pragma: no cover - sin graphiti no hay nada que envolver
+        return False
+
+    if getattr(_bulk.add_nodes_and_edges_bulk, '_secondbrain_lote', False):
+        return True  # idempotente: importar dos veces no debe anidar wrappers
+
+    original = _bulk.add_nodes_and_edges_bulk
+
+    async def add_nodes_and_edges_bulk(
+        driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
+    ):
+        try:
+            nodos = [n for n in entity_nodes if n.name and n.name_embedding is None]
+            if nodos:
+                for nodo, vector in zip(
+                    nodos, await _en_lotes(embedder, [n.name for n in nodos]), strict=True
+                ):
+                    nodo.name_embedding = vector
+
+            aristas = [e for e in entity_edges if e.fact and e.fact_embedding is None]
+            if aristas:
+                for arista, vector in zip(
+                    aristas, await _en_lotes(embedder, [e.fact for e in aristas]), strict=True
+                ):
+                    arista.fact_embedding = vector
+        except Exception as e:
+            # Nunca romper la ingesta por una optimizacion: si el lote falla, la
+            # funcion original genera los embeddings de a uno, como siempre.
+            if logger:
+                logger.warning(f'Embeddings por lote fallaron ({e}); se sigue de a uno')
+
+        return await original(
+            driver, episodic_nodes, episodic_edges, entity_nodes, entity_edges, embedder
+        )
+
+    add_nodes_and_edges_bulk._secondbrain_lote = True
+    # Hay que parchear AMBOS modulos: `graphiti.py` importo el nombre directo
+    # (`from ...bulk_utils import add_nodes_and_edges_bulk`), asi que reescribir
+    # solo `bulk_utils` dejaria a `add_episode` usando la version vieja.
+    _bulk.add_nodes_and_edges_bulk = add_nodes_and_edges_bulk
+    _graphiti_mod.add_nodes_and_edges_bulk = add_nodes_and_edges_bulk
+    if logger:
+        logger.info(f'PATCH: embeddings por lote activados (lote={BRAIN_EMBED_LOTE})')
+    return True
+
+
+instalar_embeddings_por_lote()

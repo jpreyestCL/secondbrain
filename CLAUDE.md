@@ -60,6 +60,20 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
   `THREAD_COUNT` son 8 hilos **compartidos entre todos los tenants** de la máquina, y
   `TIMEOUT=0` significa que ninguna consulta caduca — una sola atascada retiene un hilo
   para siempre. Subir de 5 a 8 workers dejó la base entera sin responder (ni a `PING`).
+- **Los embeddings por lote están escritos y APAGADOS** (`BRAIN_EMBED_LOTE=0`). `add_episode`
+  genera los embeddings que faltan en un bucle secuencial —20 llamadas HTTP por episodio—
+  y el parche de `factories.py` los pre-genera en lotes de 64. Funciona: verificado contra
+  `nv-embed-v1` que un lote devuelve los vectores **bit a bit idénticos** a pedirlos sueltos
+  (diferencia 0,00e+00), así que no toca la búsqueda del grafo. Pero al quitar esos ~15 s de
+  espera por episodio, los 5 workers dejan de estar escalonados y golpean FalkorDB a la vez:
+  **el grafo se traba a los 35 s** (`PING` responde, `GRAPH.QUERY` se cuelga), contra 12+
+  minutos sano sin lotes. Antes de encenderlo hay que **serializar la escritura** (un lock
+  alrededor de `add_nodes_and_edges_bulk`) o ponerle `TIMEOUT` a las consultas. Acelerar sin
+  resolver la escritura solo mueve el cuello a un sitio donde tumba el servicio.
+- **Reiniciar el MCP con episodios en vuelo traba el grafo.** Pasó dos veces seguidas: el
+  arranque se queda colgado justo después de `Creating OpenAI Embedder client`, que es
+  cuando toca crear los índices, y no escribe ni una línea más. Parar el MCP y esperar antes
+  de reiniciar, y si ya pasó, reiniciar FalkorDB.
 - **Si FalkorDB deja de responder**, en el deploy nativo se recupera con
   `systemctl restart brain-falkordb` (el equivalente del `docker restart` documentado más
   abajo). Con `appendonly yes` + `appendfsync everysec` se arriesga como mucho **1 segundo**
