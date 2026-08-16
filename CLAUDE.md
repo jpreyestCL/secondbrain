@@ -52,7 +52,19 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
   La marca de "ya hay worker" se ponía *dentro* de la tarea, así que recuperar cientos de
   episodios en un bucle cerrado creaba **un worker por episodio**: ~124 episodios
   simultáneos, 12 peticiones por segundo y cero avance. Acotado no es lo mismo que ausente:
-  con 1 worker son ~2,4 min por episodio; con 3, ~22 s.
+  con 1 worker son ~2,4 min por episodio; con 3, ~22 s; con 5, ~12,9 s.
+- **El cuello del ingest NO es la API del LLM.** Medido con gpt-4o-mini: 23% del límite
+  de tokens (45k de 200k por minuto) y 0,5% del de peticiones, y el chat solo consume el
+  13% del tiempo de los workers. El resto se va en los **34 embeddings por episodio** y en
+  las escrituras al grafo. Antes de subir `BRAIN_WORKERS` hay que mirar **FalkorDB**:
+  `THREAD_COUNT` son 8 hilos **compartidos entre todos los tenants** de la máquina, y
+  `TIMEOUT=0` significa que ninguna consulta caduca — una sola atascada retiene un hilo
+  para siempre. Subir de 5 a 8 workers dejó la base entera sin responder (ni a `PING`).
+- **Si FalkorDB deja de responder**, en el deploy nativo se recupera con
+  `systemctl restart brain-falkordb` (el equivalente del `docker restart` documentado más
+  abajo). Con `appendonly yes` + `appendfsync everysec` se arriesga como mucho **1 segundo**
+  de escrituras: verificado en el incidente del 2026-08-16, donde no se perdió ningún
+  episodio. Parar antes los MCP evita dejar más consultas colgadas.
 - **`session.run()` del driver de FalkorDB DESCARTA el resultado y devuelve `None` siempre.**
   Es fire-and-forget. Para LEER hay que usar `driver.execute_query()`, que además sí
   sustituye los parámetros (`$var`) — con `session.run()` tampoco llegan, y eso invita a
