@@ -14,7 +14,7 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 | `backups/` | Respaldos de FalkorDB |
 | `SCHEMA.md` | Ontología: dominios (metadata), entidades, aristas, reglas de fecha y sensibilidad |
 | `scripts/` | Utilidades fuera del pipeline: `healthcheck.py` (E2E OAuth→guardar→buscar), `llm-cost.py` (gasto real desde `llm-usage.jsonl`), `fichas-excluidos.py` (fichas de lo que se decide NO ingerir), `notes-*.py` (export/triage de Apple Notes) |
-| `.claude/skills/` | `/guardar`, `/ingest`, `/consultar` |
+| `.claude/skills/` | `/guardar`, `/absorber` (camino rápido: Claude extrae, el servidor no usa LLM), `/ingest` (lotes grandes con el CLI), `/consultar` |
 | `docs/decisiones.md` | Registro ADR de decisiones |
 
 ## Reglas de oro
@@ -176,6 +176,25 @@ Ollama queda instalado como respaldo. Para cambiar, en `mcp.env`:
 Si algún día la máquina lleva GPU, la configuración ya está probada. **Si se usa local,
 que sea phi4-mini o gemma3, nunca qwen2.5:3b**: es el único que no respeta las
 instrucciones negativas de la ontología.
+
+## Las dos vías de ingesta, y cuándo usar cada una
+
+| | `add_facts` (skill `/absorber`) | `add_memory` (CLI `brain`, skill `/ingest`) |
+|---|---|---|
+| Quién extrae | **Claude, aquí** | el servidor, con su LLM |
+| Unidad | **un documento** | un trozo de ~4,4 KB |
+| Coste en el servidor | 1 lote de embeddings + ~4 consultas | ~8 llamadas de LLM + ~22 embeddings + ~70 consultas |
+| **Medido** | **306 ms/documento, USD 0** | **110-150 s/trozo, USD 0,0066** |
+| Para qué | lo que Claude puede leer | carpetas grandes, OCR, reanudación |
+
+La diferencia de tres órdenes de magnitud **no** es que una capa sea más rápida: es que el peaje por episodio (extraer, deduplicar, resolver aristas, invalidar) es casi todo fijo, y pagarlo por trozo de 4 KB multiplica ese coste por el número de trozos. Medido en este corpus: 840 documentos son 2.017 trozos, o sea ~62 horas por el camino largo y ~4 minutos por el corto.
+
+Lo que `add_facts` hace sin modelo, y que Graphiti hacía con él:
+
+- **Deduplicar**: nombre normalizado (sin tildes ni puntuación, siglas recompuestas: `Inversiones Linets S.p.A.` = `INVERSIONES LINETS SPA`). Deliberadamente más estricto que el LLM — no adivina que "Banco Chile" es "Banco de Chile", porque fusionar dos entidades distintas es irreversible.
+- **Invalidar**: un hecho nuevo sobre el mismo sujeto y la misma relación, con fecha posterior, invalida al anterior. **Sin fecha no invalida nada.**
+
+⚠️ **`SCHEMA.md` divergió de la ontología desplegada.** El documento describe `CuentaBancaria`, `Institucion`, `Proyecto`...; el servidor acepta `Persona, Organizacion, Lugar, Documento, Cuenta, Activo, Obligacion, Evento, Condicion, Credencial` (los de `infra/graphiti/config.yaml`, que son los que `add_facts` valida). Un tipo fuera de esa lista entra como `Entidad` y pierde la ontología. Hay que reconciliar los dos.
 
 ## Flujos habituales
 
