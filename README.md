@@ -1,3 +1,5 @@
+[**Español**](README.md) · [English](README.en.md)
+
 # 🧠 secondbrain
 
 Tu **segundo cerebro** conversacional: un grafo de conocimiento **temporal** donde
