@@ -426,3 +426,50 @@ async def test_un_json_sin_group_id_no_aborta_la_recuperacion(tmp_path, monkeypa
     await servicio.recuperar_pendientes()
 
     assert "bueno" in encolados, "un archivo raro no puede parar la recuperacion"
+
+
+# --------------------------------------------------------------------------
+# Un episodio colgado no puede matar la cola
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_un_episodio_colgado_no_para_la_cola(monkeypatch):
+    """El fallo mas caro de todos: ocho horas parada y en silencio.
+
+    Un episodio se quedo esperando una respuesta de FalkorDB que nunca llego.
+    Como es un `await` sin tope, el worker quedo bloqueado ahi para siempre; el
+    servidor seguia respondiendo al conector, asi que nada parecia roto y no
+    habia ni una linea en el log. Se descubrio mirando a mano.
+    """
+    monkeypatch.setattr(qs, "BRAIN_TOPE_EPISODIO", 1)
+    servicio = qs.QueueService()
+    hechos = []
+
+    async def colgado():
+        await asyncio.sleep(3600)  # nunca vuelve
+
+    async def normal():
+        hechos.append("ok")
+
+    await servicio.add_episode_task("jpreyest", colgado)
+    await servicio.add_episode_task("jpreyest", normal)
+
+    for _ in range(40):  # mas que el tope, para que salte
+        await asyncio.sleep(0.05)
+
+    assert hechos == ["ok"], "el episodio colgado se llevo por delante a los siguientes"
+
+
+@pytest.mark.asyncio
+async def test_el_episodio_abandonado_queda_en_el_diario(tmp_path, monkeypatch):
+    """Abandonarlo no puede ser perderlo: se reintenta al arrancar."""
+    monkeypatch.setenv("BRAIN_QUEUE_DIR", str(tmp_path))
+    monkeypatch.setenv("GRAPHITI_GROUP_ID", "jpreyest")
+    servicio = qs.QueueService()
+
+    destino = servicio._anotar_pendiente("jpreyest", "lento", "x", "d", "text", "EP-LENTO", None)
+
+    # El worker abandona por timeout SIN llamar a _olvidar_pendiente, asi que
+    # la anotacion sigue ahi para el proximo arranque.
+    assert destino.exists()

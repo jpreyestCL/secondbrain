@@ -58,11 +58,39 @@ def test_long_text_splits_with_overlap_and_whole_paragraphs():
         assert estimate_tokens(c.text) <= 400 + estimate_tokens(make_para(0))
 
 
-def test_oversized_single_paragraph_is_own_chunk():
-    huge = "una " * 3000  # ~3000 tokens, no blank lines
-    chunks = chunk_text(huge, doc_id="d", source_path="p", sha256="s",
-                        target_tokens=400)
-    assert len(chunks) == 1  # never split mid-paragraph
+def test_un_parrafo_gigante_se_parte_para_no_reventar_el_limite():
+    """Antes se emitia entero, y eso reventaba el episodio.
+
+    `split_blocks` corta por lineas en blanco, que el texto de PyMuPDF a menudo
+    no tiene: un PDF entero podia ser UN bloque. Medido en el corpus real, 18
+    trozos pasaban de 4.096 tokens y uno llegaba a 25.934. El embedder corta en
+    4.096 y el episodio fallaba entero con "Input length ... exceeds maximum
+    allowed token size" — esta en el ledger.
+    """
+    from brain_ingest.chunker import MAX_TOKENS, estimate_tokens
+
+    huge = "Una frase de prueba. " * 4000
+    chunks = chunk_text(huge, doc_id="d", source_path="p", sha256="s")
+
+    assert len(chunks) > 1, "un parrafo gigante debe partirse"
+    for c in chunks:
+        assert estimate_tokens(c.text) <= MAX_TOKENS, (
+            f"un trozo de {estimate_tokens(c.text)} tokens supera el tope {MAX_TOKENS}"
+        )
+    # Y no se pierde texto: todas las frases siguen estando.
+    assert sum(c.text.count("Una frase de prueba.") for c in chunks) >= 4000
+
+
+def test_una_frase_sola_mas_grande_que_el_tope_tambien_se_parte():
+    """Ultimo recurso: sin puntos donde cortar, se trocea por longitud."""
+    from brain_ingest.chunker import MAX_TOKENS, estimate_tokens
+
+    sin_puntos = "palabra " * 20000  # ni un punto en todo el texto
+    chunks = chunk_text(sin_puntos, doc_id="d", source_path="p", sha256="s")
+
+    assert len(chunks) > 1
+    for c in chunks:
+        assert estimate_tokens(c.text) <= MAX_TOKENS
 
 
 # -- chunk_json (fix 4) ------------------------------------------------------

@@ -574,28 +574,6 @@ _log_parche = _logging.getLogger(__name__)
 
 #: Serializar la escritura al grafo. Se puede apagar (=0) para medir, pero
 #: apagarlo es volver al estado que trababa el grafo.
-BRAIN_ESCRITURA_SERIAL = (_os.environ.get('BRAIN_ESCRITURA_SERIAL', '1') or '1') != '0'
-
-#: Cuanto esperar el candado antes de dar por colgada la escritura de otro y
-#: seguir sin el. Generoso: un episodio grande escribe en decimas de segundo,
-#: asi que llegar aqui significa que algo va mal de verdad.
-BRAIN_ESPERA_CANDADO = float(_os.environ.get('BRAIN_ESPERA_CANDADO', '300') or 300)
-
-#: Textos por peticion de embeddings; 0 = apagado.
-#:
-#: `add_episode` genera los embeddings que faltan en un bucle SECUENCIAL: una
-#: ida y vuelta HTTP por nodo y otra por arista. Medido: 20 llamadas por
-#: episodio, mediana 0,43s entre ellas — unos 15s por episodio esperando a la
-#: red, con el chat consumiendo solo el 13% del tiempo de los workers.
-#:
-#: Verificado contra `nv-embed-v1` antes de usarlo: un lote devuelve los
-#: vectores en orden y BIT A BIT identicos a pedirlos sueltos (diferencia
-#: 0,00e+00). Importa, porque cambiar el valor de los embeddings corromperia la
-#: busqueda del grafo existente.
-#:
-#: Requiere BRAIN_ESCRITURA_SERIAL. Sin el candado esos ~15s de espera por
-#: episodio actuaban de freno accidental, escalonando a los workers; al
-#: quitarlos, los cinco escribian a la vez y el grafo se trababa en 35s.
 def _entero_env(nombre: str, defecto: int, minimo: int = 0) -> int:
     """Un valor mal escrito degrada al defecto; no tumba el arranque.
 
@@ -612,6 +590,45 @@ def _entero_env(nombre: str, defecto: int, minimo: int = 0) -> int:
         return defecto
 
 
+
+BRAIN_ESCRITURA_SERIAL = (_os.environ.get('BRAIN_ESCRITURA_SERIAL', '1') or '1') != '0'
+
+#: Cuanto esperar el candado antes de dar por colgada la escritura de otro y
+#: seguir sin el. Generoso: un episodio grande escribe en decimas de segundo,
+#: asi que llegar aqui significa que algo va mal de verdad.
+BRAIN_ESPERA_CANDADO = float(_os.environ.get('BRAIN_ESPERA_CANDADO', '300') or 300)
+
+#: Cuantos episodios ANTERIORES se meten en los prompts. Upstream usa 10
+#: (`RELEVANT_SCHEMA_LIMIT`) y mete el CONTENIDO INTEGRO de cada uno en tres
+#: prompts distintos (dedupe_nodes, extract_edges, extract_summaries).
+#:
+#: Medido en este grafo: de los 40.419 tokens de entrada por episodio, ~22.000
+#: (el 55%) son ese texto — la mitad del gasto total. Y aqui esos "10
+#: anteriores" son fragmentos de documentos CUALESQUIERA, ordenados por fecha
+#: en todo el grafo: contexto que casi nunca tiene que ver con el episodio que
+#: se esta ingiriendo. En un chat continuo tendria sentido; en una ingesta de
+#: documentos independientes se paga por ruido.
+#:
+#: Se deja en 1 y no en 0 porque el fragmento inmediatamente anterior SI suele
+#: ser del mismo documento, y ahi ayuda a resolver correferencias ("la
+#: sociedad", "el mismo inmueble").
+BRAIN_EPISODIOS_PREVIOS = _entero_env('BRAIN_EPISODIOS_PREVIOS', 1)
+
+#: Textos por peticion de embeddings; 0 = apagado.
+#:
+#: `add_episode` genera los embeddings que faltan en un bucle SECUENCIAL: una
+#: ida y vuelta HTTP por nodo y otra por arista. Medido: 20 llamadas por
+#: episodio, mediana 0,43s entre ellas — unos 15s por episodio esperando a la
+#: red, con el chat consumiendo solo el 13% del tiempo de los workers.
+#:
+#: Verificado contra `nv-embed-v1` antes de usarlo: un lote devuelve los
+#: vectores en orden y BIT A BIT identicos a pedirlos sueltos (diferencia
+#: 0,00e+00). Importa, porque cambiar el valor de los embeddings corromperia la
+#: busqueda del grafo existente.
+#:
+#: Requiere BRAIN_ESCRITURA_SERIAL. Sin el candado esos ~15s de espera por
+#: episodio actuaban de freno accidental, escalonando a los workers; al
+#: quitarlos, los cinco escribian a la vez y el grafo se trababa en 35s.
 BRAIN_EMBED_LOTE = _entero_env('BRAIN_EMBED_LOTE', 64)
 
 #: Presupuesto de tokens POR PETICION. `nv-embed-v1` corta en 4096 y el limite
@@ -722,6 +739,14 @@ def instalar_parche_escritura(logger=_log_parche) -> bool:
         if logger:
             logger.error(f'PATCH NO INSTALADO (escritura sin serializar): {e}')
         return False
+
+    # La ventana de episodios previos se resuelve desde el espacio de nombres de
+    # graphiti.py en cada llamada (`last_n=RELEVANT_SCHEMA_LIMIT`), asi que basta
+    # con reescribir ahi el valor.
+    if getattr(_graphiti_mod, 'RELEVANT_SCHEMA_LIMIT', None) != BRAIN_EPISODIOS_PREVIOS:
+        _graphiti_mod.RELEVANT_SCHEMA_LIMIT = BRAIN_EPISODIOS_PREVIOS
+        if logger:
+            logger.info(f'PATCH: episodios previos en los prompts = {BRAIN_EPISODIOS_PREVIOS}')
 
     if getattr(_bulk.add_nodes_and_edges_bulk, '_secondbrain_parche', False):
         return True  # idempotente: importar dos veces no debe anidar wrappers

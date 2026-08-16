@@ -13,15 +13,42 @@ import json
 import re
 from dataclasses import dataclass, field
 
-TARGET_TOKENS = 1200
+#: Tamano objetivo de cada trozo, en tokens estimados.
+#:
+#: Subido de 1.200 a 3.000 con la medicion delante. Cada trozo se convierte en
+#: UN episodio del grafo, y un episodio cuesta ~8 llamadas al LLM, ~34
+#: embeddings y ~85 consultas al grafo — un peaje fijo que es el ~60% del coste
+#: total, independiente de lo que traiga dentro. Con trozos de 4,4 KB medianos
+#: se pagaba ese peaje 2.017 veces para mover paquetes pequenos.
+#:
+#: No se sube mas porque la extraccion de entidades pierde recall en textos
+#: largos: el LLM se salta cosas del medio.
+TARGET_TOKENS = 3000
 OVERLAP_TOKENS = 150
+
+#: Tope DURO. Ningun trozo sale de aqui por encima de esto.
+#:
+#: Antes no habia: un bloque que superara el objetivo se emitia entero, y como
+#: `split_blocks` corta por lineas en blanco —que el texto de PyMuPDF a menudo
+#: no tiene—, un PDF entero podia ser UN bloque. Medido en el corpus real: 18
+#: trozos de mas de 4.096 tokens y uno de 25.934. El embedder corta en 4.096 y
+#: el episodio fallaba entero con "Input length ... exceeds maximum allowed
+#: token size".
+MAX_TOKENS = 3800
 
 _HEADING_RE = re.compile(r"^#{1,6}\s", re.MULTILINE)
 
 
 def estimate_tokens(text: str) -> int:
-    """Cheap token estimate: ~4 characters per token (English/Spanish prose)."""
-    return max(1, len(text) // 4)
+    """Estimacion barata de tokens, CONSERVADORA (por exceso).
+
+    Antes asumia 4 caracteres por token, que vale para prosa inglesa. En
+    espanol con acentos y nombres propios ronda 3,3, y en JSON con comillas y
+    llaves baja a ~2,5: el "1200" real eran 1.500-1.900 tokens. Equivocarse por
+    exceso parte un trozo de mas; por defecto, revienta el episodio contra el
+    limite del proveedor.
+    """
+    return max(1, len(text) // 3)
 
 
 @dataclass
@@ -66,6 +93,50 @@ def split_blocks(text: str) -> list[str]:
     return blocks
 
 
+def _partir_si_excede(bloques: list[str], tope: int) -> list[list[str]]:
+    """Divide un grupo que supere `tope`, cortando por frases y sin perder texto."""
+    if estimate_tokens("\n\n".join(bloques)) <= tope:
+        return [bloques]
+
+    salida: list[list[str]] = []
+    actual: list[str] = []
+    for bloque in bloques:
+        piezas = [bloque]
+        if estimate_tokens(bloque) > tope:
+            # Un solo bloque ya no cabe: cortarlo por frases (y si una frase
+            # sola tampoco cabe, por longitud, que es el ultimo recurso).
+            piezas = _partir_por_frases(bloque, tope)
+        for pieza in piezas:
+            if actual and estimate_tokens("\n\n".join(actual + [pieza])) > tope:
+                salida.append(actual)
+                actual = []
+            actual.append(pieza)
+    if actual:
+        salida.append(actual)
+    return salida
+
+
+def _partir_por_frases(texto: str, tope: int) -> list[str]:
+    frases = re.split(r"(?<=[.!?])\s+", texto)
+    piezas: list[str] = []
+    actual = ""
+    for frase in frases:
+        candidata = f"{actual} {frase}".strip() if actual else frase
+        if actual and estimate_tokens(candidata) > tope:
+            piezas.append(actual)
+            actual = frase
+        else:
+            actual = candidata
+        # Ni cortando por frases cabe: trocear por longitud, sin perder nada.
+        while estimate_tokens(actual) > tope:
+            corte = tope * 3
+            piezas.append(actual[:corte])
+            actual = actual[corte:]
+    if actual:
+        piezas.append(actual)
+    return piezas
+
+
 def chunk_text(
     text: str,
     *,
@@ -107,6 +178,10 @@ def chunk_text(
 
     if current:
         groups.append(current)
+
+    # Tope duro: parte por frases lo que siga siendo demasiado grande. Se hace
+    # al final, sobre los grupos ya formados, para no complicar el empaquetado.
+    groups = [t for g in groups for t in _partir_si_excede(g, MAX_TOKENS)]
 
     total = len(groups)
     return [

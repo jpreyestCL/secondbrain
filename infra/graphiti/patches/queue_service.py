@@ -61,6 +61,11 @@ def _entero_env(nombre: str, defecto: int, minimo: int = 1) -> int:
 
 BRAIN_WORKERS = _entero_env('BRAIN_WORKERS', 1)
 
+#: Cuanto puede tardar UN episodio antes de considerarlo atascado, en segundos.
+#: Generoso: los grandes tardan ~140 s medidos. Llegar aqui significa que algo
+#: no va a terminar nunca.
+BRAIN_TOPE_EPISODIO = _entero_env('BRAIN_TOPE_EPISODIO', 900, minimo=60)
+
 #: Todo lo que no sea esto se sustituye antes de usarse como nombre de archivo
 #: o de directorio. El `uuid` de un episodio lo elige el CLIENTE (es un
 #: parametro publico de la tool `add_memory`), asi que llega sin garantia
@@ -235,8 +240,22 @@ class QueueService:
                 process_func = await self._episode_queues[group_id].get()
 
                 try:
-                    # Process the episode
-                    await process_func()
+                    # PATCH (secondbrain): con tope de tiempo. Sin el, un
+                    # episodio que se cuelga (una consulta a FalkorDB que no
+                    # vuelve, una conexion a medias) para la cola ENTERA y sin
+                    # una sola linea en el log. Paso: la ingesta estuvo OCHO
+                    # HORAS detenida, el servidor seguia respondiendo al
+                    # conector, y solo se descubrio al mirar a mano. Un
+                    # episodio perdido se reintenta desde el diario; una cola
+                    # muerta no se recupera sola.
+                    await asyncio.wait_for(process_func(), timeout=BRAIN_TOPE_EPISODIO)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f'ATASCO: un episodio de {group_id} lleva mas de '
+                        f'{BRAIN_TOPE_EPISODIO}s sin terminar; se abandona y se '
+                        f'sigue con el siguiente. Queda en el diario para el '
+                        f'proximo arranque.'
+                    )
                 except Exception as e:
                     logger.error(
                         f'Error processing queued episode for group_id {group_id}: {str(e)}'
