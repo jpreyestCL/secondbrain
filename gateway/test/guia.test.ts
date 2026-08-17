@@ -279,3 +279,21 @@ describe("guía de uso en inglés", () => {
     expect(html).not.toContain("Los ejemplos ya vienen con tu espacio");
   });
 });
+
+describe("instalación del plugin", () => {
+  it("la guía explica cómo instalarlo, en los dos idiomas", async () => {
+    // Sin esto, /absorber solo existía estando dentro del repo y no había
+    // forma de enterarse: la guía documentaba el conector y el CLI, pero no
+    // la pieza que junta las dos.
+    const es = await (await fetch(`${baseUrl}/guia`)).text();
+    const en = await (await fetch(`${baseUrl}/guia?lang=en`)).text();
+
+    for (const html of [es, en]) {
+      expect(html).toContain("/plugin marketplace add jpreyestCL/secondbrain");
+      expect(html).toContain("/plugin install secondbrain");
+      expect(html).toContain("/absorber");
+    }
+    expect(es).toContain("Claude Code");
+    expect(en).toContain("Claude Code");
+  });
+});

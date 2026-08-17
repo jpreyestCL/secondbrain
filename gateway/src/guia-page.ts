@@ -46,6 +46,10 @@ type Clave =
   | "s1Paso4"
   | "s1Paso5"
   | "s1Paso6"
+  | "s1Plugin"
+  | "s1PluginComo"
+  | "s1PluginBloque"
+  | "s1PluginCarpetas"
   | "s1Fallos"
   | "s1ThQue"
   | "s1ThHacer"
@@ -193,6 +197,32 @@ const T: Textos<Clave> = {
         <em>«¿qué tienes guardado sobre mí?»</em>`,
     en: `Done. Check it by asking Claude:
         <em>“what do you have stored about me?”</em>`,
+  },
+  s1Plugin: {
+    es: "¿Usas Claude Code en la terminal?",
+    en: "Using Claude Code in the terminal?",
+  },
+  s1PluginComo: {
+    es: `Instala el plugin y te deja todo listo de una vez: el conector configurado
+      y los comandos <code>/absorber</code>, <code>/guardar</code> y
+      <code>/consultar</code> disponibles desde cualquier carpeta.`,
+    en: `Install the plugin and it sets everything up at once: the connector configured
+      and the <code>/absorber</code>, <code>/guardar</code> and <code>/consultar</code>
+      commands available from any folder.`,
+  },
+  s1PluginBloque: {
+    es: `/plugin marketplace add jpreyestCL/secondbrain
+/plugin install secondbrain`,
+    en: `/plugin marketplace add jpreyestCL/secondbrain
+/plugin install secondbrain`,
+  },
+  s1PluginCarpetas: {
+    es: `Con el plugin puesto, para meter una carpeta entera basta con pedírselo:
+      <em>«absorbe los documentos de ~/mis-escrituras»</em>. Claude prepara los
+      archivos y va guardando los hechos de cada documento.`,
+    en: `With the plugin installed, to ingest a whole folder you just ask for it:
+      <em>“absorb the documents in ~/my-deeds”</em>. Claude prepares the files and
+      stores the facts from each document.`,
   },
   s1Fallos: { es: "Si algo falla", en: "If something goes wrong" },
   s1ThQue: { es: "Lo que ves", en: "What you see" },
@@ -688,6 +718,11 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
       <li>${t("s1Paso5")}</li>
       <li>${t("s1Paso6")}</li>
     </ol>
+
+    <h3>${t("s1Plugin")}</h3>
+    <p class="muted">${t("s1PluginComo")}</p>
+    <div class="block"><pre><code>${escapeHtml(t("s1PluginBloque"))}</code></pre></div>
+    <p class="muted">${t("s1PluginCarpetas")}</p>
 
     <h3>${t("s1Fallos")}</h3>
     <div class="scroll"><table>
