@@ -296,4 +296,25 @@ describe("instalación del plugin", () => {
     expect(es).toContain("Claude Code");
     expect(en).toContain("Claude Code");
   });
+
+  it("junto al plugin explica los DOS pasos que faltan para carpetas", async () => {
+    // El plugin da las skills y el conector, pero no puede leer el disco. Sin
+    // instalar el CLI y vincularlo, "absorbe esta carpeta" no funciona — y eso
+    // estaba documentado en otra seccion, asi que quien instalaba el plugin no
+    // se enteraba.
+    for (const url of ["/guia", "/guia?lang=en"]) {
+      const html = await (await fetch(`${baseUrl}${url}`)).text();
+      const bloquePlugin = html.slice(
+        html.indexOf("/plugin marketplace add"),
+        html.indexOf("invalid_client"),
+      );
+      expect(bloquePlugin, `${url}: falta el instalador junto al plugin`).toContain(
+        "install.sh",
+      );
+      expect(bloquePlugin, `${url}: falta el login junto al plugin`).toContain("brain login");
+      expect(bloquePlugin, `${url}: no enlaza a la seccion de ingesta masiva`).toContain(
+        'href="#masiva"',
+      );
+    }
+  });
 });

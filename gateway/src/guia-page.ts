@@ -50,6 +50,9 @@ type Clave =
   | "s1PluginComo"
   | "s1PluginBloque"
   | "s1PluginCarpetas"
+  | "s1PluginCompleto"
+  | "s1PluginLogin"
+  | "s1PluginListo"
   | "s1Fallos"
   | "s1ThQue"
   | "s1ThHacer"
@@ -217,12 +220,37 @@ const T: Textos<Clave> = {
 /plugin install secondbrain`,
   },
   s1PluginCarpetas: {
-    es: `Con el plugin puesto, para meter una carpeta entera basta con pedírselo:
-      <em>«absorbe los documentos de ~/mis-escrituras»</em>. Claude prepara los
-      archivos y va guardando los hechos de cada documento.`,
-    en: `With the plugin installed, to ingest a whole folder you just ask for it:
-      <em>“absorb the documents in ~/my-deeds”</em>. Claude prepares the files and
-      stores the facts from each document.`,
+    es: `El plugin te deja hablar con tu memoria y guardar documentos sueltos. Para
+      meter <strong>carpetas enteras</strong> hace falta además el comando
+      <code>brain</code>, que es el que lee los archivos de tu disco (el servidor
+      no puede: por eso nada se sube). Son dos líneas más, una sola vez:`,
+    en: `The plugin lets you talk to your memory and store single documents. To ingest
+      <strong>whole folders</strong> you also need the <code>brain</code> command, which
+      is what reads the files on your disk (the server cannot: that is why nothing is
+      uploaded). Two more lines, once:`,
+  },
+  s1PluginCompleto: {
+    es: `curl -fsSL <BASE_URL>/install.sh | sh
+brain login <BASE_URL>`,
+    en: `curl -fsSL <BASE_URL>/install.sh | sh
+brain login <BASE_URL>`,
+  },
+  s1PluginLogin: {
+    es: `El <code>login</code> abre el navegador una vez y deja este equipo vinculado a
+      tu cuenta. <strong>No pide ninguna clave de API</strong>: la extracción ocurre
+      aquí o en el servidor, nunca con claves tuyas en el medio.`,
+    en: `The <code>login</code> opens the browser once and links this machine to your
+      account. <strong>It asks for no API key</strong>: extraction happens here or on the
+      server, never with your own keys in between.`,
+  },
+  s1PluginListo: {
+    es: `Ya está. Ahora puedes pedirle a Claude:
+      <em>«absorbe los documentos de ~/mis-escrituras»</em> y él prepara los archivos y
+      va guardando los hechos de cada documento. Los detalles del comando están en
+      <a href="#masiva">Ingesta masiva</a>.`,
+    en: `That is it. You can now ask Claude: <em>“absorb the documents in
+      ~/my-deeds”</em> and it prepares the files and stores the facts from each
+      document. The command details are in <a href="#masiva">Bulk ingestion</a>.`,
   },
   s1Fallos: { es: "Si algo falla", en: "If something goes wrong" },
   s1ThQue: { es: "Lo que ves", en: "What you see" },
@@ -723,6 +751,11 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
     <p class="muted">${t("s1PluginComo")}</p>
     <div class="block"><pre><code>${escapeHtml(t("s1PluginBloque"))}</code></pre></div>
     <p class="muted">${t("s1PluginCarpetas")}</p>
+    <div class="block"><pre><code>${escapeHtml(
+      t("s1PluginCompleto").replaceAll("<BASE_URL>", baseUrl),
+    )}</code></pre></div>
+    <p class="muted">${t("s1PluginLogin")}</p>
+    <p class="notice">${t("s1PluginListo")}</p>
 
     <h3>${t("s1Fallos")}</h3>
     <div class="scroll"><table>
