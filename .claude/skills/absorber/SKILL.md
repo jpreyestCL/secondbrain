@@ -101,13 +101,15 @@ Una llamada **por documento**. No juntes documentos distintos en una sola: el ep
 
 ## Una carpeta entera
 
-**Paso 1 — preparar (una vez por carpeta).** El CLI hace lo mecánico y sin LLM: escanear, extraer texto, OCR, deduplicar por hash y llevar el ledger.
+**Paso 1 — preparar (una vez por carpeta). Lo corres TÚ, no el usuario.**
 
 ```bash
 brain add <carpeta> --review     # escanea, extrae, clasifica y SE DETIENE antes de enviar
 ```
 
-`--review` es lo que evita que se vaya por el camino lento (`ingest-graph`, ~2 min por trozo y con costo de API).
+`--review` es lo que evita que se vaya por el camino lento (`ingest-graph`, ~2 min por trozo y con costo de API). Sin `--review` enviaría todo por ahí.
+
+Con cientos de archivos esto tarda (el OCR domina): **lánzalo en segundo plano** y sigue. Si `next-batch` devuelve `aviso`, es que este paso falta o no terminó.
 
 **Paso 2 — absorber en tandas.** No leas los PDFs: el texto ya está extraído en disco.
 
