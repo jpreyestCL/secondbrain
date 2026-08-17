@@ -263,24 +263,34 @@ class IngestaDirecta:
                 )
 
         # --- invalidacion temporal ----------------------------------------
-        # Un hecho nuevo sobre el MISMO sujeto y la MISMA relacion, con fecha
-        # posterior, invalida al anterior. Es lo que permite responder "cual es
-        # mi cuenta" y tambien "y antes". Los hechos NUNCA se borran.
+        # Un hecho nuevo sobre el mismo SUJETO, la misma RELACION y el mismo
+        # OBJETO, con fecha posterior, invalida al anterior. Es lo que permite
+        # responder "cual es mi saldo" y tambien "y antes". Los hechos NUNCA se
+        # borran.
+        #
+        # El objeto tiene que entrar en la comparacion. Sin el, "Cien Aventuras
+        # LLC es titular de la cuenta de AHORRO" invalidaba "es titular de la
+        # cuenta CORRIENTE" — dos hechos simultaneamente verdaderos. Paso: el
+        # grafo quedo afirmando que la empresa habia dejado de tener una cuenta
+        # de la que teniamos saldos dos anos despues. Una relacion puede ser de
+        # uno a muchos, y el sujeto+relacion no basta para saberlo.
         invalidados = 0
         if valido:
             for h in hechos:
                 s = por_clave.get(normalizar(h["sujeto"]))
-                if not s:
+                o = por_clave.get(normalizar(h["objeto"]))
+                if not (s and o):
                     continue
                 registros, _, _ = await self.driver.execute_query(
                     """
-                    MATCH (a:Entity {uuid: $s})-[r:RELATES_TO {group_id: $gid}]->()
+                    MATCH (a:Entity {uuid: $s})-[r:RELATES_TO {group_id: $gid}]->(b:Entity {uuid: $o})
                     WHERE r.name = $rel AND r.invalid_at IS NULL
                       AND (r.valid_at IS NULL OR r.valid_at < $nuevo)
                     SET r.invalid_at = $nuevo
                     RETURN count(r) AS n
                     """,
-                    s=s, gid=self.group_id, rel=h["relacion"].strip(), nuevo=valido.isoformat(),
+                    s=s, o=o, gid=self.group_id, rel=h["relacion"].strip(),
+                    nuevo=valido.isoformat(),
                 )
                 invalidados += int(registros[0]["n"]) if registros else 0
 

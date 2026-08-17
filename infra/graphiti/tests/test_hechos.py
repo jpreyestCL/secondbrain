@@ -363,3 +363,30 @@ async def test_un_documento_sin_hechos_igual_lleva_entity_edges():
 
     consulta = [c for c, _ in driver.consultas if "CREATE (e:Episodic" in c][0]
     assert "entity_edges: []" in consulta
+
+
+@pytest.mark.asyncio
+async def test_dos_hechos_simultaneos_no_se_invalidan_entre_si():
+    """Una relacion puede ser de uno a muchos.
+
+    Invalidando solo por sujeto+relacion, "la empresa es titular de la cuenta
+    de AHORRO" invalidaba "es titular de la cuenta CORRIENTE" — dos hechos
+    ciertos a la vez. El grafo quedo afirmando que habia dejado de tener una
+    cuenta de la que teniamos saldos dos anos despues.
+    """
+    driver = DriverFalso()
+    ing = hechos.IngestaDirecta(driver, EmbedderFalso(), "jpreyest")
+
+    await ing.ingerir(
+        "cartola.pdf",
+        [{"nombre": "Empresa", "tipo": "Organizacion"},
+         {"nombre": "Cuenta de ahorro", "tipo": "Cuenta"}],
+        [{"sujeto": "Empresa", "relacion": "es titular de", "objeto": "Cuenta de ahorro"}],
+        fecha_documento="2024-01-01",
+    )
+
+    consultas = [c for c, _ in driver.consultas if "SET r.invalid_at" in c]
+    assert consultas, "deberia intentar invalidar"
+    assert "(b:Entity {uuid: $o})" in consultas[0], (
+        "la invalidacion debe exigir tambien el mismo OBJETO"
+    )
