@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 import logging
 import time
 from pathlib import Path
@@ -949,7 +950,9 @@ def mark_done(
             raise typer.Exit(1)
         # chunk_idx = 0: with add_facts the whole document is ONE episode, so
         # there are no chunks to number.
-        ledger.record_episode(episode, doc_id, 0, cfg.tenant, fila.domain)
+        ledger.record_episode(
+            episode, doc_id, 0, cfg.tenant, fila.domain, destino=cfg.mcp_url or None
+        )
         ledger.set_status(doc_id, "ingested")
     typer.echo(f"ok {Path(fila.path).name}")
 
@@ -1007,3 +1010,167 @@ def dedupe(
             f"\n[bold]{marcados} duplicate(s)[/bold] across {len(grupos)} distinct contents. "
             f"Nothing changed: run `brain dedupe --apply`."
         )
+
+
+@app.command("push-facts")
+def push_facts(
+    archivo: Optional[str] = typer.Option(
+        None, "--file", help="JSON file; without it, reads stdin"
+    ),
+    url: Optional[str] = typer.Option(None, "--url", help="Server URL (default: saved one)"),
+) -> None:
+    """Send already-extracted facts through `add_facts` and mark the doc done.
+
+    The intended flow is Claude calling the `add_facts` MCP tool directly. This
+    command exists for when that tool is not exposed to the session — over
+    Remote Control, in CI, or from a plain terminal — so the fast path does not
+    depend on which client you happen to be using.
+
+    Input: one JSON object (or a list of them) with `doc_id` plus whatever
+    `add_facts` takes. On success it records the episode in the ledger, so an
+    interrupted run resumes without re-sending.
+    """
+    import json as _json
+
+    from .mcp_remote import conectar
+
+    crudo = Path(archivo).read_text(encoding="utf-8") if archivo else sys.stdin.read()
+    entrada = _json.loads(crudo)
+    documentos = entrada if isinstance(entrada, list) else [entrada]
+
+    cfg, ledger = _open()
+    destino = url or cfg.mcp_url
+    if not destino:
+        console.print("[red]No server configured. Run `brain login <url>` first.[/red]")
+        raise typer.Exit(1)
+
+    cliente = conectar(destino.replace("/mcp", ""), cfg.tenant, cfg.brain_home)
+    ok = fallos = 0
+    with ledger:
+        for doc in documentos:
+            doc_id = doc.pop("doc_id", None)
+            try:
+                bruto = cliente.llamar("add_facts", doc)
+                respuesta = _json.loads(bruto) if bruto.strip().startswith("{") else {}
+            except Exception as e:  # noqa: BLE001 - se reporta y se sigue
+                console.print(f"[red]fallo[/red] {doc.get('documento', '?')}: {e}")
+                fallos += 1
+                continue
+
+            episodio = respuesta.get("episodio")
+            if not episodio:
+                # Sin uuid no se marca: dar por hecho lo no confirmado es como
+                # se pierden documentos en silencio.
+                console.print(
+                    f"[yellow]sin confirmar[/yellow] {doc.get('documento', '?')}: {bruto[:120]}"
+                )
+                fallos += 1
+                continue
+
+            if doc_id:
+                fila = ledger.get(doc_id)
+                ledger.record_episode(
+                    episodio, doc_id, 0, cfg.tenant,
+                    fila.domain if fila else None, destino=destino,
+                )
+                ledger.set_status(doc_id, "ingested")
+            ok += 1
+            console.print(
+                f"[green]ok[/green] {doc.get('documento', '?')} "
+                f"[dim]{respuesta.get('entidades_nuevas', 0)} entidades nuevas, "
+                f"{respuesta.get('hechos', 0)} hechos, "
+                f"{respuesta.get('hechos_invalidados', 0)} invalidados[/dim]"
+            )
+
+    console.print(f"\npush-facts done: {ok} stored, {fallos} failed")
+    if fallos:
+        raise typer.Exit(1)
+
+
+@app.command("skip")
+def skip(
+    doc_id: str = typer.Argument(..., help="Document id"),
+    reason: str = typer.Option(..., "--reason", "--motivo", help="Why it is not ingested"),
+) -> None:
+    """Mark a document as NOT to be ingested, with the reason.
+
+    Rule 9 (raw spreadsheets, drafts superseded by a signed version) and its
+    relatives: blank forms and templates. They have no consultable fact, and
+    ingesting them drowns the graph in noise.
+
+    The reason is stored: a year from now, "why isn't this deed in the graph?"
+    should have an answer that is not "who knows".
+    """
+    cfg, ledger = _open()
+    with ledger:
+        fila = ledger.get(doc_id)
+        if fila is None:
+            typer.echo(f"unknown doc_id: {doc_id}", err=True)
+            raise typer.Exit(1)
+        ledger.set_status(doc_id, "skipped", error=reason)
+    console.print(f"[dim]skipped[/dim] {Path(fila.path).name} — {reason}")
+
+
+@app.command("doctor")
+def doctor(
+    episodes_file: Optional[str] = typer.Option(
+        None, "--episodes", help="File with the server's episode names, one per line"
+    ),
+    repair: bool = typer.Option(False, "--repair", help="Un-ingest what is not on the server"),
+) -> None:
+    """Check that what the ledger calls `ingested` really is on the server.
+
+    Why: `ingested` never said WHERE. 339 documents were recorded as ingested
+    while their episodes lived in the local Docker FalkorDB and not on the
+    server — which is the graph you query from Claude. Nothing failed; the data
+    was simply where nobody looks, and the ledger kept them from being retried
+    because it considered them done.
+
+    Pass `--episodes` with the episode names from the graph that matters. With
+    `--repair`, whatever is missing goes back to `classified` so it can be sent
+    again; its stale episode rows are dropped.
+    """
+    import unicodedata
+
+    cfg, ledger = _open()
+    if not episodes_file:
+        console.print(
+            "[yellow]Falta --episodes.[/yellow] Obtén los nombres de los episodios del "
+            "servidor (con `get_episodes` desde Claude, o consultando el grafo) y pásalos "
+            "en un archivo, uno por línea."
+        )
+        raise typer.Exit(2)
+
+    def norm(x: str) -> str:
+        return unicodedata.normalize("NFC", x).lower()
+
+    en_servidor = [norm(l) for l in Path(episodes_file).read_text(encoding="utf-8").splitlines() if l.strip()]
+
+    with ledger:
+        console.print(f"[dim]episodios por destino registrado:[/dim] {ledger.destinos()}")
+        faltan, estan = [], 0
+        for fila in ledger.by_status("ingested"):
+            base = norm(Path(fila.path).stem[:45])
+            if any(base in n for n in en_servidor):
+                estan += 1
+            else:
+                faltan.append(fila)
+
+        console.print(
+            f"\ndocumentos marcados ingested: {estan + len(faltan)}\n"
+            f"  [green]en el servidor:[/green] {estan}\n"
+            f"  [red]NO estan:[/red]       {len(faltan)}"
+        )
+        for fila in faltan[:10]:
+            console.print(f"    [dim]{fila.path}[/dim]")
+        if len(faltan) > 10:
+            console.print(f"    [dim]... y {len(faltan) - 10} más[/dim]")
+
+        if not faltan:
+            console.print("\n[green]El ledger y el servidor coinciden.[/green]")
+            return
+        if not repair:
+            console.print("\nNada cambiado. Para devolverlos a la cola: `brain doctor --episodes <f> --repair`")
+            return
+        n = ledger.desingerir([f.doc_id for f in faltan])
+    console.print(f"\n[bold]{n} documento(s) devueltos a la cola[/bold] para reenviar al servidor.")

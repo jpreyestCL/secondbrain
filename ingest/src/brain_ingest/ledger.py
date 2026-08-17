@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     domain         TEXT,
     created_at     TEXT NOT NULL,
     pending_expiry INTEGER NOT NULL DEFAULT 0,
-    expired        INTEGER NOT NULL DEFAULT 0
+    expired        INTEGER NOT NULL DEFAULT 0,
+    destino        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_doc ON episodes (doc_id);
 """
@@ -140,6 +141,17 @@ class Ledger:
         # Migration: files.duplicate_of (deduplicacion por contenido).
         try:
             self.conn.execute("ALTER TABLE files ADD COLUMN duplicate_of TEXT")
+        except sqlite3.OperationalError:
+            pass
+        # Migration: episodes.destino — A QUE GRAFO fue el episodio.
+        #
+        # Sin esto, "ingested" no dice donde. Paso lo peor: 339 documentos
+        # marcados como ingeridos vivian en el FalkorDB local de Docker y no en
+        # el servidor, que es lo que se consulta desde Claude. No fallo nada; los
+        # datos simplemente estaban donde nadie los mira, y el ledger impedia
+        # reintentarlos porque los daba por hechos.
+        try:
+            self.conn.execute("ALTER TABLE episodes ADD COLUMN destino TEXT")
         except sqlite3.OperationalError:
             pass
         self.conn.commit()
@@ -351,14 +363,50 @@ class Ledger:
         chunk_idx: int,
         group_id: str | None,
         domain: str | None = None,
+        destino: str | None = None,
     ) -> None:
+        """Anota un episodio y, con `destino`, DONDE quedo.
+
+        `group_id` es el tenant, no el servidor: dos instalaciones distintas
+        usan el mismo. Sin `destino`, "ingested" no distingue el grafo local de
+        Docker del de produccion, y esa confusion ya dejo 339 documentos dados
+        por ingeridos en un grafo que nadie consulta.
+        """
         self.conn.execute(
             "INSERT OR REPLACE INTO episodes"
-            " (episode_uuid, doc_id, chunk_idx, group_id, domain, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (episode_uuid, doc_id, chunk_idx, group_id, domain, _now()),
+            " (episode_uuid, doc_id, chunk_idx, group_id, domain, created_at, destino)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (episode_uuid, doc_id, chunk_idx, group_id, domain, _now(), destino),
         )
         self.conn.commit()
+
+    def destinos(self) -> dict[str, int]:
+        """Cuantos episodios hay por destino (None = de antes de registrarlo)."""
+        return {
+            (r[0] or "(sin registrar)"): r[1]
+            for r in self.conn.execute(
+                "SELECT destino, count(*) FROM episodes WHERE expired = 0 GROUP BY destino"
+            )
+        }
+
+    def desingerir(self, doc_ids: list[str]) -> int:
+        """Devuelve documentos a `classified` y borra sus episodios del ledger.
+
+        Para cuando se comprueba que los episodios NO estan en el grafo que
+        manda: dejarlos como `ingested` impide que se reintenten, que es peor
+        que no haberlos ingerido nunca.
+        """
+        n = 0
+        for doc_id in doc_ids:
+            self.conn.execute("DELETE FROM episodes WHERE doc_id = ?", (doc_id,))
+            self.conn.execute(
+                "UPDATE files SET status = 'classified', error = NULL, updated_at = ?"
+                " WHERE doc_id = ? AND status = 'ingested'",
+                (_now(), doc_id),
+            )
+            n += self.conn.total_changes and 1
+        self.conn.commit()
+        return n
 
     def episodes_for_doc(self, doc_id: str, only_active: bool = True) -> list[sqlite3.Row]:
         q = "SELECT * FROM episodes WHERE doc_id = ?"

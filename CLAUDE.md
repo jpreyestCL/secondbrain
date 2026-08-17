@@ -26,7 +26,14 @@ Second brain multi-tenant: un grafo temporal de conocimiento (Graphiti sobre Fal
 5. **El ledger se actualiza solo vía el CLI `brain`, nunca a mano.** No editar el ledger ni ingestar documentos saltándose el pipeline; el ledger es lo que evita duplicados. Para reingerir tras vaciar el grafo existe `brain add <carpeta> --redo`, que devuelve esos documentos a la cola sin tocar el grafo ni los archivos — no hace falta ningún `DELETE` a mano.
 6. **`group_id` es SIEMPRE el tenant, jamás el dominio.** El driver de FalkorDB usa el `group_id` como nombre del grafo (un grafo por tenant); el servidor MCP lo fuerza. El dominio (según SCHEMA.md) viaja como metadata: en el `source_description` estructurado (`dominio: <dominio> | tipo: <doc_type> | origen: <descripcion>`) y como prefijo `[<dominio>]` en el nombre del episodio. Los hechos que cambian se invalidan (`invalid_at`), jamás se borran.
 7. Datos médicos y financieros sí se ingestan, pero con flag de sensibilidad (`sensitivity=medical|financial`).
-8. **Antes de ingerir, verificar CONTRA QUÉ GRAFO se está escribiendo.** `127.0.0.1:6379` en el Mac es el FalkorDB del Docker **local**, no el del servidor; el del servidor está en su `:6380` y solo se alcanza por túnel SSH explícito. Comprobar con `docker ps` y `lsof -nP -iTCP:6379 -sTCP:LISTEN` antes de lanzar un lote: dos grafos divergentes es el error más caro, porque no falla nada, simplemente los datos aparecen donde nadie los consulta.
+8. **Antes de ingerir, verificar CONTRA QUÉ GRAFO se está escribiendo.** Ya pasó, y es el
+   incidente más caro del proyecto: **339 documentos** quedaron marcados `ingested` en el
+   ledger con sus episodios en el **FalkorDB local de Docker**, no en el servidor — que es
+   el grafo que se consulta desde Claude. No falló nada: los datos estaban donde nadie los
+   mira, y el ledger impedía reintentarlos porque los daba por hechos. Ahora el ledger
+   guarda el **destino** de cada episodio y `brain doctor --episodes <archivo>` compara lo
+   que dice el ledger contra los episodios que existen de verdad en el servidor
+   (`--repair` devuelve a la cola lo que no esté). `127.0.0.1:6379` en el Mac es el FalkorDB del Docker **local**, no el del servidor; el del servidor está en su `:6380` y solo se alcanza por túnel SSH explícito. Comprobar con `docker ps` y `lsof -nP -iTCP:6379 -sTCP:LISTEN` antes de lanzar un lote: dos grafos divergentes es el error más caro, porque no falla nada, simplemente los datos aparecen donde nadie los consulta.
 9. **No ingerir datos tabulares crudos ni borradores.** Una planilla contable se parte en decenas de miles de episodios que ahogan el grafo con asientos sueltos sin aportar un hecho consultable; un borrador de contrato contradice a su versión firmada y el grafo no tiene cómo saber cuál manda. Para ambos: marcarlos `skipped` en el ledger con el motivo y generar una **ficha** (`scripts/fichas-excluidos.py`) que describa qué es el archivo y apunte a su ruta. La ficha sí entra al grafo.
 
 ## Advertencias operacionales

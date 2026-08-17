@@ -263,3 +263,56 @@ def test_contenido_distinto_en_la_misma_ruta_sigue_siendo_una_version_nueva(ledg
     assert (r1, r2) == ("new", "changed")
     assert ledger.get(doc1).superseded is True
     assert ledger.get(doc2).status == "pending"
+
+
+# -- destino del episodio: "ingested" tiene que decir DONDE ------------------
+
+
+def test_el_episodio_guarda_a_que_servidor_fue(ledger):
+    """Sin esto, `ingested` no distingue el grafo local del de produccion.
+
+    Paso lo peor que podia pasar: 339 documentos marcados como ingeridos vivian
+    en el FalkorDB local de Docker y no en el servidor, que es el que se
+    consulta desde Claude. No fallo nada — los datos estaban donde nadie los
+    mira — y el ledger impedia reintentarlos porque los daba por hechos.
+    """
+    _, doc = ledger.upsert_file("/a/x.md", "h", 10, 1.0)
+    ledger.record_episode("ep-1", doc, 0, "jpreyest", "personal",
+                          destino="https://mybrain.rlz.cl/mcp")
+
+    assert ledger.destinos() == {"https://mybrain.rlz.cl/mcp": 1}
+
+
+def test_los_episodios_viejos_salen_como_sin_registrar(ledger):
+    """Los de antes de la migracion no tienen destino: hay que poder verlo,
+    no confundirlos con 'verificados'."""
+    _, doc = ledger.upsert_file("/a/y.md", "h2", 10, 1.0)
+    ledger.record_episode("ep-2", doc, 0, "jpreyest", "personal")
+
+    assert ledger.destinos() == {"(sin registrar)": 1}
+
+
+def test_desingerir_devuelve_a_la_cola_y_borra_los_episodios(ledger):
+    """Dejarlos en `ingested` cuando no estan en el grafo que manda es peor que
+    no haberlos ingerido: impide el reintento."""
+    _, doc = ledger.upsert_file("/a/z.md", "h3", 10, 1.0)
+    ledger.set_status(doc, "classified")
+    ledger.record_episode("ep-3", doc, 0, "jpreyest", "personal", destino="local")
+    ledger.set_status(doc, "ingested")
+
+    n = ledger.desingerir([doc])
+
+    assert n == 1
+    assert ledger.get(doc).status == "classified"
+    assert ledger.episodes_for_doc(doc) == [], "los episodios obsoletos deben desaparecer"
+
+
+def test_desingerir_no_toca_lo_que_no_esta_ingerido(ledger):
+    """Solo revierte lo que estaba dado por hecho; un documento en error o
+    pendiente sigue su curso."""
+    _, doc = ledger.upsert_file("/a/w.md", "h4", 10, 1.0)
+    ledger.set_status(doc, "error", "algo fallo")
+
+    ledger.desingerir([doc])
+
+    assert ledger.get(doc).status == "error"
