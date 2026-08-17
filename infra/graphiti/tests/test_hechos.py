@@ -320,3 +320,46 @@ async def test_un_tipo_inventado_no_se_interpola_en_el_cypher():
     creaciones = [c for c, _ in driver.consultas if "CREATE (n:Entity" in c]
     assert all("DELETE" not in c for c in creaciones), "se colo Cypher por el tipo"
     assert any(":Entity:Entidad" in c for c in creaciones)
+
+
+# --------------------------------------------------------------------------
+# entity_edges: un episodio sin ella rompe la LECTURA DE TODO EL TENANT
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_el_episodio_siempre_lleva_entity_edges():
+    """`EpisodicNode` la declara `list[str]`; ausente llega como None.
+
+    Y el dano no se queda en el episodio malo: `get_episodes` valida TODOS los
+    episodios del group_id, asi que UNO solo escrito sin la propiedad rompia la
+    lectura del tenant entero, y con ella `delete_episode`. El grafo quedaba
+    sin forma de enumerarse ni de limpiarse.
+    """
+    driver = DriverFalso()
+    ing = hechos.IngestaDirecta(driver, EmbedderFalso(), "jpreyest")
+
+    await ing.ingerir("escritura.pdf", ENTIDADES, HECHOS, fecha_documento="2022-04-06")
+
+    creacion = [p for c, p in driver.consultas if "CREATE (e:Episodic" in c][0]
+    consulta = [c for c, _ in driver.consultas if "CREATE (e:Episodic" in c][0]
+    assert "entity_edges: []" in consulta, "el CREATE debe inicializar entity_edges"
+
+    puesta = [(c, p) for c, p in driver.consultas if "SET e.entity_edges" in c]
+    assert puesta, "falta el enlace inverso episodio -> aristas"
+    assert len(puesta[0][1]["uuids"]) == len(HECHOS), "debe listar los uuid de las aristas"
+    assert creacion["uuid"] == puesta[0][1]["ep"], "se actualiza el episodio recien creado"
+
+
+@pytest.mark.asyncio
+async def test_un_documento_sin_hechos_igual_lleva_entity_edges():
+    """El `SET` va dentro del bloque de hechos, asi que un documento que no
+    produce ninguno no pasa por ahi. Sin el `[]` del CREATE quedaria roto —
+    y basta uno para tumbar la lectura del tenant."""
+    driver = DriverFalso()
+    ing = hechos.IngestaDirecta(driver, EmbedderFalso(), "jpreyest")
+
+    await ing.ingerir("solo-entidades.pdf", ENTIDADES, [], fecha_documento="2022-04-06")
+
+    consulta = [c for c, _ in driver.consultas if "CREATE (e:Episodic" in c][0]
+    assert "entity_edges: []" in consulta

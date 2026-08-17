@@ -224,6 +224,7 @@ class IngestaDirecta:
             CREATE (e:Episodic {uuid: $uuid, group_id: $gid, name: $name,
                                 content: $content, source: 'text',
                                 source_description: $desc,
+                                entity_edges: [],
                                 created_at: $created, valid_at: $valid})
             """,
             uuid=ep_uuid,
@@ -317,6 +318,26 @@ class IngestaDirecta:
                                           fact_embedding: vecf32(f.emb)}]->(b)
                 """,
                 filas=filas_h, gid=self.group_id, created=ahora.isoformat(), ep=ep_uuid,
+            )
+
+            # El enlace inverso episodio -> aristas.
+            #
+            # Las aristas ya guardan `episodes: [$ep]`, asi que la informacion
+            # estaba; el problema es de FORMA. `EpisodicNode` de graphiti declara
+            # `entity_edges: list[str]`, y una propiedad ausente en el grafo se lee
+            # como None, que pydantic rechaza.
+            #
+            # Y el dano no se queda en el episodio malo: `get_episodes` valida
+            # TODOS los episodios del group_id, asi que UNO solo escrito por aqui
+            # rompia la lectura del tenant entero — y tambien `delete_episode`, que
+            # pasa por `EpisodicNode.get_by_uuid`. O sea que un episodio mal escrito
+            # dejaba el grafo sin forma de enumerarlo ni de limpiarlo.
+            await self.driver.execute_query(
+                """
+                MATCH (e:Episodic {uuid: $ep})
+                SET e.entity_edges = $uuids
+                """,
+                ep=ep_uuid, uuids=[f["uuid"] for f in filas_h],
             )
 
         # --- el episodio MENCIONA a sus entidades -------------------------
