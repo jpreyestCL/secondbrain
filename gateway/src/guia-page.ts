@@ -133,10 +133,6 @@ type Clave =
   | "s4Remoto"
   | "s4RemotoComo"
   | "s4RemotoToken"
-  | "s4Directo"
-  | "s4DirectoComo"
-  | "s4Entorno"
-  | "s4WarnEmbeddings"
   | "s4SinTerminal"
   // 05 · Accesos
   | "s5Titulo"
@@ -534,50 +530,6 @@ const T: Textos<Clave> = {
     en: `The first time, the browser opens so you can authorize; the token is stored in
       <code>~/.brain/&lt;tenant&gt;/</code>. The earlier steps are local.`,
   },
-  s4Directo: {
-    es: "Escribiendo directo a la base (requiere ser administrador)",
-    en: "Writing straight to the database (admin access required)",
-  },
-  s4DirectoComo: {
-    es: `Más rápido para lotes muy grandes, pero FalkorDB solo escucha en el
-      localhost del servidor: hace falta un túnel SSH y configurar los modelos a mano.`,
-    en: `Faster for very large batches, but FalkorDB only listens on the server's
-      localhost: it needs an SSH tunnel and the models configured by hand.`,
-  },
-  s4Entorno: {
-    es: `# El puerto local NO puede ser 6379 si tienes Docker corriendo:
-# ese puerto ya lo publica el FalkorDB local y escribirias en el grafo equivocado.
-ssh -f -N -L 16380:127.0.0.1:6380 usuario@servidor
-
-export FALKORDB_HOST=127.0.0.1 FALKORDB_PORT=16380
-export FALKORDB_TENANT_USER=tenant_<slug> FALKORDB_TENANT_PASSWORD=<password del tenant>
-
-# Chat y embeddings llevan claves y URLs SEPARADAS.
-export LLM_MODEL=gpt-4o-mini LLM_API_URL=https://api.openai.com/v1 LLM_API_KEY=<key>
-export EMBEDDER_API_KEY=<key nvidia> EMBEDDER_API_URL=https://integrate.api.nvidia.com/v1
-export EMBEDDER_MODEL=nvidia/nv-embed-v1 EMBEDDER_DIMENSIONS=4096`,
-    en: `# The local port CANNOT be 6379 if you have Docker running:
-# that port is already taken by the local FalkorDB and you would write to the wrong graph.
-ssh -f -N -L 16380:127.0.0.1:6380 user@server
-
-export FALKORDB_HOST=127.0.0.1 FALKORDB_PORT=16380
-export FALKORDB_TENANT_USER=tenant_<slug> FALKORDB_TENANT_PASSWORD=<tenant password>
-
-# Chat and embeddings take SEPARATE keys and URLs.
-export LLM_MODEL=gpt-4o-mini LLM_API_URL=https://api.openai.com/v1 LLM_API_KEY=<key>
-export EMBEDDER_API_KEY=<nvidia key> EMBEDDER_API_URL=https://integrate.api.nvidia.com/v1
-export EMBEDDER_MODEL=nvidia/nv-embed-v1 EMBEDDER_DIMENSIONS=4096`,
-  },
-  s4WarnEmbeddings: {
-    es: `El modelo de embeddings y sus dimensiones DEBEN coincidir con los del
-      servidor (<code>nvidia/nv-embed-v1</code>, <code>4096</code>). Si ingieres con otro
-      modelo u otra dimensión, la búsqueda semántica del grafo se corrompe. Por eso la vía
-      MCP es más segura: ahí los modelos los pone el servidor.`,
-    en: `The embedding model and its dimensions MUST match the server's
-      (<code>nvidia/nv-embed-v1</code>, <code>4096</code>). If you ingest with a different
-      model or a different dimension, the graph's semantic search is corrupted. That is why
-      the MCP route is safer: there the models come from the server.`,
-  },
   s4SinTerminal: {
     es: `<strong>Sin terminal:</strong> adjunta los documentos en Claude y
       pídele que los guarde. No requiere instalar nada.`,
@@ -695,7 +647,6 @@ export function guiaPageHtml(opts: GuiaPageOptions = {}): string {
     mcpUrl,
   );
   const remoto = personalizar(REMOTO_BLOCK, tenant, mcpUrl);
-  const entorno = personalizar(t("s4Entorno"), tenant, mcpUrl);
   const baseUrl = mcpUrl.replace(/\/mcp$/, "");
   const instalar = INSTALL_BLOCK.replaceAll("<BASE_URL>", baseUrl);
   const vincular = CONFIG_BLOCK.replaceAll("<BASE_URL>", baseUrl);
@@ -848,12 +799,6 @@ ${cliRows}
     <p class="muted">${t("s4RemotoComo")}</p>
     <div class="block"><pre><code>${escapeHtml(remoto)}</code></pre></div>
     <p class="muted">${t("s4RemotoToken")}</p>
-
-    <h3>${t("s4Directo")}</h3>
-    <p class="muted">${t("s4DirectoComo")}</p>
-    <div class="block"><pre><code>${escapeHtml(entorno)}</code></pre></div>
-
-    <p class="warn">${t("s4WarnEmbeddings")}</p>
 
     <p class="notice">${t("s4SinTerminal")}</p>
   </section>

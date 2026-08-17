@@ -103,7 +103,7 @@ describe("guía de uso", () => {
     expect(html).toContain("group_id");
   });
 
-  it("documenta el pipeline del CLI y el túnel SSH con la advertencia de embeddings", async () => {
+  it("documenta el pipeline del CLI", async () => {
     const cookie = await signIn();
     const html = await (await fetch(`${baseUrl}/guia`, { headers: { cookie } })).text();
     // `add` es el camino normal; el resto son las etapas sueltas, que se
@@ -122,14 +122,42 @@ describe("guía de uso", () => {
     ]) {
       expect(html).toContain(cmd);
     }
-    expect(html).toContain("ssh -f -N -L 16380:127.0.0.1:6380");
-    expect(html).toContain("EMBEDDER_DIMENSIONS=4096");
-    expect(html).toContain("nvidia/nv-embed-v1");
     expect(html).toContain("~/.brain/");
-    // El aviso crítico va destacado, no en texto corrido.
-    expect(html).toMatch(/class="warn"[^>]*>[\s\S]*?nv-embed-v1/);
     // Los bloques de código no desbordan en móvil.
     expect(html).toContain("overflow-x: auto");
+  });
+
+  it("NO publica instrucciones de administrador ni detalles de la infraestructura", async () => {
+    // La guía es para quien usa su cerebro, no para quien opera el servidor.
+    // Publicaba el túnel SSH, el puerto interno de FalkorDB, el patrón del
+    // usuario ACL por tenant y cómo configurar las claves de LLM a mano.
+    //
+    // Tres motivos, y el tercero es el que obliga:
+    //  1. Contradice el diseño: por el conector NO hace falta ninguna clave.
+    //  2. Es reconocimiento gratis sobre cómo está montado el servidor.
+    //  3. Ya era FALSO. El embedder pasó a text-embedding-3-small a 512
+    //     dimensiones; seguir esas instrucciones configuraba 4096 y corrompía
+    //     la búsqueda del grafo, que es justo el daño que no se arregla
+    //     reingiriendo.
+    const publica = await (await fetch(`${baseUrl}/guia`)).text();
+    const conSesion = await (
+      await fetch(`${baseUrl}/guia`, { headers: { cookie: await signIn() } })
+    ).text();
+
+    for (const html of [publica, conSesion]) {
+      for (const filtracion of [
+        "ssh -f -N -L",
+        "6380",
+        "FALKORDB_HOST",
+        "FALKORDB_TENANT_PASSWORD",
+        "EMBEDDER_DIMENSIONS",
+        "EMBEDDER_API_KEY",
+        "LLM_API_KEY",
+        "nv-embed-v1",
+      ]) {
+        expect(html, `la guía filtra: ${filtracion}`).not.toContain(filtracion);
+      }
+    }
   });
 
   it("se enlaza desde /cuenta y desde la landing", async () => {
@@ -230,15 +258,12 @@ describe("guía de uso en inglés", () => {
     }
   });
 
-  it("traduce los comentarios del bloque de entorno sin tocar los comandos", () => {
+  it("tampoco filtra la infraestructura en inglés", () => {
+    // El bloque de administrador se quitó: la traducción no puede reintroducirlo.
     const html = en();
-    expect(html).toContain("ssh -f -N -L 16380:127.0.0.1:6380");
-    expect(html).toContain("EMBEDDER_DIMENSIONS=4096");
-    expect(html).toContain("The local port CANNOT be 6379");
-    expect(html).not.toContain("El puerto local NO puede ser 6379");
-    // La advertencia crítica de embeddings sigue destacada, en inglés.
-    expect(html).toMatch(/class="warn"[^>]*>[\s\S]*?nv-embed-v1/);
-    expect(html).toContain("MUST match the server's");
+    for (const filtracion of ["ssh -f -N -L", "6380", "FALKORDB_HOST", "nv-embed-v1"]) {
+      expect(html, `la guía en inglés filtra: ${filtracion}`).not.toContain(filtracion);
+    }
   });
 
   it("no reintroduce el doble escape en inglés", () => {
