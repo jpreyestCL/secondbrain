@@ -477,3 +477,174 @@ def test_una_carpeta_ya_terminada_no_avisa(brain_home, tmp_path):
     assert datos["pendientes_totales"] == 0
     assert "aviso" not in datos
     assert datos["resumen_ledger"] == {"ingested": 1}, "el resumen explica el cero"
+
+
+# -- reconcile: el ledger dice error pero el grafo tiene el contenido ----------
+
+
+class _ClienteFalso:
+    """Devuelve lo que get_episodes devolveria, ya envuelto como el real."""
+
+    def __init__(self, episodios):
+        self._episodios = episodios
+        self.llamadas = []
+
+    def llamar(self, nombre, argumentos, timeout=None):
+        import json as _json
+
+        self.llamadas.append((nombre, argumentos))
+        return _json.dumps({"result": {"episodes": self._episodios}})
+
+
+def _ep(doc_id, idx, total, uuid=None):
+    """Un episodio del camino lento, con su procedencia y su numeracion."""
+    return {
+        "uuid": uuid or f"ep-{doc_id}-{idx}",
+        "name": f"[personal] documento.pdf [{idx}/{total}]",
+        "source_description": f"dominio: personal | tipo: documento | origen: /x/y.pdf (doc_id={doc_id})",
+    }
+
+
+D1 = "11111111-1111-1111-1111-111111111111"
+D2 = "22222222-2222-2222-2222-222222222222"
+
+
+def test_episodios_por_doc_agrupa_y_sabe_cuantos_faltan():
+    from brain_ingest.mcp_remote import episodios_por_doc
+
+    cliente = _ClienteFalso([_ep(D1, 1, 3), _ep(D1, 2, 3), _ep(D2, 1, 1)])
+
+    r = episodios_por_doc(cliente)
+
+    assert r[D1]["total"] == 3
+    assert len(r[D1]["episodios"]) == 2, "solo llegaron 2 de los 3 trozos"
+    assert r[D2]["total"] == 1 and len(r[D2]["episodios"]) == 1
+
+
+def test_episodios_de_add_facts_no_entran():
+    """No llevan doc_id: el documento entero es UN episodio y ya se marco."""
+    from brain_ingest.mcp_remote import episodios_por_doc
+
+    cliente = _ClienteFalso(
+        [
+            {
+                "uuid": "ep-facts",
+                "name": "[personal] cedula.png",
+                "source_description": "dominio: personal | tipo: cedula | sensibilidad: pii",
+            }
+        ]
+    )
+
+    assert episodios_por_doc(cliente) == {}
+
+
+def _ledger_con(tmp_path, n=1, status="error"):
+    """Deja n filas en el ledger en estado `status`. Devuelve sus doc_id.
+
+    `upsert_file` genera el doc_id, asi que las pruebas construyen los
+    episodios falsos a partir de lo que devuelve, no al reves.
+    """
+    from brain_ingest.config import load_config
+    from brain_ingest.ledger import Ledger
+
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    cfg = load_config()
+    ruta = cfg.home / "config.toml"
+    ruta.write_text(
+        ruta.read_text(encoding="utf-8") + '\nmcp_url = "https://ejemplo.test/mcp"\n',
+        encoding="utf-8",
+    )
+    ids = []
+    lg = Ledger(cfg.ledger_path)
+    with lg:
+        for i in range(n):
+            p = docs / f"doc{i}.pdf"
+            p.write_text(f"x{i}", encoding="utf-8")
+            _, doc_id = lg.upsert_file(path=str(p), sha256=f"sha{i}", size=2, mtime=0.0)
+            lg.set_status(doc_id, status, "el servidor no confirmó el episodio")
+            ids.append(doc_id)
+    return ids
+
+
+def _estado(doc_id):
+    from brain_ingest.config import load_config
+    from brain_ingest.ledger import Ledger
+
+    lg = Ledger(load_config().ledger_path)
+    with lg:
+        return lg.get(doc_id).status, lg.episodes_for_doc(doc_id)
+
+
+def _parchar(monkeypatch, episodios):
+    import brain_ingest.mcp_remote as mr
+
+    monkeypatch.setattr(mr, "conectar", lambda *a, **k: _ClienteFalso(episodios))
+
+
+def test_reconcile_marca_los_completos(brain_home, tmp_path, monkeypatch):
+    (d,) = _ledger_con(tmp_path)
+    _parchar(monkeypatch, [_ep(d, 1, 2), _ep(d, 2, 2)])
+
+    r = runner.invoke(app, ["reconcile", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    estado, episodios = _estado(d)
+    assert estado == "ingested"
+    assert len(episodios) == 2, "deben quedar los DOS episodios, no uno"
+
+
+def test_reconcile_NO_toca_los_parciales(brain_home, tmp_path, monkeypatch):
+    """El caso peligroso: registrar 1 de 88 dejaria que `expire` huerfane 87."""
+    (d,) = _ledger_con(tmp_path)
+    _parchar(monkeypatch, [_ep(d, 1, 88)])
+
+    r = runner.invoke(app, ["reconcile", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert "INCOMPLETE" in r.output
+    estado, episodios = _estado(d)
+    assert estado == "error", "no debe marcarse ingested"
+    assert episodios == [], "no debe registrar episodios sueltos"
+
+
+def test_reconcile_sin_apply_no_escribe(brain_home, tmp_path, monkeypatch):
+    (d,) = _ledger_con(tmp_path)
+    _parchar(monkeypatch, [_ep(d, 1, 1)])
+
+    r = runner.invoke(app, ["reconcile"])
+
+    assert r.exit_code == 0, r.output
+    assert "--apply" in r.output
+    assert _estado(d)[0] == "error"
+
+
+def test_reconcile_delata_los_que_de_verdad_faltan(brain_home, tmp_path, monkeypatch):
+    """Sin episodios en el grafo, el error NO es falso: hay que reingerir."""
+    (d,) = _ledger_con(tmp_path)
+    _parchar(monkeypatch, [])
+
+    r = runner.invoke(app, ["reconcile", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert "not in the graph at all" in r.output
+    assert "--redo" in r.output, "debe decir COMO arreglarlo"
+
+
+def test_reconcile_no_pide_reingerir_lo_que_se_salto_a_proposito(
+    brain_home, tmp_path, monkeypatch
+):
+    """Un `skipped` sin episodios es lo esperado, no una anomalia.
+
+    Mezclarlo con los fallidos haria que el informe pidiera reingerir fotos y
+    binarios que nunca debieron entrar.
+    """
+    (d,) = _ledger_con(tmp_path, status="skipped")
+    _parchar(monkeypatch, [])
+
+    r = runner.invoke(app, ["reconcile", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert "expected, nothing to do" in r.output
+    assert "DO need re-ingesting" not in r.output
+    assert _estado(d)[0] == "skipped"

@@ -957,6 +957,114 @@ def mark_done(
     typer.echo(f"ok {Path(fila.path).name}")
 
 
+@app.command("reconcile")
+def reconcile(
+    folder: Optional[str] = typer.Option(
+        None, "--folder", "--carpeta", help="Only documents under this path"
+    ),
+    apply: bool = typer.Option(False, "--apply", help="Apply; without it, only report"),
+    max_episodes: int = typer.Option(
+        2000, "--max-episodes", help="How many episodes to read from the graph"
+    ),
+) -> None:
+    """Mark as ingested the docs whose episodes ARE in the graph but the ledger calls failed.
+
+    `add_memory` answers when it ENQUEUES, not when it finishes. If the later
+    confirmation times out, the row is left in `error` even though the write
+    landed. The ledger then disagrees with the graph, and the tempting fix
+    (`brain add --redo`) DUPLICATES episodes, because add_facts dedupes
+    entities by normalised name but nothing dedupes episodes.
+
+    A doc is only reconciled when EVERY one of its chunks is found. Partial is
+    refused on purpose: `expire_doc` deletes from what the ledger knows, so
+    recording 1 of 88 episodes would make a later `expire` remove one, mark the
+    doc expired and silently orphan the other 87. A visible error beats an
+    invisible one.
+    """
+    from .mcp_remote import McpRemoteError, conectar, episodios_por_doc
+
+    cfg, ledger = _open()
+    destino = cfg.mcp_url
+    if not destino:
+        console.print(
+            "[red]No server configured.[/red] Run this first:\n"
+            "  [bold]brain login https://mybrain.rlz.cl[/bold]"
+        )
+        raise typer.Exit(2)
+
+    parsed = urlparse(destino)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        cliente = conectar(base, cfg.tenant, cfg.home, path=parsed.path or "/mcp")
+        del_grafo = episodios_por_doc(cliente, maximo=max_episodes)
+    except McpRemoteError as exc:
+        console.print(f"[red]could not connect to the MCP server:[/red] {exc}")
+        raise typer.Exit(2)
+
+    with ledger:
+        filas = [f for f in ledger.all_files() if f.status != "ingested" and not f.superseded]
+        if folder:
+            raiz = str(Path(folder).expanduser().resolve()).rstrip("/") + "/"
+            filas = [f for f in filas if f.path.startswith(raiz)]
+
+        completos, parciales, ausentes, saltados = [], [], [], []
+        for fila in filas:
+            entrada = del_grafo.get(fila.doc_id)
+            if not entrada:
+                # `skipped` sin episodios NO es una anomalia: es exactamente lo
+                # que se decidio al saltarlo (una foto, un binario, un duplicado).
+                # Mezclarlo con los que fallaron haria que el informe pidiera
+                # reingerir cosas que nunca debieron entrar.
+                (saltados if fila.status == "skipped" else ausentes).append(fila)
+            elif len(entrada["episodios"]) >= entrada["total"]:
+                completos.append((fila, entrada))
+            else:
+                parciales.append((fila, entrada))
+
+        if apply:
+            for fila, entrada in completos:
+                for uuid, idx in entrada["episodios"]:
+                    ledger.record_episode(uuid, fila.doc_id, idx, cfg.tenant, fila.domain)
+                ledger.set_status(fila.doc_id, "ingested")
+
+    verbo = "reconciled" if apply else "reconcilable"
+    console.print(f"[green]{len(completos)}[/green] {verbo} (all their chunks are in the graph)")
+    for fila, entrada in completos[:20]:
+        console.print(f"  {Path(fila.path).name}  [{len(entrada['episodios'])} episodios]")
+    if len(completos) > 20:
+        console.print(f"  ... y {len(completos) - 20} mas")
+
+    if parciales:
+        console.print(
+            f"\n[yellow]{len(parciales)}[/yellow] INCOMPLETE — not touched. Some chunks are "
+            "missing from the graph; marking them would let a later `expire` orphan the rest."
+        )
+        for fila, entrada in parciales[:20]:
+            console.print(
+                f"  {Path(fila.path).name}  "
+                f"[{len(entrada['episodios'])}/{entrada['total']} episodios]"
+            )
+
+    if ausentes:
+        console.print(
+            f"\n[red]{len(ausentes)}[/red] not in the graph at all — these DO need re-ingesting "
+            "(`brain add <carpeta> --redo`)."
+        )
+        for fila in ausentes[:20]:
+            console.print(f"  {Path(fila.path).name}  ({fila.status})")
+        if len(ausentes) > 20:
+            console.print(f"  ... y {len(ausentes) - 20} mas")
+
+    if saltados:
+        console.print(
+            f"\n[dim]{len(saltados)} skipped and absent from the graph — expected, "
+            "nothing to do.[/dim]"
+        )
+
+    if not apply and completos:
+        console.print("\nNothing was written. Re-run with [bold]--apply[/bold] to record them.")
+
+
 @app.command("dedupe")
 def dedupe(
     apply: bool = typer.Option(False, "--apply", help="Apply; without it, only report"),
