@@ -872,6 +872,18 @@ def next_batch(
             raiz = str(Path(folder).expanduser().resolve()).rstrip("/") + "/"
             filas = [f for f in filas if f.path.startswith(raiz)]
 
+        # "0 pendientes" es ambiguo: puede ser "ya esta todo" o "esta carpeta
+        # nunca se escaneo". Distinguirlo importa, porque lo segundo hace que
+        # quien llame reporte "no queda nada" habiendo ingerido CERO.
+        todos = ledger.all_files()
+        if folder:
+            ambito = [f for f in todos if f.path.startswith(raiz)]
+        else:
+            ambito = list(todos)
+        resumen: dict[str, int] = {}
+        for f in ambito:
+            resumen[f.status] = resumen.get(f.status, 0) + 1
+
         salida = []
         for fila in filas:
             if len(salida) >= limit:
@@ -900,13 +912,21 @@ def next_batch(
 
         pendientes = len(filas)
 
-    typer.echo(
-        _json.dumps(
-            {"documentos": salida, "entregados": len(salida), "pendientes_totales": pendientes},
-            ensure_ascii=False,
-            indent=2,
+    respuesta: dict = {
+        "documentos": salida,
+        "entregados": len(salida),
+        "pendientes_totales": pendientes,
+        "resumen_ledger": resumen,
+    }
+    if not ambito:
+        donde = f"la carpeta {folder}" if folder else "el ledger"
+        respuesta["aviso"] = (
+            f"No hay NINGUN documento de {donde} en el ledger. Seguramente falta "
+            f"prepararla: `brain add {folder or '<carpeta>'} --review` "
+            f"(escanea, extrae y clasifica sin enviar). Sin eso no hay nada que absorber, "
+            f"y 'cero pendientes' aqui NO significa que este ingerida."
         )
-    )
+    typer.echo(_json.dumps(respuesta, ensure_ascii=False, indent=2))
 
 
 @app.command("mark-done")

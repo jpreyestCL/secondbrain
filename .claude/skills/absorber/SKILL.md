@@ -123,6 +123,8 @@ brain mark-done <doc_id> --episode <uuid que devolvio add_facts>
 
 Después repite `next-batch`. `pendientes_totales` te dice cuánto queda.
 
+**Si viene un `aviso`, léelo y para.** Significa que esa carpeta no está en el ledger — falta el paso 1. Cero pendientes ahí **no** quiere decir que esté ingerida: quiere decir que no se ha escaneado nada. `resumen_ledger` te dice en qué estado está cada documento del ámbito, para que un cero se pueda explicar.
+
 **El marcado es un paso aparte a propósito**: si marcara al entregar, cada tanda interrumpida perdería documentos en silencio. Si algo se corta, esos documentos simplemente vuelven a salir en la próxima tanda.
 
 `fecha_detectada` viene de una heurística por nombre y contenido. **Si el texto del documento la contradice, manda el texto** — tú lo estás leyendo, la heurística no.

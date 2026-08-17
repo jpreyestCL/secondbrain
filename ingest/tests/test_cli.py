@@ -311,6 +311,17 @@ def test_un_archivo_vacio_no_es_un_error(tmp_path):
 # -- next-batch / mark-done: el camino rapido (Claude extrae, add_facts guarda) --
 
 
+def _json_de(salida: str):
+    """El JSON de la salida, ignorando lineas de log previas.
+
+    La primera invocacion en un BRAIN_HOME nuevo imprime "created default
+    config at ..." antes del JSON.
+    """
+    import json as _json
+
+    return _json.loads(salida[salida.index("{") :])
+
+
 def _preparar(tmp_path, n=3):
     """Deja n documentos en estado `classified`, listos para entregar."""
     import json as _json
@@ -354,7 +365,7 @@ def test_next_batch_no_marca_nada(brain_home, tmp_path):
     _preparar(tmp_path, 2)
 
     runner.invoke(app, ["next-batch", "--limit", "2"])
-    otra = _json.loads(runner.invoke(app, ["next-batch", "--limit", "2"]).output)
+    otra = _json_de(runner.invoke(app, ["next-batch", "--limit", "2"]).output)
 
     assert otra["entregados"] == 2, "la tanda no debe consumirse al entregarla"
 
@@ -363,13 +374,13 @@ def test_mark_done_saca_el_documento_de_la_cola(brain_home, tmp_path):
     import json as _json
 
     _preparar(tmp_path, 2)
-    primera = _json.loads(runner.invoke(app, ["next-batch", "--limit", "2"]).output)
+    primera = _json_de(runner.invoke(app, ["next-batch", "--limit", "2"]).output)
     doc = primera["documentos"][0]
 
     r = runner.invoke(app, ["mark-done", doc["doc_id"], "--episode", "ep-uuid-1"])
     assert r.exit_code == 0, r.output
 
-    despues = _json.loads(runner.invoke(app, ["next-batch", "--limit", "5"]).output)
+    despues = _json_de(runner.invoke(app, ["next-batch", "--limit", "5"]).output)
     ids = [d["doc_id"] for d in despues["documentos"]]
     assert doc["doc_id"] not in ids, "el documento marcado sigue en la cola"
     assert despues["pendientes_totales"] == 1
@@ -381,7 +392,7 @@ def test_mark_done_guarda_el_episodio_para_poder_rastrearlo(brain_home, tmp_path
     from brain_ingest.cli import _open
 
     _preparar(tmp_path, 1)
-    doc = _json.loads(runner.invoke(app, ["next-batch"]).output)["documentos"][0]
+    doc = _json_de(runner.invoke(app, ["next-batch"]).output)["documentos"][0]
 
     runner.invoke(app, ["mark-done", doc["doc_id"], "--episode", "ep-abc"])
 
@@ -428,6 +439,41 @@ def test_el_texto_se_trunca_y_se_avisa(brain_home, tmp_path):
     runner.invoke(app, ["extract"])
     runner.invoke(app, ["classify", "--auto"])
 
-    d = _json.loads(runner.invoke(app, ["next-batch", "--max-chars", "500"]).output)["documentos"][0]
+    d = _json_de(runner.invoke(app, ["next-batch", "--max-chars", "500"]).output)["documentos"][0]
     assert len(d["texto"]) == 500
     assert d["truncado"] is True
+
+
+def test_una_carpeta_sin_escanear_avisa_en_vez_de_parecer_terminada(brain_home, tmp_path):
+    """El fallo silencioso mas facil de cometer.
+
+    Sin `brain add --review` previo, una carpeta nunca escaneada devolvia
+    exactamente lo mismo que una ya terminada: `entregados: 0, pendientes: 0`.
+    Quien llame reporta "no queda nada pendiente" habiendo ingerido CERO.
+    """
+    import json as _json
+
+    nueva = tmp_path / "sin-escanear"
+    nueva.mkdir()
+    (nueva / "x.md").write_text("# X", encoding="utf-8")
+
+    datos = _json_de(runner.invoke(app, ["next-batch", "--folder", str(nueva)]).output)
+
+    assert datos["pendientes_totales"] == 0
+    assert "aviso" in datos, "0 pendientes sin aviso es indistinguible de 'ya esta todo'"
+    assert "--review" in datos["aviso"], "el aviso debe decir COMO arreglarlo"
+
+
+def test_una_carpeta_ya_terminada_no_avisa(brain_home, tmp_path):
+    """El aviso solo debe salir cuando de verdad falta preparar."""
+    import json as _json
+
+    _preparar(tmp_path, 1)
+    doc = _json_de(runner.invoke(app, ["next-batch"]).output)["documentos"][0]
+    runner.invoke(app, ["mark-done", doc["doc_id"], "--episode", "ep-1"])
+
+    datos = _json_de(runner.invoke(app, ["next-batch", "--folder", str(tmp_path / "docs")]).output)
+
+    assert datos["pendientes_totales"] == 0
+    assert "aviso" not in datos
+    assert datos["resumen_ledger"] == {"ingested": 1}, "el resumen explica el cero"
