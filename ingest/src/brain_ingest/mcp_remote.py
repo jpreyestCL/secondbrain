@@ -35,6 +35,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import threading
@@ -446,6 +447,63 @@ def episodios_por_nombre(cliente: "ClienteMCP", maximo: int = 200) -> dict[str, 
         for ep in episodios or []:
             if isinstance(ep, dict) and ep.get("name") and ep.get("uuid"):
                 salida[ep["name"]] = ep["uuid"]
+    return salida
+
+
+#: `ingest-graph` escribe la procedencia en el source_description del episodio,
+#: terminada en "(doc_id=<uuid>)". Es el unico hilo que une un episodio del grafo
+#: con su fila del ledger.
+_DOC_ID = re.compile(r"\(doc_id=([0-9a-fA-F-]{36})\)")
+#: `ingest-graph` numera los trozos en el nombre: "... .pdf [63/88]".
+_TROZO = re.compile(r"\[(\d+)/(\d+)\]\s*$")
+
+
+def episodios_por_doc(cliente: "ClienteMCP", maximo: int = 2000) -> dict[str, dict]:
+    """Mapa {doc_id -> {"episodios": [(uuid, idx)], "total": n}} desde el grafo.
+
+    Existe para reconciliar el ledger cuando `add_memory` escribio de verdad
+    pero la confirmacion no llego: la fila queda en `error` aunque el contenido
+    este en el grafo, y reencolarla duplicaria episodios.
+
+    `total` sale de la numeracion "[i/n]" del nombre, y es lo que permite saber
+    si se vieron TODOS los trozos de un documento. Importa porque `expire_doc`
+    borra a partir de lo que hay en el ledger: registrar 1 de 88 episodios
+    haria que un `expire` posterior borrase uno, marcase el documento como
+    expirado y dejase 87 huerfanos sin que nada lo denuncie.
+
+    Los episodios de `add_facts` no llevan doc_id (el documento entero es UN
+    episodio y el CLI ya lo registro al marcarlo), asi que no aparecen aqui.
+    """
+    import json as _json
+
+    crudo = cliente.llamar("get_episodes", {"max_episodes": maximo})
+    salida: dict[str, dict] = {}
+    for trozo in crudo.split("\n"):
+        trozo = trozo.strip()
+        if not trozo:
+            continue
+        try:
+            datos = _json.loads(trozo)
+        except _json.JSONDecodeError:
+            continue
+        episodios = datos.get("result") if isinstance(datos, dict) else datos
+        if isinstance(episodios, dict):
+            episodios = episodios.get("episodes") or episodios.get("result") or []
+        for ep in episodios or []:
+            if not isinstance(ep, dict) or not ep.get("uuid"):
+                continue
+            m = _DOC_ID.search(ep.get("source_description") or "")
+            if not m:
+                continue
+            doc_id = m.group(1)
+            t = _TROZO.search(ep.get("name") or "")
+            idx, total = (int(t.group(1)), int(t.group(2))) if t else (1, 1)
+            entrada = salida.setdefault(doc_id, {"episodios": [], "total": total})
+            # El total viene repetido en cada trozo; nos quedamos con el mayor
+            # por si algun nombre llega truncado.
+            entrada["total"] = max(entrada["total"], total)
+            if ep["uuid"] not in {u for u, _ in entrada["episodios"]}:
+                entrada["episodios"].append((ep["uuid"], idx))
     return salida
 
 
