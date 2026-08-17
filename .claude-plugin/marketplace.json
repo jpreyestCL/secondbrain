@@ -1,0 +1,11 @@
+{
+  "name": "secondbrain",
+  "owner": { "name": "jpreyest" },
+  "plugins": [
+    {
+      "name": "secondbrain",
+      "source": "./",
+      "description": "Guardar, absorber documentos y consultar tu segundo cerebro (grafo temporal) desde Claude."
+    }
+  ]
+}

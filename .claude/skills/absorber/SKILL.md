@@ -99,18 +99,26 @@ Di qué entidades **nuevas** se crearon, cuáles se reusaron y cuántos hechos q
 
 Una llamada **por documento**. No juntes documentos distintos en una sola: el episodio y su fecha son por documento, y mezclarlos rompe la trazabilidad de dónde salió cada hecho.
 
-## Una carpeta entera: `next-batch`
+## Una carpeta entera
 
-Para volumen no leas los PDFs: el CLI ya extrajo el texto (con OCR incluido) y lo tiene en disco. Desde `ingest/`:
+**Paso 1 — preparar (una vez por carpeta).** El CLI hace lo mecánico y sin LLM: escanear, extraer texto, OCR, deduplicar por hash y llevar el ledger.
 
 ```bash
-uv run brain next-batch --limit 10        # JSON con doc_id, fecha detectada, dominio y TEXTO
+brain add <carpeta> --review     # escanea, extrae, clasifica y SE DETIENE antes de enviar
+```
+
+`--review` es lo que evita que se vaya por el camino lento (`ingest-graph`, ~2 min por trozo y con costo de API).
+
+**Paso 2 — absorber en tandas.** No leas los PDFs: el texto ya está extraído en disco.
+
+```bash
+brain next-batch --limit 10        # JSON con doc_id, fecha detectada, dominio y TEXTO
 ```
 
 Para cada documento del lote: extrae los hechos, llama a `add_facts`, y **solo cuando el servidor confirme**:
 
 ```bash
-uv run brain mark-done <doc_id> --episode <uuid que devolvio add_facts>
+brain mark-done <doc_id> --episode <uuid que devolvio add_facts>
 ```
 
 Después repite `next-batch`. `pendientes_totales` te dice cuánto queda.

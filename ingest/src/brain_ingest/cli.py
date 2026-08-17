@@ -458,8 +458,11 @@ def add(
                 console.print("The rest has been sent.")
     if revisar:
         console.print(
-            "\n[bold]Paused before sending.[/bold] Check with `brain status`; when "
-            "you are happy:\n  brain ingest-graph"
+            "\n[bold]Paused before sending.[/bold] Check with `brain status`.\n\n"
+            "Fast path (Claude extracts here, ~0.3 s per document on the server):\n"
+            "  ask Claude to run /absorber — it loops `brain next-batch` and `brain mark-done`\n\n"
+            "Slow path (the server extracts, ~2 min per chunk, costs API credit):\n"
+            "  brain ingest-graph"
         )
         return
     ingest_graph(doc_id=None, force=False, via=None, url=url)

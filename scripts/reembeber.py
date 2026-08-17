@@ -27,7 +27,8 @@ Uso
     python3 reembeber.py --tenant jpreyest --dims 512 \
         --modelo text-embedding-3-small
 
-Requiere `EMBEDDER_API_KEY_NUEVA` (o `--api-key`) y que el MCP esté DETENIDO:
+Requiere `EMBEDDER_API_KEY_NUEVA` en el entorno (nunca por línea de
+comandos: `ps` la mostraría) y que el MCP esté DETENIDO:
 si sigue ingiriendo, escribe vectores de la dimensión vieja por detrás.
 """
 
@@ -92,16 +93,20 @@ def main() -> int:
     ap.add_argument("--dims", type=int, default=512)
     ap.add_argument("--modelo", default="text-embedding-3-small")
     ap.add_argument("--api-url", default=os.environ.get("EMBEDDER_API_URL_NUEVA", "https://api.openai.com/v1"))
-    ap.add_argument("--api-key", default=os.environ.get("EMBEDDER_API_KEY_NUEVA", ""))
+    # Sin `--api-key` A PROPOSITO: los argumentos son visibles en `ps` para
+    # cualquier usuario de la maquina. En la primera corrida la clave de OpenAI
+    # y la contrasena de FalkorDB quedaron a la vista en la lista de procesos.
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=6380)
-    ap.add_argument("--user", default=os.environ.get("FALKORDB_USER", ""))
-    ap.add_argument("--password", default=os.environ.get("FALKORDB_PASSWORD", ""))
+    ap.add_argument("--user", default="")
     ap.add_argument("--dry-run", action="store_true", help="cuenta y estima, no escribe")
     args = ap.parse_args()
+    args.api_key = os.environ.get("EMBEDDER_API_KEY_NUEVA", "")
+    args.password = os.environ.get("FALKORDB_PASSWORD", "")
+    args.user = args.user or os.environ.get("FALKORDB_USER", "")
 
     if not args.api_key:
-        print("Falta la API key del embedder (--api-key o EMBEDDER_API_KEY_NUEVA)", file=sys.stderr)
+        print("Falta EMBEDDER_API_KEY_NUEVA en el entorno", file=sys.stderr)
         return 2
 
     r = redis.Redis(host=args.host, port=args.port, username=args.user or None,
@@ -129,12 +134,14 @@ def main() -> int:
         (
             "entidades",
             "MATCH (n:Entity) WHERE n.name_embedding IS NOT NULL RETURN n.uuid, n.name",
-            "MATCH (n:Entity {{uuid:'{uuid}'}}) SET n.name_embedding = vecf32({vec})",
+            "UNWIND {filas} AS f MATCH (n:Entity {{uuid: f.u}}) "
+            "SET n.name_embedding = vecf32(f.v)",
         ),
         (
             "hechos",
             "MATCH ()-[e:RELATES_TO]->() WHERE e.fact_embedding IS NOT NULL RETURN e.uuid, e.fact",
-            "MATCH ()-[e:RELATES_TO]->() WHERE e.uuid = '{uuid}' SET e.fact_embedding = vecf32({vec})",
+            "UNWIND {filas} AS f MATCH ()-[e:RELATES_TO]->() WHERE e.uuid = f.u "
+            "SET e.fact_embedding = vecf32(f.v)",
         ),
     ):
         filas = cypher(r, g, leer)[1]
@@ -153,31 +160,45 @@ def main() -> int:
             # Escribir en lotes pequeños: un UNWIND gigante con vectores en texto
             # bloquea el hilo de FalkorDB más de lo necesario.
             for j in range(0, len(trozo), LOTE_ESCRITURA):
-                for (uuid, _), vec in zip(trozo[j : j + LOTE_ESCRITURA], vectores[j : j + LOTE_ESCRITURA]):
-                    cypher(r, g, escribir.format(uuid=uuid, vec=json.dumps(vec)))
+                # Mapa de Cypher, NO JSON: las claves van SIN comillas
+                # (`{u: ...}`), y json.dumps las pone. El uuid se cita como
+                # cadena de Cypher.
+                lote_filas = ", ".join(
+                    "{{u:'{}', v:{}}}".format(uuid.replace("'", ""), json.dumps(vec))
+                    for (uuid, _), vec in zip(
+                        trozo[j : j + LOTE_ESCRITURA], vectores[j : j + LOTE_ESCRITURA]
+                    )
+                )
+                cypher(r, g, escribir.format(filas="[" + lote_filas + "]"))
             hechos += len(trozo)
             print(f"  {hechos}/{len(items)}", end="\r", flush=True)
         print(f"  {hechos}/{len(items)} listo")
         total += hechos
 
     # --- verificación: no puede quedar NADA de la dimensión vieja --------
+    # `vecf32Dim` no existe en esta version de FalkorDB, asi que se comprueba
+    # por el efecto: comparar contra un vector de la dimension NUEVA falla con
+    # "Vector dimension mismatch" en cuanto quede uno de la vieja.
     print("\nverificando dimensiones...")
+    sonda = json.dumps([0.01] * args.dims)
     malos = 0
     for etiqueta, consulta in (
-        ("entidades", f"MATCH (n:Entity) WHERE n.name_embedding IS NOT NULL AND vecf32Dim(n.name_embedding) <> {args.dims} RETURN count(n)"),
-        ("hechos", f"MATCH ()-[e:RELATES_TO]->() WHERE e.fact_embedding IS NOT NULL AND vecf32Dim(e.fact_embedding) <> {args.dims} RETURN count(e)"),
+        ("entidades",
+         f"MATCH (n:Entity) WHERE n.name_embedding IS NOT NULL "
+         f"RETURN count(vec.cosineDistance(n.name_embedding, vecf32({sonda})))"),
+        ("hechos",
+         f"MATCH ()-[e:RELATES_TO]->() WHERE e.fact_embedding IS NOT NULL "
+         f"RETURN count(vec.cosineDistance(e.fact_embedding, vecf32({sonda})))"),
     ):
         try:
             n = int(cypher(r, g, consulta)[1][0][0])
-        except redis.ResponseError:
-            # Sin `vecf32Dim` en esta versión: se comprueba por muestreo.
-            n = -1
-        print(f"  {etiqueta} con dimension distinta de {args.dims}: {n if n >= 0 else 'no verificable'}")
-        if n > 0:
-            malos += n
+            print(f"  {etiqueta}: {n} comparan bien a {args.dims} dims")
+        except redis.ResponseError as e:
+            print(f"  {etiqueta}: QUEDAN VECTORES DE OTRA DIMENSION ({e})", file=sys.stderr)
+            malos += 1
 
     if malos:
-        print(f"\nATENCION: quedan {malos} vectores sin convertir. La busqueda "
+        print(f"\nATENCION: quedaron vectores sin convertir. La busqueda "
               f"mezclara dimensiones y NO fallara de forma visible: vuelve a correr esto.",
               file=sys.stderr)
         return 1

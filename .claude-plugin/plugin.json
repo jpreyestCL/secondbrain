@@ -1,0 +1,10 @@
+{
+  "name": "secondbrain",
+  "version": "0.1.0",
+  "description": "Tu segundo cerebro: guardar, absorber documentos y consultar un grafo temporal de conocimiento desde Claude.",
+  "author": { "name": "jpreyest" },
+  "homepage": "https://mybrain.rlz.cl",
+  "repository": "https://github.com/jpreyestCL/secondbrain",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "knowledge-graph", "mcp", "graphiti"]
+}
