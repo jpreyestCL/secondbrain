@@ -201,3 +201,65 @@ def test_retirar_saca_de_la_cola_lo_ya_registrado(ledger):
     _, otro = ledger.upsert_file("/x/ok.pdf", "sha2", 10, 1e9)
     ledger.set_status(otro, "ingested")
     assert ledger.retirar("/x/ok.pdf") is False
+
+
+# -- deduplicacion por CONTENIDO (no por ruta) --------------------------------
+
+
+def test_el_mismo_contenido_en_otra_ruta_es_duplicado(ledger):
+    """El ledger deduplicaba por (ruta, hash), asi que el mismo archivo en dos
+    carpetas eran dos documentos, dos extracciones y dos ingestas.
+
+    Medido en el corpus real: 18 contenidos con copias y 21 copias sobrantes —
+    `(1).pdf` de descargas repetidas, una carpeta `Duplicados/`, y la misma
+    factura archivada en dos sociedades.
+    """
+    r1, doc1 = ledger.upsert_file("/docs/contrato.pdf", "abc123", 10, 1.0)
+    r2, doc2 = ledger.upsert_file("/otra/carpeta/contrato.pdf", "abc123", 10, 1.0)
+
+    assert r1 == "new"
+    assert r2 == "duplicate"
+    assert doc1 != doc2, "cada ruta conserva su fila: saber donde mas esta archivado sirve"
+    assert ledger.get(doc2).status == "duplicate"
+    assert ledger.get(doc2).duplicate_of == doc1
+    assert ledger.get(doc1).status == "pending", "el canonico sigue su curso normal"
+
+
+def test_el_canonico_es_el_mejor_archivado_no_el_primero(ledger):
+    """Si el canonico fuera el de `Duplicados/`, el grafo apuntaria justo a
+    donde nadie va a buscar."""
+    _, copia = ledger.upsert_file("/docs/Duplicados/escritura (2).pdf", "h1", 10, 1.0)
+    _, bueno = ledger.upsert_file("/docs/Escrituras/escritura.pdf", "h1", 10, 1.0)
+
+    assert ledger.get(bueno).status == "pending", "el bien archivado debe ser el canonico"
+    assert ledger.get(copia).status == "duplicate"
+    assert ledger.get(copia).duplicate_of == bueno
+
+
+def test_el_sufijo_de_descarga_pierde_frente_al_original(ledger):
+    _, uno = ledger.upsert_file("/d/SAFE - Endeavor (1).pdf", "h2", 10, 1.0)
+    _, dos = ledger.upsert_file("/d/SAFE - Endeavor.pdf", "h2", 10, 1.0)
+
+    assert ledger.get(dos).status == "pending"
+    assert ledger.get(uno).status == "duplicate"
+
+
+def test_una_tercera_copia_apunta_al_canonico_no_a_otra_copia(ledger):
+    """Encadenar duplicados (A->B->C) hace que rastrear el original sea un
+    paseo por punteros, y basta un eslabon roto para perderlo."""
+    _, bueno = ledger.upsert_file("/d/doc.pdf", "h3", 10, 1.0)
+    _, c1 = ledger.upsert_file("/d/doc (1).pdf", "h3", 10, 1.0)
+    _, c2 = ledger.upsert_file("/d/doc (2).pdf", "h3", 10, 1.0)
+
+    assert ledger.get(c1).duplicate_of == bueno
+    assert ledger.get(c2).duplicate_of == bueno, "apunta al canonico, no a la otra copia"
+
+
+def test_contenido_distinto_en_la_misma_ruta_sigue_siendo_una_version_nueva(ledger):
+    """La deduplicacion no puede romper la supersesion."""
+    r1, doc1 = ledger.upsert_file("/docs/x.pdf", "v1", 10, 1.0)
+    r2, doc2 = ledger.upsert_file("/docs/x.pdf", "v2", 11, 2.0)
+
+    assert (r1, r2) == ("new", "changed")
+    assert ledger.get(doc1).superseded is True
+    assert ledger.get(doc2).status == "pending"

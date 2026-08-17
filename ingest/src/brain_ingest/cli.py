@@ -952,3 +952,58 @@ def mark_done(
         ledger.record_episode(episode, doc_id, 0, cfg.tenant, fila.domain)
         ledger.set_status(doc_id, "ingested")
     typer.echo(f"ok {Path(fila.path).name}")
+
+
+@app.command("dedupe")
+def dedupe(
+    apply: bool = typer.Option(False, "--apply", help="Apply; without it, only report"),
+) -> None:
+    """Find files already in the ledger that share content, and keep one.
+
+    Deduplication happens at scan time, but documents scanned BEFORE that
+    existed are still there in duplicate. This reconciles them without
+    rescanning: same sha256 means the same bytes, so extracting or ingesting
+    them again is paid work that also duplicates facts in the graph.
+
+    The one kept is the best filed — no `(1)` suffix, not inside `Duplicados/`
+    — not the first one seen. If the canonical were the copy, the graph would
+    point exactly where nobody looks for it.
+    """
+    from collections import defaultdict
+
+    from .ledger import _puntaje_copia
+
+    cfg, ledger = _open()
+    with ledger:
+        por_hash: dict[str, list] = defaultdict(list)
+        for fila in ledger.all_files():
+            if not fila.superseded and fila.status != "duplicate":
+                por_hash[fila.sha256].append(fila)
+
+        grupos = {h: v for h, v in por_hash.items() if len(v) > 1}
+        marcados = 0
+        for filas in grupos.values():
+            # Un documento ya ingerido gana: cambiar el canonico despues de
+            # ingerir dejaria el episodio apuntando a un doc_id "duplicado".
+            filas.sort(key=lambda f: (f.status != "ingested", _puntaje_copia(f.path)))
+            canonico, copias = filas[0], filas[1:]
+            for copia in copias:
+                console.print(
+                    f"  [dim]duplicado[/dim] {Path(copia.path).name}\n"
+                    f"      [dim]{copia.path}[/dim]\n"
+                    f"      [dim]-> canonico: {canonico.path}[/dim]"
+                )
+                if apply:
+                    ledger.marcar_duplicado(copia.doc_id, canonico.doc_id)
+                marcados += 1
+
+    if not marcados:
+        console.print("No duplicate content in the ledger.")
+        return
+    if apply:
+        console.print(f"\n[bold]{marcados} duplicate(s) marked[/bold]; they will not be ingested.")
+    else:
+        console.print(
+            f"\n[bold]{marcados} duplicate(s)[/bold] across {len(grupos)} distinct contents. "
+            f"Nothing changed: run `brain dedupe --apply`."
+        )

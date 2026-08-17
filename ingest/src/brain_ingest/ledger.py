@@ -11,6 +11,7 @@ Statuses: pending -> extracted -> classified -> ingested, plus error/skipped.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS files (
     sensitivity TEXT,
     error       TEXT,
     superseded  INTEGER NOT NULL DEFAULT 0,
+    duplicate_of TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE (path, sha256)
@@ -60,6 +62,20 @@ CREATE INDEX IF NOT EXISTS idx_episodes_doc ON episodes (doc_id);
 """
 
 
+#: Senales de que una ruta es la COPIA y no el original.
+#: Elegir mal el canonico deja al grafo apuntando a `Duplicados/` en vez de a
+#: `Escrituras y modificaciones/`, que es justo donde uno va a buscar.
+_SENALES_COPIA = re.compile(
+    r"(?i)(\(\d+\)\.[a-z0-9]+$|/duplicados?/|/copias?/|/backup/|"
+    r"\bcopia\b|\bduplicado\b|/\.trash/)"
+)
+
+
+def _puntaje_copia(path: str) -> tuple[int, int]:
+    """Menor es mejor candidato a canonico: menos senales de copia, ruta mas corta."""
+    return (len(_SENALES_COPIA.findall(path)), len(path))
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -79,6 +95,7 @@ class FileRow:
     sensitivity: list[str]
     error: str | None
     superseded: bool
+    duplicate_of: str | None
     created_at: str
     updated_at: str
 
@@ -98,6 +115,7 @@ class FileRow:
             sensitivity=json.loads(row["sensitivity"]) if row["sensitivity"] else [],
             error=row["error"],
             superseded=bool(row["superseded"]),
+            duplicate_of=row["duplicate_of"] if "duplicate_of" in row.keys() else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -119,6 +137,11 @@ class Ledger:
             self.conn.execute("ALTER TABLE episodes ADD COLUMN domain TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Migration: files.duplicate_of (deduplicacion por contenido).
+        try:
+            self.conn.execute("ALTER TABLE files ADD COLUMN duplicate_of TEXT")
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
     def close(self) -> None:
@@ -212,11 +235,37 @@ class Ledger:
                 )
             else:
                 doc_id = str(uuid.uuid4())
+                # MISMO CONTENIDO en otra ruta: no se vuelve a leer ni a subir.
+                # El ledger deduplicaba por (ruta, hash), asi que el mismo
+                # archivo en dos carpetas eran dos documentos y dos ingestas.
+                # Medido en el corpus real: 18 contenidos con copias y 21
+                # copias sobrantes — `(1).pdf`, una carpeta `Duplicados/`, y la
+                # misma factura archivada en dos sociedades.
+                gemelo = self.conn.execute(
+                    "SELECT doc_id, path, status, duplicate_of FROM files"
+                    " WHERE sha256 = ? AND superseded = 0 ORDER BY id LIMIT 1",
+                    (sha256,),
+                ).fetchone()
+                estado, duplicado_de = "pending", None
+                if gemelo is not None:
+                    canonico = gemelo["duplicate_of"] or gemelo["doc_id"]
+                    # Si la ruta NUEVA esta mejor archivada, pasa a ser la
+                    # canonica y la vieja queda como duplicada.
+                    if _puntaje_copia(path) < _puntaje_copia(gemelo["path"]) and not gemelo["duplicate_of"]:
+                        self.conn.execute(
+                            "UPDATE files SET status = 'duplicate', duplicate_of = ?,"
+                            " updated_at = ? WHERE doc_id = ?",
+                            (doc_id, now, gemelo["doc_id"]),
+                        )
+                    else:
+                        estado, duplicado_de = "duplicate", canonico
                 self.conn.execute(
                     "INSERT INTO files (path, sha256, doc_id, size, mtime, status,"
-                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (path, sha256, doc_id, size, mtime, now, now),
+                    " duplicate_of, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (path, sha256, doc_id, size, mtime, estado, duplicado_de, now, now),
                 )
+                if duplicado_de:
+                    outcome = "duplicate"
             self.conn.execute("COMMIT")
             return outcome, doc_id
         except BaseException:
@@ -346,6 +395,19 @@ class Ledger:
             "SELECT * FROM files WHERE superseded = 0 ORDER BY path"
         ).fetchall()
         return [FileRow(**dict(f)) for f in filas]
+
+    def marcar_duplicado(self, doc_id: str, canonico: str) -> None:
+        """Marca `doc_id` como copia de `canonico` para que no se procese.
+
+        No se borra la fila: saber que un contrato esta archivado tambien en
+        otra sociedad es informacion util.
+        """
+        self.conn.execute(
+            "UPDATE files SET status = 'duplicate', duplicate_of = ?, updated_at = ?"
+            " WHERE doc_id = ?",
+            (canonico, _now(), doc_id),
+        )
+        self.conn.commit()
 
     def retirar(self, path: str) -> bool:
         """Saca un documento de la cola de ingesta sin borrar su historia.
