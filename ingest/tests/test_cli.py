@@ -648,3 +648,160 @@ def test_reconcile_no_pide_reingerir_lo_que_se_salto_a_proposito(
     assert "expected, nothing to do" in r.output
     assert "DO need re-ingesting" not in r.output
     assert _estado(d)[0] == "skipped"
+
+
+# -- dedupe-episodes: el mismo trozo dos veces en el grafo ---------------------
+
+
+class _ClienteBorrador:
+    """get_episodes devuelve los uuid vivos; delete_episode se anota."""
+
+    def __init__(self, uuids_vivos):
+        self._vivos = list(uuids_vivos)
+        self.borrados = []
+
+    def llamar(self, nombre, argumentos, timeout=None):
+        import json as _json
+
+        if nombre == "delete_episode":
+            self.borrados.append(argumentos["uuid"])
+            return _json.dumps({"result": {"message": "ok"}})
+        return _json.dumps({"result": {"episodes": [{"uuid": u} for u in self._vivos]}})
+
+
+def _doc_con_episodios(tmp_path, episodios):
+    """Un documento ingerido con episodios de `created_at` controlado.
+
+    Se inserta por SQL porque `record_episode` estampa la hora actual, y estas
+    pruebas necesitan justamente que el orden temporal NO coincida con cual es
+    el episodio bueno.
+    """
+    from brain_ingest.config import load_config
+    from brain_ingest.ledger import Ledger
+
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    cfg = load_config()
+    ruta = cfg.home / "config.toml"
+    # Se agrega siempre: el config.toml por defecto trae `mcp_url` COMENTADO,
+    # asi que buscar la cadena daria un falso positivo y no configuraria nada.
+    ruta.write_text(
+        ruta.read_text(encoding="utf-8") + '\nmcp_url = "https://ejemplo.test/mcp"\n',
+        encoding="utf-8",
+    )
+    p = docs / "doc.pdf"
+    p.write_text("x", encoding="utf-8")
+    lg = Ledger(cfg.ledger_path)
+    with lg:
+        _, doc_id = lg.upsert_file(path=str(p), sha256="sha-dup", size=1, mtime=0.0)
+        lg.set_status(doc_id, "ingested")
+        for uuid, idx, cuando in episodios:
+            lg.conn.execute(
+                "INSERT INTO episodes (episode_uuid, doc_id, chunk_idx, group_id,"
+                " domain, created_at, destino) VALUES (?,?,?,?,?,?,?)",
+                (uuid, doc_id, idx, "t", "personal", cuando, "https://ejemplo.test/mcp"),
+            )
+        lg.conn.commit()
+    return doc_id
+
+
+def _episodios_de(doc_id):
+    from brain_ingest.config import load_config
+    from brain_ingest.ledger import Ledger
+
+    lg = Ledger(load_config().ledger_path)
+    with lg:
+        return [f["episode_uuid"] for f in lg.episodes_for_doc(doc_id)]
+
+
+def _parchar_borrador(monkeypatch, cliente):
+    import brain_ingest.mcp_remote as mr
+
+    monkeypatch.setattr(mr, "conectar", lambda *a, **k: cliente)
+    return cliente
+
+
+def test_dedupe_episodes_conserva_el_que_ESTA_en_el_grafo_no_el_mas_antiguo(
+    brain_home, tmp_path, monkeypatch
+):
+    """El caso que motivo el comando: el fantasma se escribio ANTES que el bueno.
+
+    Quedarse con el mas antiguo, que es el reflejo natural, borraria el
+    episodio real y dejaria en el ledger uno que no existe en el servidor.
+    """
+    doc = _doc_con_episodios(
+        tmp_path,
+        [("fantasma", 0, "2026-08-20T20:59:14+00:00"), ("real", 0, "2026-08-20T21:00:17+00:00")],
+    )
+    cli = _parchar_borrador(monkeypatch, _ClienteBorrador(["real"]))
+
+    r = runner.invoke(app, ["dedupe-episodes", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert _episodios_de(doc) == ["real"], "debe sobrevivir el que existe en el grafo"
+    assert cli.borrados == [], "el fantasma no esta en el grafo: nada que borrar alli"
+
+
+def test_dedupe_episodes_borra_del_grafo_el_trozo_repetido(brain_home, tmp_path, monkeypatch):
+    doc = _doc_con_episodios(
+        tmp_path,
+        [("viejo", 1, "2026-01-01T00:00:00+00:00"), ("nuevo", 1, "2026-02-01T00:00:00+00:00")],
+    )
+    cli = _parchar_borrador(monkeypatch, _ClienteBorrador(["viejo", "nuevo"]))
+
+    r = runner.invoke(app, ["dedupe-episodes", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert cli.borrados == ["nuevo"], "estando los dos, se conserva el mas antiguo"
+    assert _episodios_de(doc) == ["viejo"]
+
+
+def test_dedupe_episodes_NO_toca_los_grupos_sin_rastro_en_el_servidor(
+    brain_home, tmp_path, monkeypatch
+):
+    """Ninguno en el grafo no es duplicacion: es la divergencia de la regla 8.
+
+    Borrar aqui dejaria el documento sin ningun episodio y sin denuncia. Eso
+    lo diagnostica `doctor`, no este comando.
+    """
+    doc = _doc_con_episodios(
+        tmp_path, [("a", 0, "2026-01-01T00:00:00+00:00"), ("b", 0, "2026-02-01T00:00:00+00:00")]
+    )
+    cli = _parchar_borrador(monkeypatch, _ClienteBorrador([]))
+
+    r = runner.invoke(app, ["dedupe-episodes", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert "doctor" in r.output
+    assert sorted(_episodios_de(doc)) == ["a", "b"], "no se toca ninguno"
+    assert cli.borrados == []
+
+
+def test_dedupe_episodes_sin_apply_no_escribe(brain_home, tmp_path, monkeypatch):
+    doc = _doc_con_episodios(
+        tmp_path, [("v", 1, "2026-01-01T00:00:00+00:00"), ("n", 1, "2026-02-01T00:00:00+00:00")]
+    )
+    cli = _parchar_borrador(monkeypatch, _ClienteBorrador(["v", "n"]))
+
+    r = runner.invoke(app, ["dedupe-episodes"])
+
+    assert r.exit_code == 0, r.output
+    assert "--apply" in r.output
+    assert sorted(_episodios_de(doc)) == ["n", "v"]
+    assert cli.borrados == []
+
+
+def test_dedupe_episodes_sin_duplicados_ni_se_conecta(brain_home, tmp_path, monkeypatch):
+    """Sin duplicados no debe ni abrir sesion MCP: el chequeo es local y barato."""
+    import brain_ingest.mcp_remote as mr
+
+    def _explota(*a, **k):
+        raise AssertionError("no debio conectarse al servidor")
+
+    _doc_con_episodios(tmp_path, [("unico", 0, "2026-01-01T00:00:00+00:00")])
+    monkeypatch.setattr(mr, "conectar", _explota)
+
+    r = runner.invoke(app, ["dedupe-episodes", "--apply"])
+
+    assert r.exit_code == 0, r.output
+    assert "No duplicate episodes" in r.output
