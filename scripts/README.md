@@ -680,3 +680,67 @@ importadas (p. ej. "¿qué pretensiones de sueldo pedía Carlos?").
 * Nada de esto borra notas de Apple Notes ni del export. Lo único que se
   "descarta" es la decisión de no meterlas al grafo, siempre reversible
   editando `triage.json` y volviendo a correr `notes-apply.py`.
+
+---
+
+# Revisar qué se absorbió y qué no
+
+Dos scripts para auditar el estado del corpus. `revisar-carpeta.sh` responde
+"¿quedó algo a medias?" mirando solo el ledger; `volcar-episodios.py` prepara
+lo que hace falta para contrastar el ledger contra el grafo de verdad.
+
+## `revisar-carpeta.sh` — qué entró, qué se saltó y por qué
+
+**Absorbido no es lo mismo que "todo en el grafo".** Muchos documentos se marcan
+`skipped` a propósito: cartolas mensuales cuyo agregado anual ya está, planillas
+que se partirían en decenas de miles de asientos sueltos, plantillas en blanco,
+borradores superados por su versión firmada. Cada uno lleva escrito su motivo, y
+este script existe para poder **auditar esas decisiones** en vez de confiar en
+ellas.
+
+```bash
+scripts/revisar-carpeta.sh "Andes USA Invest LLC"
+scripts/revisar-carpeta.sh "DOCUMENTOS PERSONALES" --motivos
+scripts/revisar-carpeta.sh ""                       # todo el ledger
+```
+
+Muestra el resumen por estado, lo que quedó pendiente (vacío = nada a medias) y
+dos chequeos de integridad que **ambos deben dar 0**:
+
+* *ingested sin ningún episodio*: el ledger dice que está y no está. Es la
+  divergencia de la regla de oro 8 en miniatura.
+* *trozos duplicados en el grafo*: el mismo trozo dos veces, que genera hechos
+  repetidos sobre el mismo texto. Lo limpia `brain dedupe-episodes`.
+
+Con `--motivos` lista archivo por archivo por qué no entró. El ledger se busca
+en `~/.brain/<tenant>/ledger.sqlite`; se puede apuntar a otro con `BRAIN_TENANT`
+o `BRAIN_LEDGER`.
+
+## `volcar-episodios.py` — el insumo de `brain doctor`
+
+`brain doctor` compara lo que el ledger da por ingerido contra lo que existe en
+el grafo que se consulta, y necesita los nombres de episodio del servidor en un
+archivo.
+
+```bash
+python3 scripts/volcar-episodios.py /tmp/episodios.txt
+brain doctor --episodes /tmp/episodios.txt
+```
+
+Es un script y no un subcomando porque `get_episodes` devuelve el **contenido
+completo** de cada episodio: con ~900 episodios son cientos de KB que no aportan
+nada a un archivo que solo lleva nombres. Si el token guardado venció, abre el
+navegador para reautenticar.
+
+### ⚠️ Nunca `doctor --repair` a ciegas
+
+`doctor` empareja el **nombre del archivo** contra los nombres de episodio por
+contención de substring, así que cualquier desajuste de nombre da un falso
+positivo. Medido el 2026-08-20 sobre 370 documentos: marcó 6 como ausentes y los
+**seis estaban en el grafo**. Las causas fueron un doble espacio en el nombre del
+archivo, un `&` guardado como `&amp;`, un archivo URL-encoded, y un episodio
+combinado que cubre varios documentos sin llevar el nombre literal de ninguno.
+
+`--repair` los habría devuelto a la cola **y borrado sus filas de episodio**;
+reingerirlos después habría duplicado contenido que ya estaba. Revisa a mano
+cada documento que marque antes de reparar nada.
