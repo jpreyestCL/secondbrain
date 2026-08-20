@@ -833,6 +833,111 @@ def expire(
         raise typer.Exit(2)
 
 
+@app.command("dedupe-episodes")
+def dedupe_episodes(
+    apply: bool = typer.Option(False, "--apply", help="Apply; without it, only report"),
+    max_episodes: int = typer.Option(
+        3000, "--max-episodes", help="How many episodes to read from the graph"
+    ),
+) -> None:
+    """Remove episodes that duplicate a chunk already in the graph.
+
+    `dedupe` works on FILES, comparing sha256. Nothing deduplicates EPISODES,
+    so the same chunk can end up in the graph twice and produce repeated facts
+    about the same text. It happens two ways: a slow-path retry that recorded
+    both attempts, and `mark-done` called with a uuid that did not come from
+    the `add_facts` reply.
+
+    Which one to keep is decided by the GRAPH, never by the ledger's dates: a
+    row written by mistake can be older than the good one, so keeping the
+    oldest would delete the real episode and leave the phantom. Rows whose
+    uuid does not exist on the server are dropped without touching the graph.
+
+    A group whose episodes are ALL missing from the server is reported and left
+    alone: that is not duplication, it is the rule-8 divergence, and the tool
+    for it is `doctor`.
+    """
+    from urllib.parse import urlparse
+
+    from .mcp_remote import (
+        McpRemoteError,
+        borrar_episodio_remoto,
+        conectar,
+        uuids_en_el_grafo,
+    )
+
+    cfg, ledger = _open()
+    if not cfg.mcp_url:
+        console.print(
+            "[red]No server configured.[/red] Run this first:\n"
+            "  [bold]brain login https://mybrain.rlz.cl[/bold]"
+        )
+        raise typer.Exit(2)
+
+    with ledger:
+        grupos = ledger.episodios_duplicados()
+        if not grupos:
+            console.print("[green]No duplicate episodes in the ledger.[/green]")
+            return
+
+        parsed = urlparse(cfg.mcp_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        try:
+            cliente = conectar(base, cfg.tenant, cfg.home, path=parsed.path or "/mcp")
+            vivos = uuids_en_el_grafo(cliente, maximo=max_episodes)
+        except McpRemoteError as exc:
+            console.print(f"[red]MCP error:[/red] {exc}")
+            raise typer.Exit(2)
+
+        sobran, fantasmas, sin_rastro = [], [], []
+        for grupo in grupos:
+            presentes = [f for f in grupo if f["episode_uuid"] in vivos]
+            ausentes = [f for f in grupo if f["episode_uuid"] not in vivos]
+            if not presentes:
+                # Ninguno esta en el servidor: no es duplicacion, es la
+                # divergencia de la regla 8. No se toca; eso lo ve `doctor`.
+                sin_rastro.append(grupo)
+                continue
+            fantasmas.extend(ausentes)
+            # Se conserva el mas antiguo DE LOS QUE EXISTEN.
+            sobran.extend(sorted(presentes, key=lambda f: f["created_at"])[1:])
+
+        console.print(
+            f"\nduplicate groups: {len(grupos)}\n"
+            f"  [yellow]extra episodes on the server:[/yellow] {len(sobran)}\n"
+            f"  [yellow]phantom rows (uuid not on the server):[/yellow] {len(fantasmas)}\n"
+            f"  [red]groups with nothing on the server:[/red] {len(sin_rastro)}"
+        )
+        for grupo in sin_rastro[:5]:
+            console.print(f"    [dim]doc {grupo[0]['doc_id']} chunk {grupo[0]['chunk_idx']}[/dim]")
+        if sin_rastro:
+            console.print("    [dim]-> not duplication; check with `brain doctor`[/dim]")
+
+        if not sobran and not fantasmas:
+            console.print("\n[green]Nothing to clean.[/green]")
+            return
+        if not apply:
+            console.print("\nNothing changed. To apply: `brain dedupe-episodes --apply`")
+            return
+
+        borrados = 0
+        for fila in sobran:
+            try:
+                borrar_episodio_remoto(cliente, fila["episode_uuid"])
+            except McpRemoteError as exc:
+                console.print(f"[red]could not delete {fila['episode_uuid']}:[/red] {exc}")
+                continue
+            ledger.borrar_episodio(fila["episode_uuid"])
+            borrados += 1
+        for fila in fantasmas:
+            ledger.borrar_episodio(fila["episode_uuid"])
+
+    console.print(
+        f"\n[bold]{borrados} episode(s) removed from the graph[/bold] and "
+        f"{len(fantasmas)} phantom row(s) dropped from the ledger"
+    )
+
+
 @app.command()
 def version() -> None:
     """Print version."""

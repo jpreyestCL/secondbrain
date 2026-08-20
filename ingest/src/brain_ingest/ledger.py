@@ -432,6 +432,29 @@ class Ledger:
         )
         self.conn.commit()
 
+    def episodios_duplicados(self) -> list[list[sqlite3.Row]]:
+        """Grupos de episodios activos que comparten doc_id y chunk_idx.
+
+        Un mismo trozo de un documento no deberia estar dos veces en el grafo:
+        significa que el texto se proceso dos veces y genero hechos repetidos
+        sobre el mismo contenido. Pasa por dos vias distintas: reintentos del
+        camino lento que quedaron ambos registrados, y `mark-done` llamado con
+        un uuid que no salio de la respuesta de `add_facts`.
+
+        Devuelve los grupos ordenados por antiguedad DENTRO de cada grupo, pero
+        quien decida cual conservar NO debe fiarse de ese orden: hay que mirar
+        cual existe de verdad en el grafo, porque una fila escrita por error
+        puede ser mas antigua que la buena.
+        """
+        filas = self.conn.execute(
+            "SELECT * FROM episodes WHERE expired = 0 "
+            "ORDER BY doc_id, chunk_idx, created_at"
+        ).fetchall()
+        por_clave: dict[tuple[str, int], list[sqlite3.Row]] = {}
+        for f in filas:
+            por_clave.setdefault((f["doc_id"], f["chunk_idx"]), []).append(f)
+        return [g for g in por_clave.values() if len(g) > 1]
+
     def borrar_episodio(self, episode_uuid: str) -> None:
         """Quita el registro para que un reintento vuelva a enviar ese chunk."""
         self.conn.execute("DELETE FROM episodes WHERE episode_uuid = ?", (episode_uuid,))

@@ -522,3 +522,47 @@ def conectar(base_url: str, tenant: str, brain_home: Path, path: str = "/mcp") -
         cliente = ClienteMCP(base_url, token, path=path)
         cliente.inicializar()
     return cliente
+
+
+def uuids_en_el_grafo(cliente: "ClienteMCP", maximo: int = 3000) -> set[str]:
+    """Conjunto de uuids de episodio que EXISTEN en el servidor.
+
+    Complementa a `episodios_por_doc`, que solo ve los episodios del camino
+    lento (los unicos que llevan `doc_id` en el `source_description`). Para
+    saber si un uuid cualquiera sigue vivo hace falta mirar los uuid a secas,
+    vengan de `add_facts` o de `add_memory`.
+
+    Lo usa `dedupe-episodes` para decidir cual de dos filas duplicadas del
+    ledger corresponde a un episodio real: quedarse con la mas antigua seria
+    un error, porque una fila escrita por equivocacion puede ser anterior a
+    la buena.
+    """
+    import json as _json
+
+    crudo = cliente.llamar("get_episodes", {"max_episodes": maximo})
+    vivos: set[str] = set()
+    for trozo in crudo.split("\n"):
+        trozo = trozo.strip()
+        if not trozo:
+            continue
+        try:
+            datos = _json.loads(trozo)
+        except _json.JSONDecodeError:
+            continue
+        episodios = datos.get("result") if isinstance(datos, dict) else datos
+        if isinstance(episodios, dict):
+            episodios = episodios.get("episodes") or episodios.get("result") or []
+        for ep in episodios or []:
+            if isinstance(ep, dict) and ep.get("uuid"):
+                vivos.add(ep["uuid"])
+    return vivos
+
+
+def borrar_episodio_remoto(cliente: "ClienteMCP", uuid: str) -> None:
+    """Borra un episodio del grafo por MCP.
+
+    Se usa `delete_episode` del servidor y no `Graphiti.remove_episode` porque
+    esta ruta es la del CLIENTE: `remove_episode` exige acceso directo a
+    FalkorDB, que solo tienen los administradores por tunel SSH.
+    """
+    cliente.llamar("delete_episode", {"uuid": uuid})
